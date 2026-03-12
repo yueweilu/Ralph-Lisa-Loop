@@ -17,6 +17,13 @@
 - **最小化初始化**：`ralph-lisa init --minimal` 仅创建会话状态（零项目文件）。
 - **`doctor` 命令**：使用 `ralph-lisa doctor` 验证所有依赖项。
 
+### v0.3.10 补丁
+
+- **Watcher 卡顿检测**：当某个 agent 收到触发消息后，若在 `RL_STALL_TIMEOUT` 秒内（默认 480 秒）没有提交，watcher 会自动重新发送提示，并附带 `ralph-lisa recap` 指令，帮助 agent 恢复上下文后继续工作。
+  - **误判防护**：触发重试前，watcher 会检查该 agent 的 pane log 自上次触发以来是否增长了 500 bytes 以上。若有增长，说明 agent 仍在正常工作（只是较慢）——计时器静默重置，不打扰 agent。
+  - **可配置超时**：`export RL_STALL_TIMEOUT=600`（生成大型项目如完整 Flutter App 时推荐使用）。
+  - **卡顿计数器**：每次重新 nudge 的消息会包含 `(Stall #N detected — run: ralph-lisa recap, then continue and submit)`，提示 agent 先恢复上下文再继续。
+
 ### 错误修复（v0.3）
 
 - 修复了生成的 `watcher.sh` 中的 case 模式转义问题——JS 模板字面量默默吞掉了 case 模式中的反斜杠，导致 watcher 在自动模式下每次启动时都崩溃循环。

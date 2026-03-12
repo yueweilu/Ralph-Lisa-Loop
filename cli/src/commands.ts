@@ -1673,6 +1673,10 @@ ACKED_TURN=""
 FAIL_COUNT=0
 ACCEL_PID=""
 LAST_ACK_TIME=0
+STALL_TIMEOUT_SECS=\${RL_STALL_TIMEOUT:-480}
+STALL_COUNT=0
+PANE0_LOG_SIZE_AT_TRIGGER=0
+PANE1_LOG_SIZE_AT_TRIGGER=0
 CHECKPOINT_ROUNDS=\${RL_CHECKPOINT_ROUNDS:-0}
 CHECKPOINT_REMIND_TIME=0
 DEADLOCK_REMIND_TIME=0
@@ -1964,6 +1968,9 @@ trigger_agent() {
       ralph_msg="Your turn. Task: \${task_ctx}."
     fi
     ralph_msg="\${ralph_msg} Lisa's feedback is ready — run: ralph-lisa read review.md"
+    if (( STALL_COUNT > 0 )); then
+      ralph_msg="\${ralph_msg} (Stall #\${STALL_COUNT} detected — run: ralph-lisa recap, then continue and submit)"
+    fi
     send_go_to_pane "0.0" "Ralph" "\$PANE0_LOG" "\$ralph_msg"
     local rc=\$?
     if (( rc != 0 )); then
@@ -1998,6 +2005,9 @@ trigger_agent() {
       lisa_msg="Your turn. Task: \${task_ctx}."
     fi
     lisa_msg="\${lisa_msg} Ralph's work is ready — run: ralph-lisa read work.md"
+    if (( STALL_COUNT > 0 )); then
+      lisa_msg="\${lisa_msg} (Stall #\${STALL_COUNT} detected — run: ralph-lisa recap, then continue and submit)"
+    fi
     send_go_to_pane "0.1" "Lisa" "\$PANE1_LOG" "\$lisa_msg"
     local rc=\$?
     if (( rc != 0 )); then
@@ -2101,6 +2111,7 @@ check_and_trigger() {
       SEEN_TURN="\$CURRENT_TURN"
       FAIL_COUNT=0
       LAST_ACK_TIME=0
+      STALL_COUNT=0
 
       # Write round separator to pane logs for transcript tracking
       local round_ts
@@ -2147,6 +2158,42 @@ check_and_trigger() {
       fi
     fi
 
+    # Stall detection: agent was triggered (ACKED) but has not submitted for STALL_TIMEOUT_SECS
+    if [[ -n "\$SEEN_TURN" && "\$SEEN_TURN" == "\$ACKED_TURN" && \$LAST_ACK_TIME -gt 0 ]]; then
+      local now_epoch
+      now_epoch=\$(date +%s)
+      local stall_elapsed=\$(( now_epoch - LAST_ACK_TIME ))
+      if (( stall_elapsed >= STALL_TIMEOUT_SECS )); then
+        # Check log growth: if agent produced output since trigger, it's working — not stalled
+        local cur_log_size size_at_trigger
+        if [[ "\$SEEN_TURN" == "ralph" ]]; then
+          cur_log_size=\$(wc -c < "\$PANE0_LOG" 2>/dev/null | tr -d ' ' || echo 0)
+          size_at_trigger=\$PANE0_LOG_SIZE_AT_TRIGGER
+        else
+          cur_log_size=\$(wc -c < "\$PANE1_LOG" 2>/dev/null | tr -d ' ' || echo 0)
+          size_at_trigger=\$PANE1_LOG_SIZE_AT_TRIGGER
+        fi
+        if (( cur_log_size > size_at_trigger + 500 )); then
+          # Agent is producing output — still working, just slow. Reset timer.
+          local growth=\$(( cur_log_size - size_at_trigger ))
+          echo "[Watcher] Not a stall: \${SEEN_TURN} produced \${growth} bytes since trigger — resetting timer"
+          LAST_ACK_TIME=\$(date +%s)
+          if [[ "\$SEEN_TURN" == "ralph" ]]; then
+            PANE0_LOG_SIZE_AT_TRIGGER=\$cur_log_size
+          else
+            PANE1_LOG_SIZE_AT_TRIGGER=\$cur_log_size
+          fi
+        else
+          STALL_COUNT=\$((STALL_COUNT + 1))
+          echo "[Watcher] STALL #\${STALL_COUNT}: \${SEEN_TURN} triggered \${stall_elapsed}s ago, no new output (+\${growth:-0} bytes), timeout=\${STALL_TIMEOUT_SECS}s"
+          echo "[Watcher] Re-nudging \${SEEN_TURN} with context recovery hint..."
+          # Reset delivery state so the delivery block fires again
+          ACKED_TURN=""
+          LAST_ACK_TIME=0
+        fi
+      fi
+    fi
+
     # Need to deliver? (seen but not yet acked)
     if [[ -n "\$SEEN_TURN" && "\$SEEN_TURN" != "\$ACKED_TURN" ]]; then
       # Backoff on repeated failures
@@ -2163,6 +2210,13 @@ check_and_trigger() {
         FAIL_COUNT=0
         LAST_ACK_TIME=\$(date +%s)
         echo "[Watcher] Turn acknowledged: \$SEEN_TURN (cooldown 30s)"
+        # Snapshot log size at trigger time — used by stall detection to distinguish
+        # "agent working silently" from "agent truly stuck"
+        if [[ "\$SEEN_TURN" == "ralph" ]]; then
+          PANE0_LOG_SIZE_AT_TRIGGER=\$(wc -c < "\$PANE0_LOG" 2>/dev/null | tr -d ' ' || echo 0)
+        elif [[ "\$SEEN_TURN" == "lisa" ]]; then
+          PANE1_LOG_SIZE_AT_TRIGGER=\$(wc -c < "\$PANE1_LOG" 2>/dev/null | tr -d ' ' || echo 0)
+        fi
       else
         FAIL_COUNT=\$((FAIL_COUNT + 1))
         echo "[Watcher] Trigger failed (fail_count=\$FAIL_COUNT), will retry next cycle"

@@ -16,6 +16,13 @@
 - **Minimal init**: `ralph-lisa init --minimal` creates only session state (zero project files).
 - **`doctor` command**: Verify all dependencies with `ralph-lisa doctor`.
 
+### v0.3.10 Patch
+
+- **Stall detection in Watcher**: When an agent is triggered but produces no new output for `RL_STALL_TIMEOUT` seconds (default: 480s), the watcher automatically re-nudges with a `ralph-lisa recap` hint to help the agent recover context and resume.
+  - **False-positive guard**: Before declaring a stall, the watcher checks whether the agent's pane log has grown by more than 500 bytes since the last trigger. If it has, the agent is still working (just slow) — the timer resets silently instead of interrupting.
+  - **Configurable timeout**: `export RL_STALL_TIMEOUT=600` (recommended for large codegen tasks like full Flutter projects).
+  - **Stall counter**: Each re-nudge message includes `(Stall #N detected — run: ralph-lisa recap, then continue and submit)` so agents know to recover context first.
+
 ### Bug Fixes (v0.3)
 
 - Fixed case pattern escaping in generated `watcher.sh` — JS template literals silently stripped backslashes from case patterns, causing the watcher to crash-loop on every startup in auto mode.
