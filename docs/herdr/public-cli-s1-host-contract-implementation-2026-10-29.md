@@ -5,7 +5,7 @@
 **状态：** 待实施设计，依据公开仓 `main@7440e29`、CLI `0.3.13` 的只读检查；本文不是完成回执。
 **位置：** [六阶段开发顺序](public-repo-herdr-plugin-start-2026-10-29.md)中的 S1。后续 S2 才做 Herdr 插件壳，S3 才做真实 Claude/Codex 双席交接。
 
-**开发位置与分支：** 本公开仓已在独立工作目录 `Ralph-Lisa-Loop-herdr/` 检出；S0 基线和 S1 只读检查分支已推送到开发 fork，并通过对应 CI。当前在本地 `feat/herdr-s1-identity` 切片分支，其父分支是已推送的 `feat/herdr-s1-inspect`。S1 尚未完整交付，也没有向原仓提交 PR。完整分支表见[开发起点第 3 节](public-repo-herdr-plugin-start-2026-10-29.md#3-先建怎样的开发分支)。
+**开发位置与分支：** 本公开仓已在独立工作目录 `Ralph-Lisa-Loop-herdr/` 检出；S0 基线、S1 只读检查和新建会话身份分支已推送开发 fork，且对应 CI 均成功。当前在本地 `feat/herdr-s1-mutation-guard` 切片分支；S1 尚未完整交付，也没有向原仓提交 PR。完整分支表见[开发起点第 3 节](public-repo-herdr-plugin-start-2026-10-29.md#3-先建怎样的开发分支)。
 
 ## 1. S1 要交付什么
 
@@ -132,7 +132,7 @@ Herdr 官方接口能管理 Pane/Agent 并返回创建时的 ID；插件动作�
 - **路径：** `--project` 必须指向存在的目录；对项目和 `.dual-agent` 分别取 `realpath`，校验 `.project_root`（若存在）与真实项目一致；拒绝把状态目录指到另一个项目。所有操作只在这组规范路径下进行。符号链接、大小写差异和跨卷路径进入测试。
 - **宿主租约：** 用原子创建取得，持有随机 `lease_id`、`owner_id`、PID 与进程启动标识、心跳时间。租约超时**不等于**可自动抢占：先查原进程和 Herdr 会话，再由用户或明确恢复命令接管；活宿主并存必须失败。
 - **tmux 冲突：** 领取 Herdr 租约前检查公开版 `watcher.pid`/`watcher_wrapper.pid` 与实际进程、相关 tmux session；`auto` 开始前反查 Herdr 租约。不能仅凭陈旧 PID 文件判断活跃，也不能自动删除未知 watcher 状态。
-- **写入口统一保护：** 在 Herdr 宿主占用期间，传统 `submit-*`、`init`、`auto`、`force-turn`、`step`、`scope-update`、`subtask`、`clean`、`uninit`、`stop` 等涉及业务状态或删除的命令要么转入受控路径，要么明确拒绝并给出操作建议。保护必须在**第一个副作用之前**：`cmdInitProject` 会先改 `CLAUDE.md`/`CODEX.md` 等文件才调用 `cmdInit`，`cmdAuto` 也会先清理旧状态文件，不能只在内部 `cmdInit` 加检查。逐项审计其内部调用。只读命令继续可用。
+- **写入口统一保护：** 在 Herdr 宿主占用期间，传统 `submit-*`、`init`、`auto`、`force-turn`、`step`、`scope-update`、`subtask`、`clean`、`uninit`、`stop` 等涉及业务状态或删除的命令要么转入受控路径，要么明确拒绝并给出操作建议。保护必须在**第一个副作用之前**：`cmdInitProject` 会先改 `CLAUDE.md`/`CODEX.md` 等文件才调用 `cmdInit`，`cmdAuto` 也会先清理旧状态文件，不能只在内部 `cmdInit` 加检查。当前 `feat/herdr-s1-mutation-guard` 已本地实现对现存 lease/claim/reconcile 标记的写入口拒绝；**租约原子领取与并发竞争还未实现**，不可将该检查当作单宿主契约已完成。只读命令继续可用。
 - **人工使用：** 未绑定会话保留现有命令、默认输出、tag/policy/gate 规则；新 `host` 子命令和 `session.json` 不要求现有用户迁移。用户可通过显式 `release` 停止插件交接后回到人工模式，但先确认无在途意图。
 - **升级边界：** `session.json`/回执带 `schema`；未知未来版本拒绝写入而允许诊断。不要把内部私有 CLI 状态文件或行为直接复制到公开仓。
 
@@ -144,7 +144,7 @@ Herdr 官方接口能管理 Pane/Agent 并返回创建时的 ID；插件动作�
 |---|---|---|
 | 前置 S0 基线 | `cli/package.json`、锁文件、CI/测试说明 | 干净安装、build、现有回归测试；冻结 Node 版本和公开能力差异表。当前 npm 下载曾 `ECONNRESET`，这一步仍未完成；沿用总计划的 S0，不在 S1 重复计时 |
 | S1.1 只读定位 | `cli/src/host/inspect.ts`、`cli/src/cli.ts` | 显式规范路径、只读 JSON 检查；错项目、状态损坏和未初始化状态有确定结果。当前已在 `feat/herdr-s1-inspect` 本地实现并通过回归 |
-| S1.2 会话身份、单宿主与席位 | 新 `host/{session,snapshot,lease,binding}.ts`，现有可变命令入口 | 新建会话的 UUID 已在 `feat/herdr-s1-identity` 本地实现；旧会话显式接管必须等写入口统一保护。其后实现原子租约、活 watcher 冲突、绑定代次、一致快照；第二宿主与旧 Pane 请求被拒 |
+| S1.2 会话身份、单宿主与席位 | 新 `host/{session,snapshot,lease,binding}.ts`，现有可变命令入口 | 新建会话 UUID 已推送并通过 CI；写入口占用检查在当前切片本机 397 项测试通过。下一步仍须实现旧会话显式接管、原子租约、活 watcher 冲突、绑定代次和一致快照，才能宣称单宿主成立 |
 | S1.3 受控提交 | 新 `host/{candidate,transaction,receipt}.ts`；抽取 `commands.ts` 的 Ralph/Lisa 提交核心 | 候选不改业务状态；正式提交沿用 policy/gate；重复请求返回同回执；故障进入待核对 |
 | S1.4 回归与集成 | `cli/src/test/`、样板项目脚本、契约文档 | 原人工流程与 tmux 流程回归；跨进程并发、注入中断、重启、旧会话、错误席位/目录的可重复测试 |
 

@@ -32,6 +32,7 @@ import {
 } from "./state.js";
 import { runPolicyCheck, checkRalph, checkLisa, checkNeedsWorkResponse } from "./policy.js";
 import { writeSessionIdentity } from "./host/session.js";
+import { assertHostMutationAllowed } from "./host/guard.js";
 
 function line(ch = "=", len = 40): string {
   return ch.repeat(len);
@@ -181,6 +182,7 @@ export function runGate(tag: string): void {
 // ─── init ────────────────────────────────────────
 
 export function cmdInit(args: string[]): void {
+  assertHostMutationAllowed(stateDir(process.cwd()));
   const task = args.join(" ");
   if (!task) {
     console.error('Usage: ralph-lisa init "task description"');
@@ -246,6 +248,7 @@ export function cmdWhoseTurn(): void {
 // ─── submit-ralph ────────────────────────────────
 
 export function cmdSubmitRalph(args: string[]): void {
+  assertHostMutationAllowed(stateDir());
   checkSession();
   const { content, external } = resolveContent(args);
   if (!content) {
@@ -431,6 +434,7 @@ export function cmdSubmitRalph(args: string[]): void {
 // ─── submit-lisa ─────────────────────────────────
 
 export function cmdSubmitLisa(args: string[]): void {
+  assertHostMutationAllowed(stateDir());
   checkSession();
   const { content, external } = resolveContent(args);
   if (!content) {
@@ -786,6 +790,7 @@ function extractLastTag(fileContent: string): string {
 // ─── step ────────────────────────────────────────
 
 export function cmdStep(args: string[]): void {
+  assertHostMutationAllowed(stateDir());
   checkSession();
 
   // Parse flags
@@ -936,6 +941,7 @@ export function cmdSubtask(args: string[]): void {
   checkSession();
   const subcmd = args[0] || "";
   const rest = args.slice(1);
+  if (subcmd === "add" || subcmd === "done") assertHostMutationAllowed(stateDir());
 
   switch (subcmd) {
     case "add": {
@@ -1026,6 +1032,7 @@ export function cmdHistory(): void {
 // ─── archive ─────────────────────────────────────
 
 export function cmdArchive(args: string[]): void {
+  assertHostMutationAllowed(stateDir());
   checkSession();
   const name = args[0] || new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
   // Place archive next to .dual-agent/ (in project root, not CWD)
@@ -1041,6 +1048,7 @@ export function cmdArchive(args: string[]): void {
 
 export function cmdClean(): void {
   const dir = stateDir();
+  assertHostMutationAllowed(dir);
   if (fs.existsSync(dir)) {
     fs.rmSync(dir, { recursive: true, force: true });
     console.log("Session cleaned");
@@ -1116,6 +1124,7 @@ export function cmdStop(args: string[]): void {
   const noArchive = args.includes("--no-archive");
   const projectDir = process.cwd();
   const dir = stateDir(projectDir);
+  assertHostMutationAllowed(dir);
   const sessionName = generateSessionName(projectDir);
 
   console.log(line());
@@ -1260,6 +1269,7 @@ export function cmdStop(args: string[]): void {
 // ─── scope-update / update-task ──────────────────
 
 export function cmdUpdateTask(args: string[]): void {
+  assertHostMutationAllowed(stateDir());
   checkSession();
   const newTask = args.join(" ");
   if (!newTask) {
@@ -1296,6 +1306,7 @@ export function cmdUpdateTask(args: string[]): void {
 // ─── force-turn ─────────────────────────────────
 
 export function cmdForceTurn(args: string[], confirmed = false): void {
+  assertHostMutationAllowed(stateDir());
   checkSession();
   const agent = args[0];
   if (agent !== "ralph" && agent !== "lisa") {
@@ -1351,6 +1362,7 @@ const MARKER = "RALPH-LISA-LOOP";
 
 export function cmdUninit(): void {
   const projectDir = process.cwd();
+  assertHostMutationAllowed(stateDir(projectDir));
 
   // Remove .dual-agent/
   const dualAgentDir = path.join(projectDir, STATE_DIR);
@@ -1497,6 +1509,7 @@ export function cmdInitProject(args: string[]): void {
 
   const projectDir = filteredArgs[0] || process.cwd();
   const resolvedDir = path.resolve(projectDir);
+  assertHostMutationAllowed(stateDir(resolvedDir));
 
   if (!fs.existsSync(resolvedDir)) {
     console.error(`Error: Directory does not exist: ${resolvedDir}`);
@@ -1723,6 +1736,7 @@ function findTemplatesDir(): string {
 
 export function cmdStart(args: string[]): void {
   const projectDir = process.cwd();
+  assertHostMutationAllowed(stateDir(projectDir));
   const fullAuto = args.includes("--full-auto");
   const filteredArgs = args.filter((a) => a !== "--full-auto");
   const task = filteredArgs.join(" ");
@@ -1867,6 +1881,7 @@ function launchGeneric(projectDir: string): void {
 
 export function cmdAuto(args: string[]): void {
   const projectDir = process.cwd();
+  assertHostMutationAllowed(stateDir(projectDir));
   const fullAuto = args.includes("--full-auto");
   const filteredArgs = args.filter((a) => a !== "--full-auto");
   const task = filteredArgs.join(" ");
@@ -3214,6 +3229,7 @@ function isTtydProcess(pid: number): boolean {
 }
 
 export function cmdRemote(args: string[]): void {
+  assertHostMutationAllowed(stateDir());
   checkSession();
   const dir = stateDir();
   const pidFile = path.join(dir, "ttyd.pid");
@@ -3425,6 +3441,7 @@ export function cmdStateDir(args: string[]): void {
 // ─── add-context ─────────────────────────────────
 
 export function cmdAddContext(args: string[]): void {
+  assertHostMutationAllowed(stateDir());
   checkSession();
   const text = args.join(" ");
   if (!text) {
@@ -3576,6 +3593,7 @@ export function cmdDoctor(args: string[]): void {
 // ─── emergency-msg ───────────────────────────────
 
 export function cmdEmergencyMsg(args: string[]): void {
+  assertHostMutationAllowed(stateDir());
   if (args.length < 2) {
     console.error("Usage: ralph-lisa emergency-msg <ralph|lisa> \"message\"");
     process.exit(1);
@@ -3780,6 +3798,7 @@ ${debugPath ? debugPath : "(not enabled — set RL_SMOKE_DEBUG=true)"}
 
 export function cmdSmokeTest(_args: string[]): void {
   const dir = stateDir();
+  assertHostMutationAllowed(dir);
   const result = runSmokeTest(dir);
   process.exit(result.passed ? 0 : 1);
 }

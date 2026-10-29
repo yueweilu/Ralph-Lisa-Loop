@@ -40,10 +40,13 @@ import {
   cmdTestReport,
 } from "./commands.js";
 import { cmdHost } from "./host/inspect.js";
+import { guardCliMutation } from "./host/guard.js";
 
 const args = process.argv.slice(2);
 const cmd = args[0] || "";
 const rest = args.slice(1);
+
+guardCliMutation(cmd, rest);
 
 switch (cmd) {
   case "host":
