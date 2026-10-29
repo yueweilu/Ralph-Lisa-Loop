@@ -5,7 +5,7 @@
 **状态：** 待实施设计，依据公开仓 `main@7440e29`、CLI `0.3.13` 的只读检查；本文不是完成回执。
 **位置：** [六阶段开发顺序](public-repo-herdr-plugin-start-2026-10-29.md)中的 S1。后续 S2 才做 Herdr 插件壳，S3 才做真实 Claude/Codex 双席交接。
 
-**开发位置与分支：** 本公开仓已在独立工作目录 `Ralph-Lisa-Loop-herdr/` 检出；文档整理分支 `docs/herdr-final-plan` 已保存，当前本地分支为 `chore/herdr-s0-baseline`。S1 源码开发须先完成 S0 基线 PR，再从更新后的公开 `main` 建 `feat/herdr-plugin`；S1.1–S1.4 分别用短期分支提交 PR 到该集成分支。集成分支通过 S1–S5 验收后才向公开 `main` 提最终 PR。**S1 开发分支和 PR 尚未创建；**实际开工前须重新核对远端最新 SHA。完整分支表见[开发起点第 3 节](public-repo-herdr-plugin-start-2026-10-29.md#3-先建怎样的开发分支)。
+**开发位置与分支：** 本公开仓已在独立工作目录 `Ralph-Lisa-Loop-herdr/` 检出；文档整理分支和 S0 基线分支已本地提交。当前在 `feat/herdr-s1-inspect` 切片分支，其父分支为暂存的 `feat/herdr-plugin`（基于本地 S0，待 S0 合入公开 `main` 后再对齐）。S1 尚未完整交付，也没有 PR 或公开推送。完整分支表见[开发起点第 3 节](public-repo-herdr-plugin-start-2026-10-29.md#3-先建怎样的开发分支)。
 
 ## 1. S1 要交付什么
 
@@ -143,8 +143,8 @@ Herdr 官方接口能管理 Pane/Agent 并返回创建时的 ID；插件动作�
 | PR | 改动位置（拟） | 交付与验收 |
 |---|---|---|
 | 前置 S0 基线 | `cli/package.json`、锁文件、CI/测试说明 | 干净安装、build、现有回归测试；冻结 Node 版本和公开能力差异表。当前 npm 下载曾 `ECONNRESET`，这一步仍未完成；沿用总计划的 S0，不在 S1 重复计时 |
-| S1.1 身份与快照 | `cli/src/state.ts`、新 `cli/src/host/{paths,session,snapshot}.ts`、`cli/src/cli.ts` | 显式规范路径、旧会话只读检查/显式接管、会话 UUID、JSON 快照；错项目和未初始化状态有确定错误 |
-| S1.2 单宿主与席位 | 新 `host/{lease,binding}.ts`，现有可变命令入口 | 原子租约、活 watcher 冲突、绑定代次；第二宿主与旧 Pane 请求被拒；所有变更入口有保护 |
+| S1.1 只读定位 | `cli/src/host/inspect.ts`、`cli/src/cli.ts` | 显式规范路径、只读 JSON 检查；错项目、状态损坏和未初始化状态有确定结果。当前已在 `feat/herdr-s1-inspect` 本地实现并通过回归 |
+| S1.2 会话身份、单宿主与席位 | 新 `host/{session,snapshot,lease,binding}.ts`，现有可变命令入口 | 在写入口统一保护后才允许显式接管旧会话、创建 UUID/代次；再实现原子租约、活 watcher 冲突、绑定代次、一致快照；第二宿主与旧 Pane 请求被拒 |
 | S1.3 受控提交 | 新 `host/{candidate,transaction,receipt}.ts`；抽取 `commands.ts` 的 Ralph/Lisa 提交核心 | 候选不改业务状态；正式提交沿用 policy/gate；重复请求返回同回执；故障进入待核对 |
 | S1.4 回归与集成 | `cli/src/test/`、样板项目脚本、契约文档 | 原人工流程与 tmux 流程回归；跨进程并发、注入中断、重启、旧会话、错误席位/目录的可重复测试 |
 

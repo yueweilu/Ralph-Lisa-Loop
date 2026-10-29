@@ -39,12 +39,17 @@ import {
   cmdSmokeCheck,
   cmdTestReport,
 } from "./commands.js";
+import { cmdHost } from "./host/inspect.js";
 
 const args = process.argv.slice(2);
 const cmd = args[0] || "";
 const rest = args.slice(1);
 
 switch (cmd) {
+  case "host":
+    cmdHost(rest);
+    break;
+
   case "init":
     // If first arg after init looks like a path, use cmdInitProject
     // If it looks like a task description, also use cmdInitProject (with no path)
@@ -221,6 +226,7 @@ function showHelp(): void {
   );
   console.log("");
   console.log("Information:");
+  console.log("  ralph-lisa host inspect --project <abs> --json  Inspect one project for host integration");
   console.log("  ralph-lisa status                   Show current status");
   console.log("  ralph-lisa read-review              Read Lisa's review (alias: read review.md)");
   console.log("  ralph-lisa read <file>              Read work.md/review.md/etc");

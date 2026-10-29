@@ -58,6 +58,7 @@ ralph-lisa submit-lisa --file f.md       # Lisa submits
 
 # Information
 ralph-lisa status                        # Current status
+ralph-lisa host inspect --project /absolute/path --json  # Read-only host project check
 ralph-lisa read work.md                  # Ralph's latest
 ralph-lisa read review.md                # Lisa's latest
 ralph-lisa history                       # Full history
