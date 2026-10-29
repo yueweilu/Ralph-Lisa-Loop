@@ -71,8 +71,20 @@ export function assertHostMutationAllowed(statePath: string): void {
   if (!entryExists(hostDir)) return;
 
   const incompleteIdentity = !entryExists(path.join(dir, "session.json"));
-  const protectedState = ["lease.json", "lease", "claim.lock", "reconcile.json", "binding.pending"]
+  const protectedState = ["lease.json", "lease", "claim.lock", "reconcile.json", "binding.pending", "adoption.pending"]
     .some((name) => entryExists(path.join(hostDir, name)));
+  let adoptionPending = false;
+  const adoptionPath = path.join(hostDir, "adoption.json");
+  if (entryExists(adoptionPath)) {
+    try {
+      const stat = fs.lstatSync(adoptionPath);
+      const record = JSON.parse(fs.readFileSync(adoptionPath, "utf8")) as { schema?: number; kind?: string; status?: string };
+      adoptionPending = !stat.isFile() || stat.isSymbolicLink() ||
+        record.schema !== 1 || record.kind !== "legacy_adoption" || record.status !== "confirmed";
+    } catch {
+      adoptionPending = true;
+    }
+  }
   let invalidHostDir = false;
   try {
     const stat = fs.lstatSync(hostDir);
@@ -81,7 +93,7 @@ export function assertHostMutationAllowed(statePath: string): void {
     invalidHostDir = true;
   }
 
-  if (incompleteIdentity || protectedState || invalidHostDir) {
+  if (incompleteIdentity || protectedState || adoptionPending || invalidHostDir) {
     console.error("Error: This RLL session is controlled by a host or needs reconciliation.");
     console.error("Stop or release the host and resolve its state before changing this session.");
     process.exit(4);

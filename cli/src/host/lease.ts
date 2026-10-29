@@ -105,8 +105,24 @@ export function entryExists(filePath: string): boolean {
   }
 }
 
+export function assertAdoptionReady(host: string, project: string, state: string, sessionId: string): void {
+  const file = path.join(host, "adoption.json");
+  if (!entryExists(file)) return;
+  try {
+    const stat = fs.lstatSync(file);
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("invalid adoption file");
+    const record = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>;
+    if (record.schema !== 1 || record.kind !== "legacy_adoption" || record.status !== "confirmed" ||
+        record.project_realpath !== project || record.state_realpath !== state || record.session_id !== sessionId) {
+      throw new Error("adoption is not confirmed for this session");
+    }
+  } catch {
+    throw new HostContractError("NEEDS_RECONCILE", 7, "Legacy adoption is incomplete or belongs to another session");
+  }
+}
+
 function assertNoHostMarkers(host: string): void {
-  for (const name of ["lease", "lease.json", "claim.lock", "reconcile.json", "binding.pending"]) {
+  for (const name of ["lease", "lease.json", "claim.lock", "reconcile.json", "binding.pending", "adoption.pending"]) {
     if (entryExists(path.join(host, name))) {
       throw new HostContractError("HOST_BUSY", 4, "Host is already claimed or needs reconciliation");
     }
@@ -172,6 +188,7 @@ export function claimHost(project: string, host: string, ownerId: string): HostL
     }
     const hostDir = hostDirectory(current.state_realpath!);
     assertNoHostMarkers(hostDir);
+    assertAdoptionReady(hostDir, current.project_realpath, current.state_realpath!, current.session_id!);
     assertNoManualRuntime(current.project_realpath, current.state_realpath!);
 
     // The directory is the durable atomic reservation. A crash leaves it in place.
@@ -218,7 +235,8 @@ export function releaseHost(project: string, leaseId: string): { schema: 1; stat
       throw new HostContractError("STALE_SESSION", 5, "Session changed while acquiring the host lock");
     }
     const hostDir = hostDirectory(current.state_realpath!);
-    if (["reconcile.json", "claim.lock", "lease.json", "binding.pending"].some((name) => entryExists(path.join(hostDir, name)))) {
+    assertAdoptionReady(hostDir, current.project_realpath, current.state_realpath!, current.session_id!);
+    if (["reconcile.json", "claim.lock", "lease.json", "binding.pending", "adoption.pending"].some((name) => entryExists(path.join(hostDir, name)))) {
       throw new HostContractError("NEEDS_RECONCILE", 7, "Resolve pending host state before release");
     }
     assertNoPendingIntents(hostDir);

@@ -5,7 +5,7 @@
 **状态：** 分阶段实施中；原始基线为公开仓 `main@7440e29`、CLI `0.3.13`，各切片的实际完成情况以下文和 GitHub CI 为准。本文不是完整交付回执。
 **位置：** [六阶段开发顺序](public-repo-herdr-plugin-start-2026-10-29.md)中的 S1。后续 S2 才做 Herdr 插件壳，S3 才做真实 Claude/Codex 双席交接。
 
-**开发位置与分支：** 本公开仓已在独立工作目录 `Ralph-Lisa-Loop-herdr/` 检出；S0 基线、S1 只读检查、会话身份、宿主占用保护、命令短锁、宿主租约和快照分支已推送开发 fork。当前在 `feat/herdr-s1-bind-seat` 切片分支；S1 尚未完整交付，也没有向原仓提交 PR。完整分支表见[开发起点第 3 节](public-repo-herdr-plugin-start-2026-10-29.md#3-先建怎样的开发分支)。
+**开发位置与分支：** 本公开仓已在独立工作目录 `Ralph-Lisa-Loop-herdr/` 检出；S0 基线、S1 只读检查、会话身份、宿主占用保护、命令短锁、宿主租约、快照和席位绑定分支已推送开发 fork，且对应 CI 均成功。当前在 `feat/herdr-s1-adopt-legacy` 切片分支；S1 尚未完整交付，也没有向原仓提交 PR。完整分支表见[开发起点第 3 节](public-repo-herdr-plugin-start-2026-10-29.md#3-先建怎样的开发分支)。
 
 ## 1. S1 要交付什么
 
@@ -57,6 +57,8 @@ Herdr 官方接口能管理 Pane/Agent 并返回创建时的 ID；插件动作�
   session.json                 # schema、session_id、规范项目路径、创建时间
   host/
     binding.json               # 宿主类型、Herdr workspace、两席 Pane/Agent、绑定代次
+    adoption.json              # 旧会话接管记录与人工确认结果
+    adoption-backups/<id>/     # 接管前关键业务文件的逐字节备份
     lease/record.json          # 原子目录占用；首版记录 owner_id、lease_id、领取时间
     generation.json            # 单调递增的业务提交代次和当前轮次摘要
     intents/<request-id>.json  # 写前意图、角色、代次、正文 SHA-256、预期后状态
@@ -73,7 +75,9 @@ Herdr 官方接口能管理 Pane/Agent 并返回创建时的 ID；插件动作�
 
 **单真源：** 现有 RLL 状态文件仍是业务真源；`host/` 保存协调与事务元数据，不能另造第二套任务/轮次判定。`snapshot` 在项目短锁下读取轮次、宿主占用与关键业务文件的 SHA-256 摘要，拒绝不完整租约、待处理标记和异常文件。当前席位绑定切片把 `binding_generation`、`binding_state`、工作区和两席 ID 加入快照；两席的 `verification` 仍是 `unverified`，须由插件向 Herdr 核验。正式提交 `generation` 与最近回执仍为 `null`，插件不能据此自动投递。该快照与经同一短锁协调的 CLI 写命令一致；直接编辑状态文件的外部进程仍需在后续快照或提交前比较摘要并冻结异常，不宣称能阻止任意外部写入。
 
-**旧会话：** 缺少 `session.json` 的人工会话继续按原 CLI 工作。首次由 Herdr 接管前执行显式 `host adopt`：检查项目规范路径、现有 `turn/round`、无活跃 tmux watcher、无未解决的状态损坏，然后备份关键状态并创建 `session_id` 与 `generation=0`。若无法证明历史是否已提交，标记为只读待确认，不自动补发上一轮。绝不通过重新 `init` 完成接管。
+**旧会话：** 缺少 `session.json` 的人工会话继续按原 CLI 工作。当前切片增加显式 `host adopt`：在项目短锁内检查规范路径、业务文件及活跃 tmux/watcher，逐字节备份关键状态，再建立 `session_id` 和 `baseline_generation=0` 的接管记录。`reconcile.json` 在确认前冻结写入与租约领取。用户核对备份和当前轮次后，调用 `host confirm-adoption --backup-id <id> --decision no-replay`；命令再核对原文件和备份摘要，确认后解除冻结，不补发历史轮次。正式提交 `generation` 文件仍属后续切片。macOS 外部终端的 Agent 需用户先停止，CLI 当前无法可靠检测其退出。绝不通过重新 `init` 完成接管。
+
+接管操作顺序：先停止旧 Agent；执行 `host adopt`；根据返回的 `backup_relative_path` 和 `state_digest` 核对旧轮次及关键文件；用户决定将当前轮次视为历史记录后，执行 `host confirm-adoption --decision no-replay`；最后用 `host snapshot` 核对状态并领取租约。CLI 的参数本身不能证明用户真的审阅过备份，后续 Herdr 插件必须提供明确的人工确认界面。接管中断、备份被改动或确认前业务文件变化时保持冻结，不能自动删除标记重试。
 
 ## 5. CLI 契约草案
 
@@ -82,7 +86,8 @@ Herdr 官方接口能管理 Pane/Agent 并返回创建时的 ID；插件动作�
 | 命令 | 调用者 | 输入与行为 | 成功输出 |
 |---|---|---|---|
 | `ralph-lisa host inspect --project <abs> --json` | 协调器/人工诊断 | 只读；规范路径、检查是否初始化、是否旧会话、是否已占用 | 项目、状态目录、session ID、宿主状态；不包含提交正文 |
-| `ralph-lisa host adopt --project <abs> --json` | 协调器，在用户明确选择接管后 | 仅旧会话；检查 watcher、完整性并建立 ID；不得覆盖现有内容 | `session_id`、初始代次、备份引用 |
+| `ralph-lisa host adopt --project <abs> --json` | 协调器，在用户明确选择接管后 | 仅旧会话；检查 watcher、完整性并建立 ID；备份业务文件后冻结，不覆盖原内容 | `status=pending_review`、`session_id`、备份 ID/路径和摘要 |
+| `ralph-lisa host confirm-adoption --project <abs> --backup-id <uuid> --decision no-replay --json` | 用户确认后的协调器 | 核对备份、原状态、轮次未变化，解除接管冻结 | `status=confirmed`、`replay=not_replayed` |
 | `ralph-lisa host claim --project <abs> --host herdr --owner-id <uuid> --json` | 单个协调器 | 在项目短锁内检查会话和活跃 tmux/watcher；原子建立占用目录；已有占用则冲突 | `session_id`、`lease_id`、租约状态 |
 | `ralph-lisa host bind-seat --project <abs> --lease-id <id> --role <ralph\|lisa> --workspace-id <id> --pane-id <id> --agent-target <id> --json` | 协调器 | 核对租约、会话和同一 Workspace；写入/更新席位，变化时增加绑定代次 | 完整绑定与 `binding_generation`，两席均标 `unverified` |
 | `ralph-lisa host snapshot --project <abs> --json` | 协调器 | 在短锁内读取会话、轮次、宿主占用、席位绑定和业务摘要；活 tmux/watcher 或不完整状态返回错误 | 当前已有 `session_id`、`turn`、`round`、`step`、`host_state`、`state_digest`、`binding_generation/state`；正式提交代次和最近回执暂为 `null` |
@@ -134,7 +139,7 @@ Herdr 官方接口能管理 Pane/Agent 并返回创建时的 ID；插件动作�
 - **宿主租约：** 当前切片以原子目录创建取得占用，记录随机 `lease_id`、`owner_id` 和领取时间；活跃 tmux/watcher 或已有占用均拒绝。**心跳、宿主进程启动标识、失效核查和显式恢复尚未实现**，所以现阶段不能自动抢占遗留目录，也不能宣称租约生命周期完整。后续先查原进程和 Herdr 会话，再由用户或明确恢复命令接管；活宿主并存必须失败。
 - **外部终端边界：** 当前 `claim` 能识别公开 CLI 命名的 tmux 会话和 watcher；`start` 在 macOS 打开的 iTerm/Terminal Agent 没有可靠的会话标记。接管这类人工会话前，用户必须先停止旧 Agent；后续需补可验证的启动记录或明确人工确认，不能把一次 `claim` 成功当作外部终端已退出的证据。
 - **tmux 冲突：** 领取 Herdr 租约前检查公开版 `watcher.pid`/`watcher_wrapper.pid` 与实际进程、相关 tmux session；`auto` 开始前反查 Herdr 租约。不能仅凭陈旧 PID 文件判断活跃，也不能自动删除未知 watcher 状态。
-- **写入口统一保护：** 在 Herdr 宿主占用期间，传统 `submit-*`、`init`、`auto`、`force-turn`、`step`、`scope-update`、`subtask`、`clean`、`uninit`、`stop` 等涉及业务状态或删除的命令要么转入受控路径，要么明确拒绝并给出操作建议。保护必须在**第一个副作用之前**：`cmdInitProject` 会先改 `CLAUDE.md`/`CODEX.md` 等文件才调用 `cmdInit`，`cmdAuto` 也会先清理旧状态文件，不能只在内部 `cmdInit` 加检查。当前宿主占用保护已推送并通过 CI；传统 CLI 写操作新增项目级原子目录短锁，`start`/`auto` 完成启动后在终端附着前释放它。**宿主租约原子领取尚未实现**；进程异常退出留下的短锁须显式核查，不能盲删或自动抢占。只读命令继续可用。
+- **写入口统一保护：** 在 Herdr 宿主占用期间，传统 `submit-*`、`init`、`auto`、`force-turn`、`step`、`scope-update`、`subtask`、`clean`、`uninit`、`stop` 等涉及业务状态或删除的命令要么转入受控路径，要么明确拒绝并给出操作建议。保护必须在**第一个副作用之前**：`cmdInitProject` 会先改 `CLAUDE.md`/`CODEX.md` 等文件才调用 `cmdInit`，`cmdAuto` 也会先清理旧状态文件，不能只在内部 `cmdInit` 加检查。当前宿主占用保护、项目级短锁与宿主原子占用均已推送并通过 CI；`start`/`auto` 完成启动后在终端附着前释放短锁。**租约心跳与异常恢复尚未实现**；进程异常退出留下的短锁或租约须显式核查，不能盲删或自动抢占。只读命令继续可用。
 - **人工使用：** 未绑定会话保留现有命令、默认输出、tag/policy/gate 规则；新 `host` 子命令和 `session.json` 不要求现有用户迁移。用户可通过显式 `release` 停止插件交接后回到人工模式，但先确认无在途意图。
 - **升级边界：** `session.json`/回执带 `schema`；未知未来版本拒绝写入而允许诊断。不要把内部私有 CLI 状态文件或行为直接复制到公开仓。
 
@@ -144,9 +149,9 @@ Herdr 官方接口能管理 Pane/Agent 并返回创建时的 ID；插件动作�
 
 | PR | 改动位置（拟） | 交付与验收 |
 |---|---|---|
-| 前置 S0 基线 | `cli/package.json`、锁文件、CI/测试说明 | 干净安装、build、现有回归测试；冻结 Node 版本和公开能力差异表。当前 npm 下载曾 `ECONNRESET`，这一步仍未完成；沿用总计划的 S0，不在 S1 重复计时 |
-| S1.1 只读定位 | `cli/src/host/inspect.ts`、`cli/src/cli.ts` | 显式规范路径、只读 JSON 检查；错项目、状态损坏和未初始化状态有确定结果。当前已在 `feat/herdr-s1-inspect` 本地实现并通过回归 |
-| S1.2 会话身份、单宿主与席位 | 新 `host/{session,snapshot,lease,binding}.ts`，现有可变命令入口 | 新建会话 UUID、占用检查、短锁、`claim/release` 与快照已推送；当前切片实现持久席位绑定、代次和过期标记。后续仍须旧会话接管、租约心跳/恢复、Herdr 真机归因及正式提交代次，才能宣称单宿主与交接契约完整成立 |
+| 前置 S0 基线 | `cli/package.json`、锁文件、CI/测试说明 | 干净安装、build 与原有回归已在开发 fork 通过；公开能力差异和 Node 版本已固定。原仓合并仍待评审 |
+| S1.1 只读定位 | `cli/src/host/inspect.ts`、`cli/src/cli.ts` | 显式规范路径、只读 JSON 检查；错项目、状态损坏和未初始化状态有确定结果。已推送开发 fork 并通过 CI |
+| S1.2 会话身份、单宿主与席位 | 新 `host/{session,snapshot,lease,binding,adoption}.ts`，现有可变命令入口 | 新建会话 UUID、占用检查、短锁、`claim/release`、快照和席位绑定均已推送并通过 CI；当前切片实现旧会话备份、冻结和明确确认。本机回归通过；后续仍须租约心跳/恢复、Herdr 真机归因及正式提交代次 |
 | S1.3 受控提交 | 新 `host/{candidate,transaction,receipt}.ts`；抽取 `commands.ts` 的 Ralph/Lisa 提交核心 | 候选不改业务状态；正式提交沿用 policy/gate；重复请求返回同回执；故障进入待核对 |
 | S1.4 回归与集成 | `cli/src/test/`、样板项目脚本、契约文档 | 原人工流程与 tmux 流程回归；跨进程并发、注入中断、重启、旧会话、错误席位/目录的可重复测试 |
 

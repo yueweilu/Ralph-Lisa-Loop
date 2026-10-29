@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { STATE_DIR } from "../state.js";
 import { canonicalProject, HostContractError, inspectProject } from "./inspect.js";
-import { acquireHostLock, assertNoManualRuntime, entryExists, readLease } from "./lease.js";
+import { acquireHostLock, assertAdoptionReady, assertNoManualRuntime, entryExists, readLease } from "./lease.js";
 import { HostBinding, readBinding, SeatBinding } from "./binding.js";
 
 export interface HostSnapshot {
@@ -37,12 +37,12 @@ const NO_BINDING: HostBindingSummary = {
   ownerId: null, bindingGeneration: null, bindingState: "unbound", binding: null,
 };
 
-const BUSINESS_FILES = [
+export const BUSINESS_FILES = [
   "task.md", "work.md", "review.md", "history.md", "last_action.txt",
   "turn.txt", "round.txt", "step.txt",
 ];
 
-function businessDigest(state: string, turn: string, round: number, step: string): string {
+export function businessDigest(state: string, turn: string, round: number, step: string): string {
   const hash = crypto.createHash("sha256");
   const readValues = new Map<string, string>();
   for (const name of BUSINESS_FILES) {
@@ -74,7 +74,8 @@ function hostBindingSummary(state: string, project: string, sessionId: string): 
   if (!stat.isDirectory() || stat.isSymbolicLink() || fs.realpathSync.native(host) !== host) {
     throw new HostContractError("NEEDS_RECONCILE", 7, "Invalid host directory");
   }
-  for (const marker of ["claim.lock", "reconcile.json", "lease.json", "binding.pending"]) {
+  assertAdoptionReady(host, project, state, sessionId);
+  for (const marker of ["claim.lock", "reconcile.json", "lease.json", "binding.pending", "adoption.pending"]) {
     if (entryExists(path.join(host, marker))) {
       throw new HostContractError("NEEDS_RECONCILE", 7, `Host marker ${marker} requires reconciliation`);
     }

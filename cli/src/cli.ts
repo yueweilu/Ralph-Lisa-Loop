@@ -230,6 +230,8 @@ function showHelp(): void {
   console.log("");
   console.log("Information:");
   console.log("  ralph-lisa host inspect --project <abs> --json  Inspect one project for host integration");
+  console.log("  ralph-lisa host adopt --project <abs> --json  Back up and freeze a legacy session for review");
+  console.log("  ralph-lisa host confirm-adoption --project <abs> --backup-id <uuid> --decision no-replay --json");
   console.log("  ralph-lisa host claim --project <abs> --host herdr --owner-id <uuid> --json");
   console.log("  ralph-lisa host bind-seat --project <abs> --lease-id <uuid> --role <ralph|lisa> --workspace-id <id> --pane-id <id> --agent-target <id> --json");
   console.log("  ralph-lisa host snapshot --project <abs> --json  Consistent host and RLL state digest");

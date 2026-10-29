@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { HostContractError, inspectProject } from "./inspect.js";
-import { acquireHostLock, assertNoPendingIntents, entryExists, readLease } from "./lease.js";
+import { acquireHostLock, assertAdoptionReady, assertNoPendingIntents, entryExists, readLease } from "./lease.js";
 
 export interface SeatBinding {
   pane_id: string;
@@ -95,6 +95,7 @@ export function bindSeat(
     if (!hostStat.isDirectory() || hostStat.isSymbolicLink() || fs.realpathSync.native(host) !== host) {
       throw new HostContractError("NEEDS_RECONCILE", 7, "Invalid host directory");
     }
+    assertAdoptionReady(host, current.project_realpath, current.state_realpath!, current.session_id!);
     for (const name of ["claim.lock", "reconcile.json", "lease.json", "binding.pending"]) {
       if (entryExists(path.join(host, name))) {
         throw new HostContractError("NEEDS_RECONCILE", 7, `Host marker ${name} requires reconciliation`);
