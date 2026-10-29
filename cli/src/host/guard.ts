@@ -1,6 +1,57 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import * as crypto from "node:crypto";
 import { stateDir } from "../state.js";
+
+let releaseCurrentLock: (() => void) | null = null;
+
+/** Serialize CLI mutations with host claim, including init which recreates .dual-agent. */
+export function acquireSessionCommandLock(statePath: string): () => void {
+  const projectPath = path.dirname(path.resolve(statePath));
+  // Preserve init's existing "directory does not exist" error before any write.
+  if (!fs.existsSync(projectPath)) return () => {};
+  const projectDir = fs.realpathSync.native(projectPath);
+  const lockDir = path.join(projectDir, ".rll-host-command-lock");
+  try {
+    fs.mkdirSync(lockDir, { mode: 0o700 });
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EEXIST") {
+      throw new Error("HOST_BUSY: another RLL command is changing this project");
+    }
+    throw error;
+  }
+
+  const inode = fs.lstatSync(lockDir).ino;
+  const nonce = crypto.randomUUID();
+  const ownerPath = path.join(lockDir, "owner.json");
+  try {
+    fs.writeFileSync(ownerPath, JSON.stringify({ pid: process.pid, nonce, started_at: new Date().toISOString() }) + "\n", { flag: "wx", mode: 0o600 });
+  } catch (error) {
+    fs.rmSync(lockDir, { recursive: true, force: true });
+    throw error;
+  }
+
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    try {
+      if (fs.lstatSync(lockDir).ino !== inode) return;
+      const owner = JSON.parse(fs.readFileSync(ownerPath, "utf8")) as { nonce?: string };
+      if (owner.nonce !== nonce) return;
+      fs.rmSync(lockDir, { recursive: true, force: true });
+    } catch {
+      // A missing or changed lock must never be deleted by this process.
+    }
+  };
+}
+
+/** Long-lived terminal attachment cannot retain the short mutation lock. */
+export function releaseSessionCommandLock(): void {
+  releaseCurrentLock?.();
+  releaseCurrentLock = null;
+}
 
 function entryExists(filePath: string): boolean {
   try {
@@ -57,5 +108,12 @@ export function guardCliMutation(command: string, args: string[]): void {
   } else {
     dir = stateDir();
   }
-  assertHostMutationAllowed(dir);
+  try {
+    releaseCurrentLock = acquireSessionCommandLock(dir);
+    process.once("exit", releaseSessionCommandLock);
+    assertHostMutationAllowed(dir);
+  } catch (error) {
+    console.error(`Error: ${error instanceof Error ? error.message : "Unable to acquire session command lock"}`);
+    process.exit(4);
+  }
 }

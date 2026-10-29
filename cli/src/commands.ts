@@ -32,7 +32,7 @@ import {
 } from "./state.js";
 import { runPolicyCheck, checkRalph, checkLisa, checkNeedsWorkResponse } from "./policy.js";
 import { writeSessionIdentity } from "./host/session.js";
-import { assertHostMutationAllowed } from "./host/guard.js";
+import { assertHostMutationAllowed, releaseSessionCommandLock } from "./host/guard.js";
 
 function line(ch = "=", len = 40): string {
   return ch.repeat(len);
@@ -1849,6 +1849,7 @@ end tell'`,
       execSync(
         `tmux split-window -h -t "${sessionName}" "bash -c '${lisaCmd}; exec bash'"`
       );
+      releaseSessionCommandLock();
       execSync(`tmux attach-session -t "${sessionName}"`, { stdio: "inherit" });
     } catch {
       launchGeneric(projectDir);
@@ -2919,6 +2920,7 @@ done
   execSync(
     `bash -c 'nohup bash -c '"'"'while tmux has-session -t "${sessionName}" 2>/dev/null; do bash "${watcherScript}"; EXIT_CODE=$?; if ! tmux has-session -t "${sessionName}" 2>/dev/null; then echo "[Watcher] Session gone, not restarting." >> "${watcherLog}"; break; fi; echo "[Watcher] Exited ($EXIT_CODE), restarting in 5s..." >> "${watcherLog}"; if [[ -n "$RL_NOTIFY_CMD" ]]; then echo "[RLL] Watcher crashed (exit $EXIT_CODE), restarting..." | eval "$RL_NOTIFY_CMD" 2>/dev/null & fi; sleep 5; done'"'"' > "${watcherLog}" 2>&1 & echo $! > "${wrapperPidFile}"'`
   );
+  releaseSessionCommandLock();
 
   console.log("");
   console.log(line());

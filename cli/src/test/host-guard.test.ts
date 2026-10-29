@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { spawnSync } from "node:child_process";
+import { acquireSessionCommandLock } from "../host/guard.js";
 
 describe("host mutation guard", () => {
   let project: string;
@@ -80,5 +81,31 @@ describe("host mutation guard", () => {
     fs.unlinkSync(path.join(host, "claim.lock"));
     fs.writeFileSync(path.join(host, "reconcile.json"), "{}\n");
     assert.equal(run("clean").status, 4);
+  });
+
+  it("serializes mutations with an exclusive project lock", () => {
+    const state = path.join(project, ".dual-agent");
+    const release = acquireSessionCommandLock(state);
+    try {
+      assert.throws(() => acquireSessionCommandLock(state), /HOST_BUSY/);
+      fs.writeFileSync(path.join(project, "CLAUDE.md"), "unchanged\n");
+      const blocked = run("init", project);
+      assert.equal(blocked.status, 4, blocked.stderr);
+      assert.match(blocked.stderr, /HOST_BUSY/);
+      assert.equal(fs.readFileSync(path.join(project, "CLAUDE.md"), "utf8"), "unchanged\n");
+    } finally {
+      release();
+    }
+    assert.equal(fs.existsSync(path.join(project, ".rll-host-command-lock")), false);
+  });
+
+  it("releases the lock after a blocked or completed CLI command", () => {
+    const lockDir = path.join(project, ".rll-host-command-lock");
+    assert.equal(run("step", "next").status, 4);
+    assert.equal(fs.existsSync(lockDir), false);
+    fs.unlinkSync(path.join(project, ".dual-agent", "host", "lease.json"));
+    const init = run("init", "--minimal", project);
+    assert.equal(init.status, 0, init.stderr);
+    assert.equal(fs.existsSync(lockDir), false);
   });
 });
