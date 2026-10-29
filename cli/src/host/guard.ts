@@ -71,7 +71,7 @@ export function assertHostMutationAllowed(statePath: string): void {
   if (!entryExists(hostDir)) return;
 
   const incompleteIdentity = !entryExists(path.join(dir, "session.json"));
-  const protectedState = ["lease.json", "lease", "claim.lock", "reconcile.json"]
+  const protectedState = ["lease.json", "lease", "claim.lock", "reconcile.json", "binding.pending"]
     .some((name) => entryExists(path.join(hostDir, name)));
   let invalidHostDir = false;
   try {

@@ -231,6 +231,7 @@ function showHelp(): void {
   console.log("Information:");
   console.log("  ralph-lisa host inspect --project <abs> --json  Inspect one project for host integration");
   console.log("  ralph-lisa host claim --project <abs> --host herdr --owner-id <uuid> --json");
+  console.log("  ralph-lisa host bind-seat --project <abs> --lease-id <uuid> --role <ralph|lisa> --workspace-id <id> --pane-id <id> --agent-target <id> --json");
   console.log("  ralph-lisa host snapshot --project <abs> --json  Consistent host and RLL state digest");
   console.log("  ralph-lisa host release --project <abs> --lease-id <uuid> --json");
   console.log("  ralph-lisa status                   Show current status");

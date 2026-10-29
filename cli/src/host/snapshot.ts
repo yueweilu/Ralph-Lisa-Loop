@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { STATE_DIR } from "../state.js";
 import { canonicalProject, HostContractError, inspectProject } from "./inspect.js";
 import { acquireHostLock, assertNoManualRuntime, entryExists, readLease } from "./lease.js";
+import { HostBinding, readBinding, SeatBinding } from "./binding.js";
 
 export interface HostSnapshot {
   schema: 1;
@@ -18,9 +19,23 @@ export interface HostSnapshot {
   owner_id: string | null;
   state_digest: string;
   generation: null;
-  binding_generation: null;
+  binding_generation: number | null;
+  binding_state: "unbound" | "partial" | "bound" | "stale";
+  workspace_id: string | null;
+  seats: { ralph: SeatBinding | null; lisa: SeatBinding | null } | null;
   last_receipt_id: null;
 }
+
+interface HostBindingSummary {
+  ownerId: string | null;
+  bindingGeneration: number | null;
+  bindingState: HostSnapshot["binding_state"];
+  binding: HostBinding | null;
+}
+
+const NO_BINDING: HostBindingSummary = {
+  ownerId: null, bindingGeneration: null, bindingState: "unbound", binding: null,
+};
 
 const BUSINESS_FILES = [
   "task.md", "work.md", "review.md", "history.md", "last_action.txt",
@@ -52,14 +67,14 @@ function businessDigest(state: string, turn: string, round: number, step: string
   return hash.digest("hex");
 }
 
-function hostOwner(state: string, project: string, sessionId: string): string | null {
+function hostBindingSummary(state: string, project: string, sessionId: string): HostBindingSummary {
   const host = path.join(state, "host");
-  if (!entryExists(host)) return null;
+  if (!entryExists(host)) return NO_BINDING;
   const stat = fs.lstatSync(host);
   if (!stat.isDirectory() || stat.isSymbolicLink() || fs.realpathSync.native(host) !== host) {
     throw new HostContractError("NEEDS_RECONCILE", 7, "Invalid host directory");
   }
-  for (const marker of ["claim.lock", "reconcile.json", "lease.json"]) {
+  for (const marker of ["claim.lock", "reconcile.json", "lease.json", "binding.pending"]) {
     if (entryExists(path.join(host, marker))) {
       throw new HostContractError("NEEDS_RECONCILE", 7, `Host marker ${marker} requires reconciliation`);
     }
@@ -72,12 +87,21 @@ function hostOwner(state: string, project: string, sessionId: string): string | 
     }
   }
   // Later slices must validate these files and replace the null generation fields.
-  for (const future of ["generation.json", "binding.json", "receipts", "candidates"]) {
+  for (const future of ["generation.json", "receipts", "candidates"]) {
     if (entryExists(path.join(host, future))) {
       throw new HostContractError("NEEDS_RECONCILE", 7, `Unsupported host metadata: ${future}`);
     }
   }
-  if (!entryExists(path.join(host, "lease"))) return null;
+  const binding = readBinding(host);
+  if (binding && (binding.project_realpath !== project || binding.state_realpath !== state ||
+      binding.session_id !== sessionId)) {
+    throw new HostContractError("NEEDS_RECONCILE", 7, "Host binding belongs to another session");
+  }
+  if (!entryExists(path.join(host, "lease"))) {
+    return binding
+      ? { ownerId: null, bindingGeneration: binding.binding_generation, bindingState: "stale", binding: null }
+      : NO_BINDING;
+  }
   let lease;
   try {
     lease = readLease(host);
@@ -88,7 +112,18 @@ function hostOwner(state: string, project: string, sessionId: string): string | 
   if (lease.project_realpath !== project || lease.state_realpath !== state || lease.session_id !== sessionId) {
     throw new HostContractError("NEEDS_RECONCILE", 7, "Host lease belongs to another session");
   }
-  return lease.owner_id;
+  if (!binding) {
+    return { ownerId: lease.owner_id, bindingGeneration: null, bindingState: "unbound", binding: null };
+  }
+  if (binding.lease_id !== lease.lease_id) {
+    return { ownerId: lease.owner_id, bindingGeneration: binding.binding_generation, bindingState: "stale", binding: null };
+  }
+  return {
+    ownerId: lease.owner_id,
+    bindingGeneration: binding.binding_generation,
+    bindingState: binding.seats.ralph && binding.seats.lisa ? "bound" : "partial",
+    binding,
+  };
 }
 
 /** A coherent read across coordinated CLI writers; it never exposes a lease ID. */
@@ -105,7 +140,7 @@ export function snapshotProject(project: string): HostSnapshot {
     }
     assertNoManualRuntime(current.project_realpath, current.state_realpath);
     const digest = businessDigest(current.state_realpath, current.turn!, current.round!, current.step!);
-    const ownerId = hostOwner(current.state_realpath, current.project_realpath, current.session_id);
+    const host = hostBindingSummary(current.state_realpath, current.project_realpath, current.session_id);
     return {
       schema: 1,
       status: "ok",
@@ -115,11 +150,14 @@ export function snapshotProject(project: string): HostSnapshot {
       turn: current.turn!,
       round: current.round!,
       step: current.step!,
-      host_state: ownerId ? "claimed" : "unclaimed",
-      owner_id: ownerId,
+      host_state: host.ownerId ? "claimed" : "unclaimed",
+      owner_id: host.ownerId,
       state_digest: digest,
       generation: null,
-      binding_generation: null,
+      binding_generation: host.bindingGeneration,
+      binding_state: host.bindingState,
+      workspace_id: host.binding?.workspace_id ?? null,
+      seats: host.binding?.seats ?? null,
       last_receipt_id: null,
     };
   } finally {

@@ -1,6 +1,7 @@
 import { HostContractError, inspectProject } from "./inspect.js";
 import { claimHost, releaseHost } from "./lease.js";
 import { snapshotProject } from "./snapshot.js";
+import { bindSeat } from "./binding.js";
 
 function options(args: string[], names: string[]): Record<string, string> {
   if (args.length !== names.length * 2 + 1 || args.at(-1) !== "--json") {
@@ -40,13 +41,19 @@ export function cmdHost(args: string[]): void {
         result = snapshotProject(opts["--project"]);
         break;
       }
+      case "bind-seat": {
+        const opts = options(args.slice(1), ["--project", "--lease-id", "--role", "--workspace-id", "--pane-id", "--agent-target"]);
+        result = bindSeat(opts["--project"], opts["--lease-id"], opts["--role"],
+          opts["--workspace-id"], opts["--pane-id"], opts["--agent-target"]);
+        break;
+      }
       case "release": {
         const opts = options(args.slice(1), ["--project", "--lease-id"]);
         result = releaseHost(opts["--project"], opts["--lease-id"]);
         break;
       }
       default:
-        throw new HostContractError("UNKNOWN_HOST_COMMAND", 2, "Usage: ralph-lisa host <inspect|claim|snapshot|release> ... --json");
+        throw new HostContractError("UNKNOWN_HOST_COMMAND", 2, "Usage: ralph-lisa host <inspect|claim|bind-seat|snapshot|release> ... --json");
     }
     console.log(JSON.stringify(result));
   } catch (error) {

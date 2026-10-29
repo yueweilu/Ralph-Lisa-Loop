@@ -2,10 +2,10 @@
 
 **日期：** 2026-10-29
 
-**状态：** 待实施设计，依据公开仓 `main@7440e29`、CLI `0.3.13` 的只读检查；本文不是完成回执。
+**状态：** 分阶段实施中；原始基线为公开仓 `main@7440e29`、CLI `0.3.13`，各切片的实际完成情况以下文和 GitHub CI 为准。本文不是完整交付回执。
 **位置：** [六阶段开发顺序](public-repo-herdr-plugin-start-2026-10-29.md)中的 S1。后续 S2 才做 Herdr 插件壳，S3 才做真实 Claude/Codex 双席交接。
 
-**开发位置与分支：** 本公开仓已在独立工作目录 `Ralph-Lisa-Loop-herdr/` 检出；S0 基线、S1 只读检查、会话身份、宿主占用保护、命令短锁与宿主租约分支已推送开发 fork。当前在 `feat/herdr-s1-snapshot` 切片分支；S1 尚未完整交付，也没有向原仓提交 PR。完整分支表见[开发起点第 3 节](public-repo-herdr-plugin-start-2026-10-29.md#3-先建怎样的开发分支)。
+**开发位置与分支：** 本公开仓已在独立工作目录 `Ralph-Lisa-Loop-herdr/` 检出；S0 基线、S1 只读检查、会话身份、宿主占用保护、命令短锁、宿主租约和快照分支已推送开发 fork。当前在 `feat/herdr-s1-bind-seat` 切片分支；S1 尚未完整交付，也没有向原仓提交 PR。完整分支表见[开发起点第 3 节](public-repo-herdr-plugin-start-2026-10-29.md#3-先建怎样的开发分支)。
 
 ## 1. S1 要交付什么
 
@@ -69,9 +69,9 @@ Herdr 官方接口能管理 Pane/Agent 并返回创建时的 ID；插件动作�
 
 `session_id` 是随机 UUID；`generation` 从 0 开始，每次**正式** Ralph 或 Lisa 提交成功加 1。现有 `round.txt` 与 `turn.txt` 仍是业务可读状态；`generation` 用于机器比较和去重，不用 `round` 代替代次，因为同一轮先 Ralph 后 Lisa。`binding_generation` 每次重新绑定席位加 1；旧 Pane/Agent 的请求因此失效。
 
-`binding.json` 至少保存 `project_realpath`、`state_realpath`、`session_id`、`host_kind=herdr`、`workspace_id`、`ralph.pane_id/agent_target/agent_session`、`lisa...`、`binding_generation`。`agent_session` 仅在 Herdr 实际报告时填写；缺失不得假装已验证。Pane 移动会改变 ID，协调器应按 Herdr 返回的新 ID 显式重绑，旧绑定不能悄悄沿用。Herdr 对 Pane ID 变化的官方说明见[Agent 自动化](https://herdr.dev/docs/agent-automation/)。
+`binding.json` 当前保存 `project_realpath`、`state_realpath`、`session_id`、`lease_id`、`host_kind=herdr`、`workspace_id`、两席 `pane_id/agent_target`、`binding_generation`。CLI 不连接 Herdr 验证这些 ID，因此 `agent_session=null`、`verification=unverified`；后续插件必须用 Herdr 真实返回值核对。重复绑定同样席位不增代次，Pane 或 Agent 目标变化时增 1；两席不能占同一 Pane 或 Agent 目标。释放租约后的旧绑定在快照里标为 `stale`，新租约首次绑定时清空旧两席并继续增加代次。Pane 移动要显式重绑。Herdr 对 Pane ID 变化的官方说明见[Agent 自动化](https://herdr.dev/docs/agent-automation/)。
 
-**单真源：** 现有 RLL 状态文件仍是业务真源；`host/` 保存协调与事务元数据，不能另造第二套任务/轮次判定。当前 `snapshot` 切片在项目短锁下读取轮次、宿主占用与关键业务文件的 SHA-256 摘要，拒绝不完整租约、待处理标记和异常文件。`generation`、`binding_generation` 与最近回执在正式提交协议完成前返回 `null`，插件不能据此自动投递。该快照与经同一短锁协调的 CLI 写命令一致；直接编辑状态文件的外部进程仍需在后续快照或提交前比较摘要并冻结异常，不宣称能阻止任意外部写入。
+**单真源：** 现有 RLL 状态文件仍是业务真源；`host/` 保存协调与事务元数据，不能另造第二套任务/轮次判定。`snapshot` 在项目短锁下读取轮次、宿主占用与关键业务文件的 SHA-256 摘要，拒绝不完整租约、待处理标记和异常文件。当前席位绑定切片把 `binding_generation`、`binding_state`、工作区和两席 ID 加入快照；两席的 `verification` 仍是 `unverified`，须由插件向 Herdr 核验。正式提交 `generation` 与最近回执仍为 `null`，插件不能据此自动投递。该快照与经同一短锁协调的 CLI 写命令一致；直接编辑状态文件的外部进程仍需在后续快照或提交前比较摘要并冻结异常，不宣称能阻止任意外部写入。
 
 **旧会话：** 缺少 `session.json` 的人工会话继续按原 CLI 工作。首次由 Herdr 接管前执行显式 `host adopt`：检查项目规范路径、现有 `turn/round`、无活跃 tmux watcher、无未解决的状态损坏，然后备份关键状态并创建 `session_id` 与 `generation=0`。若无法证明历史是否已提交，标记为只读待确认，不自动补发上一轮。绝不通过重新 `init` 完成接管。
 
@@ -84,8 +84,8 @@ Herdr 官方接口能管理 Pane/Agent 并返回创建时的 ID；插件动作�
 | `ralph-lisa host inspect --project <abs> --json` | 协调器/人工诊断 | 只读；规范路径、检查是否初始化、是否旧会话、是否已占用 | 项目、状态目录、session ID、宿主状态；不包含提交正文 |
 | `ralph-lisa host adopt --project <abs> --json` | 协调器，在用户明确选择接管后 | 仅旧会话；检查 watcher、完整性并建立 ID；不得覆盖现有内容 | `session_id`、初始代次、备份引用 |
 | `ralph-lisa host claim --project <abs> --host herdr --owner-id <uuid> --json` | 单个协调器 | 在项目短锁内检查会话和活跃 tmux/watcher；原子建立占用目录；已有占用则冲突 | `session_id`、`lease_id`、租约状态 |
-| `ralph-lisa host bind-seat --project <abs> --lease-id <id> --role <ralph\|lisa> --workspace-id <id> --pane-id <id> --agent-target <id> --json` | 协调器 | 写入/更新席位绑定；增加绑定代次 | 完整绑定与 `binding_generation` |
-| `ralph-lisa host snapshot --project <abs> --json` | 协调器 | 在短锁内读取会话、轮次、宿主占用和业务摘要；活 tmux/watcher 或不完整状态返回错误 | 当前已有 `session_id`、`turn`、`round`、`step`、`host_state`、`state_digest`；正式代次、绑定代次和最近回执暂为 `null` |
+| `ralph-lisa host bind-seat --project <abs> --lease-id <id> --role <ralph\|lisa> --workspace-id <id> --pane-id <id> --agent-target <id> --json` | 协调器 | 核对租约、会话和同一 Workspace；写入/更新席位，变化时增加绑定代次 | 完整绑定与 `binding_generation`，两席均标 `unverified` |
+| `ralph-lisa host snapshot --project <abs> --json` | 协调器 | 在短锁内读取会话、轮次、宿主占用、席位绑定和业务摘要；活 tmux/watcher 或不完整状态返回错误 | 当前已有 `session_id`、`turn`、`round`、`step`、`host_state`、`state_digest`、`binding_generation/state`；正式提交代次和最近回执暂为 `null` |
 | `ralph-lisa host propose --project <abs> --role <role> --file <path> --candidate-id <uuid> --json` | Agent/受控辅助脚本 | 写候选，不改 `work/review/turn/round`；关联当前会话、绑定代次与正文哈希 | `candidate_id`、`content_sha256`、`status=candidate` |
 | `ralph-lisa host commit --project <abs> --lease-id <id> --request-id <uuid> --candidate-id <uuid> --expected-generation <n> --expected-binding-generation <n> --json` | 协调器 | 核对候选、活跃席位、轮次及门禁；执行唯一正式提交 | 不可变 receipt，包括前后代次、前后轮次、角色、正文哈希、门禁结果 |
 | `ralph-lisa host receipt --project <abs> --request-id <uuid> --json` | 协调器 | 只读查询请求的最终状态 | `committed` / `rejected` / `unknown` / `needs_reconcile` |
@@ -146,7 +146,7 @@ Herdr 官方接口能管理 Pane/Agent 并返回创建时的 ID；插件动作�
 |---|---|---|
 | 前置 S0 基线 | `cli/package.json`、锁文件、CI/测试说明 | 干净安装、build、现有回归测试；冻结 Node 版本和公开能力差异表。当前 npm 下载曾 `ECONNRESET`，这一步仍未完成；沿用总计划的 S0，不在 S1 重复计时 |
 | S1.1 只读定位 | `cli/src/host/inspect.ts`、`cli/src/cli.ts` | 显式规范路径、只读 JSON 检查；错项目、状态损坏和未初始化状态有确定结果。当前已在 `feat/herdr-s1-inspect` 本地实现并通过回归 |
-| S1.2 会话身份、单宿主与席位 | 新 `host/{session,snapshot,lease,binding}.ts`，现有可变命令入口 | 新建会话 UUID、宿主占用检查、命令短锁与 `claim/release` 已推送并通过 CI；当前切片实现带业务摘要的读取快照。后续仍须旧会话显式接管、心跳/恢复、正式代次与席位绑定，才能宣称单宿主完整成立 |
+| S1.2 会话身份、单宿主与席位 | 新 `host/{session,snapshot,lease,binding}.ts`，现有可变命令入口 | 新建会话 UUID、占用检查、短锁、`claim/release` 与快照已推送；当前切片实现持久席位绑定、代次和过期标记。后续仍须旧会话接管、租约心跳/恢复、Herdr 真机归因及正式提交代次，才能宣称单宿主与交接契约完整成立 |
 | S1.3 受控提交 | 新 `host/{candidate,transaction,receipt}.ts`；抽取 `commands.ts` 的 Ralph/Lisa 提交核心 | 候选不改业务状态；正式提交沿用 policy/gate；重复请求返回同回执；故障进入待核对 |
 | S1.4 回归与集成 | `cli/src/test/`、样板项目脚本、契约文档 | 原人工流程与 tmux 流程回归；跨进程并发、注入中断、重启、旧会话、错误席位/目录的可重复测试 |
 

@@ -106,7 +106,7 @@ export function entryExists(filePath: string): boolean {
 }
 
 function assertNoHostMarkers(host: string): void {
-  for (const name of ["lease", "lease.json", "claim.lock", "reconcile.json"]) {
+  for (const name of ["lease", "lease.json", "claim.lock", "reconcile.json", "binding.pending"]) {
     if (entryExists(path.join(host, name))) {
       throw new HostContractError("HOST_BUSY", 4, "Host is already claimed or needs reconciliation");
     }
@@ -114,7 +114,7 @@ function assertNoHostMarkers(host: string): void {
   assertNoPendingIntents(host);
 }
 
-function assertNoPendingIntents(host: string): void {
+export function assertNoPendingIntents(host: string): void {
   const intentsDir = path.join(host, "intents");
   if (entryExists(intentsDir)) {
     const stat = fs.lstatSync(intentsDir);
@@ -218,7 +218,7 @@ export function releaseHost(project: string, leaseId: string): { schema: 1; stat
       throw new HostContractError("STALE_SESSION", 5, "Session changed while acquiring the host lock");
     }
     const hostDir = hostDirectory(current.state_realpath!);
-    if (["reconcile.json", "claim.lock", "lease.json"].some((name) => entryExists(path.join(hostDir, name)))) {
+    if (["reconcile.json", "claim.lock", "lease.json", "binding.pending"].some((name) => entryExists(path.join(hostDir, name)))) {
       throw new HostContractError("NEEDS_RECONCILE", 7, "Resolve pending host state before release");
     }
     assertNoPendingIntents(hostDir);
