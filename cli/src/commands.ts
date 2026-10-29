@@ -31,6 +31,7 @@ import {
   updateLastAction,
 } from "./state.js";
 import { runPolicyCheck, checkRalph, checkLisa, checkNeedsWorkResponse } from "./policy.js";
+import { writeSessionIdentity } from "./host/session.js";
 
 function line(ch = "=", len = 40): string {
   return ch.repeat(len);
@@ -221,6 +222,7 @@ export function cmdInit(args: string[]): void {
     path.join(dir, "history.md"),
     `# Collaboration History\n\n**Task**: ${task}\n**Started**: ${ts}\n`
   );
+  writeSessionIdentity(process.cwd(), dir);
 
   console.log(line());
   console.log("Session Initialized");

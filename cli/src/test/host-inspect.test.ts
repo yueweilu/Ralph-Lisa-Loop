@@ -108,9 +108,9 @@ describe("host inspect", () => {
     const project = createSession("identified");
     const sessionPath = path.join(project, ".dual-agent", "session.json");
     const sessionId = randomUUID();
-    fs.writeFileSync(sessionPath, JSON.stringify({ schema: 1, session_id: sessionId, project_realpath: project }));
+    fs.writeFileSync(sessionPath, JSON.stringify({ schema: 1, session_id: sessionId, project_realpath: project, state_realpath: path.join(project, ".dual-agent") }));
     assert.equal(inspectProject(project).session_id, sessionId);
-    fs.writeFileSync(sessionPath, JSON.stringify({ schema: 1, session_id: sessionId, project_realpath: root }));
+    fs.writeFileSync(sessionPath, JSON.stringify({ schema: 1, session_id: sessionId, project_realpath: root, state_realpath: path.join(project, ".dual-agent") }));
     assert.throws(
       () => inspectProject(project),
       (error: unknown) => error instanceof HostContractError && error.code === "PROJECT_MISMATCH"
@@ -140,5 +140,31 @@ describe("host inspect", () => {
     assert.equal(run.status, 2);
     assert.equal(run.stdout.trim().split("\n").length, 1);
     assert.equal(JSON.parse(run.stdout).code, "PROJECT_ABSOLUTE_REQUIRED");
+  });
+
+  it("assigns a fresh stable session ID during normal minimal init", () => {
+    const project = path.join(root, "new-session");
+    fs.mkdirSync(project);
+    const cli = path.join(__dirname, "..", "cli.js");
+    const init = spawnSync(process.execPath, [cli, "init", "--minimal", project], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    assert.equal(init.status, 0, init.stderr);
+    assert.match(init.stdout, /Minimal Init Complete/);
+
+    const first = inspectProject(project);
+    const second = inspectProject(project);
+    assert.equal(first.contract_state, "identified");
+    assert.match(first.session_id || "", /^[0-9a-f]{8}-[0-9a-f-]{27}$/i);
+    assert.equal(first.session_id, second.session_id);
+    assert.equal(first.project_realpath, fs.realpathSync.native(project));
+
+    const reinit = spawnSync(process.execPath, [cli, "init", "--minimal", project], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    assert.equal(reinit.status, 0, reinit.stderr);
+    assert.notEqual(inspectProject(project).session_id, first.session_id);
   });
 });

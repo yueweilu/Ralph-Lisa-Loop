@@ -90,6 +90,9 @@ function readSessionId(stateDir: string, projectRealpath: string): string | null
   if (session.project_realpath !== projectRealpath) {
     throw new HostContractError("PROJECT_MISMATCH", 3, "session.json belongs to another project");
   }
+  if (session.state_realpath !== stateDir) {
+    throw new HostContractError("PROJECT_MISMATCH", 3, "session.json names another state directory");
+  }
   return session.session_id;
 }
 
@@ -148,7 +151,7 @@ export function inspectProject(project: string): HostInspection {
   if (!Number.isSafeInteger(round) || round < 1) {
     throw new HostContractError("STATE_INVALID", 7, "Invalid round.txt");
   }
-  const sessionId = readSessionId(statePath, projectRealpath);
+  const sessionId = readSessionId(stateRealpath, projectRealpath);
   return {
     schema: 1,
     status: "ok",
