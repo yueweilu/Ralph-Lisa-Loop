@@ -5,7 +5,7 @@
 **状态：** 待实施设计，依据公开仓 `main@7440e29`、CLI `0.3.13` 的只读检查；本文不是完成回执。
 **位置：** [六阶段开发顺序](public-repo-herdr-plugin-start-2026-10-29.md)中的 S1。后续 S2 才做 Herdr 插件壳，S3 才做真实 Claude/Codex 双席交接。
 
-**开发位置与分支：** 本公开仓已在独立工作目录 `Ralph-Lisa-Loop-herdr/` 检出；S0 基线、S1 只读检查、会话身份和宿主占用保护分支已推送开发 fork，且对应 CI 均成功。当前在 `feat/herdr-s1-command-lock` 切片分支；S1 尚未完整交付，也没有向原仓提交 PR。完整分支表见[开发起点第 3 节](public-repo-herdr-plugin-start-2026-10-29.md#3-先建怎样的开发分支)。
+**开发位置与分支：** 本公开仓已在独立工作目录 `Ralph-Lisa-Loop-herdr/` 检出；S0 基线、S1 只读检查、会话身份、宿主占用保护与命令短锁分支已推送开发 fork。当前在 `feat/herdr-s1-host-lease` 切片分支；S1 尚未完整交付，也没有向原仓提交 PR。完整分支表见[开发起点第 3 节](public-repo-herdr-plugin-start-2026-10-29.md#3-先建怎样的开发分支)。
 
 ## 1. S1 要交付什么
 
@@ -57,14 +57,15 @@ Herdr 官方接口能管理 Pane/Agent 并返回创建时的 ID；插件动作�
   session.json                 # schema、session_id、规范项目路径、创建时间
   host/
     binding.json               # 宿主类型、Herdr workspace、两席 Pane/Agent、绑定代次
-    lease.json                 # 当前协调器 owner_id、nonce、心跳、进程标识
-    lock/                      # 短时跨进程写锁；原子创建
+    lease/record.json          # 原子目录占用；首版记录 owner_id、lease_id、领取时间
     generation.json            # 单调递增的业务提交代次和当前轮次摘要
     intents/<request-id>.json  # 写前意图、角色、代次、正文 SHA-256、预期后状态
     receipts/<request-id>.json # 已确认的不可变提交回执
     candidates/<id>.json       # 席位候选内容的元数据，正文另存为文件
     reconcile.json             # 部分提交或归属不明时的冻结原因
 ```
+
+项目根目录另有 `.rll-host-command-lock/`，供传统 CLI 写命令和宿主领取/释放共用。它在 `.dual-agent/` 外，避免 `init` 重建状态时把自己的短锁删除。异常退出留下的锁须核查，不自动删除。
 
 `session_id` 是随机 UUID；`generation` 从 0 开始，每次**正式** Ralph 或 Lisa 提交成功加 1。现有 `round.txt` 与 `turn.txt` 仍是业务可读状态；`generation` 用于机器比较和去重，不用 `round` 代替代次，因为同一轮先 Ralph 后 Lisa。`binding_generation` 每次重新绑定席位加 1；旧 Pane/Agent 的请求因此失效。
 
@@ -82,13 +83,13 @@ Herdr 官方接口能管理 Pane/Agent 并返回创建时的 ID；插件动作�
 |---|---|---|---|
 | `ralph-lisa host inspect --project <abs> --json` | 协调器/人工诊断 | 只读；规范路径、检查是否初始化、是否旧会话、是否已占用 | 项目、状态目录、session ID、宿主状态；不包含提交正文 |
 | `ralph-lisa host adopt --project <abs> --json` | 协调器，在用户明确选择接管后 | 仅旧会话；检查 watcher、完整性并建立 ID；不得覆盖现有内容 | `session_id`、初始代次、备份引用 |
-| `ralph-lisa host claim --project <abs> --host herdr --owner-id <uuid> --json` | 单个协调器 | 原子取得宿主租约；已有活宿主则冲突 | `session_id`、`lease_id`、租约状态 |
+| `ralph-lisa host claim --project <abs> --host herdr --owner-id <uuid> --json` | 单个协调器 | 在项目短锁内检查会话和活跃 tmux/watcher；原子建立占用目录；已有占用则冲突 | `session_id`、`lease_id`、租约状态 |
 | `ralph-lisa host bind-seat --project <abs> --lease-id <id> --role <ralph\|lisa> --workspace-id <id> --pane-id <id> --agent-target <id> --json` | 协调器 | 写入/更新席位绑定；增加绑定代次 | 完整绑定与 `binding_generation` |
 | `ralph-lisa host snapshot --project <abs> --json` | 协调器 | 只读一致快照 | `session_id`、`generation`、`turn`、`round`、`step`、`binding_generation`、`host_state`、最近回执 ID |
 | `ralph-lisa host propose --project <abs> --role <role> --file <path> --candidate-id <uuid> --json` | Agent/受控辅助脚本 | 写候选，不改 `work/review/turn/round`；关联当前会话、绑定代次与正文哈希 | `candidate_id`、`content_sha256`、`status=candidate` |
 | `ralph-lisa host commit --project <abs> --lease-id <id> --request-id <uuid> --candidate-id <uuid> --expected-generation <n> --expected-binding-generation <n> --json` | 协调器 | 核对候选、活跃席位、轮次及门禁；执行唯一正式提交 | 不可变 receipt，包括前后代次、前后轮次、角色、正文哈希、门禁结果 |
 | `ralph-lisa host receipt --project <abs> --request-id <uuid> --json` | 协调器 | 只读查询请求的最终状态 | `committed` / `rejected` / `unknown` / `needs_reconcile` |
-| `ralph-lisa host release --project <abs> --lease-id <id> --json` | 协调器 | 停止自动交接并释放本人租约，不删除 RLL 会话 | `released` |
+| `ralph-lisa host release --project <abs> --lease-id <id> --json` | 协调器 | 核对租约 ID 和会话身份，拒绝带在途意图的释放；不删除 RLL 会话 | `released` |
 
 机器接口 `stdout` **只输出一条 JSON 对象**；诊断写 `stderr`，退出码分层。传统命令的文本输出保持原样。不要把 `status` 的文本解析成机器接口，也不要以 `agent idle/done` 或 Pane 输出代表 RLL 提交。
 
@@ -130,7 +131,8 @@ Herdr 官方接口能管理 Pane/Agent 并返回创建时的 ID；插件动作�
 ## 7. 租约、路径与旧命令兼容
 
 - **路径：** `--project` 必须指向存在的目录；对项目和 `.dual-agent` 分别取 `realpath`，校验 `.project_root`（若存在）与真实项目一致；拒绝把状态目录指到另一个项目。所有操作只在这组规范路径下进行。符号链接、大小写差异和跨卷路径进入测试。
-- **宿主租约：** 用原子创建取得，持有随机 `lease_id`、`owner_id`、PID 与进程启动标识、心跳时间。租约超时**不等于**可自动抢占：先查原进程和 Herdr 会话，再由用户或明确恢复命令接管；活宿主并存必须失败。
+- **宿主租约：** 当前切片以原子目录创建取得占用，记录随机 `lease_id`、`owner_id` 和领取时间；活跃 tmux/watcher 或已有占用均拒绝。**心跳、宿主进程启动标识、失效核查和显式恢复尚未实现**，所以现阶段不能自动抢占遗留目录，也不能宣称租约生命周期完整。后续先查原进程和 Herdr 会话，再由用户或明确恢复命令接管；活宿主并存必须失败。
+- **外部终端边界：** 当前 `claim` 能识别公开 CLI 命名的 tmux 会话和 watcher；`start` 在 macOS 打开的 iTerm/Terminal Agent 没有可靠的会话标记。接管这类人工会话前，用户必须先停止旧 Agent；后续需补可验证的启动记录或明确人工确认，不能把一次 `claim` 成功当作外部终端已退出的证据。
 - **tmux 冲突：** 领取 Herdr 租约前检查公开版 `watcher.pid`/`watcher_wrapper.pid` 与实际进程、相关 tmux session；`auto` 开始前反查 Herdr 租约。不能仅凭陈旧 PID 文件判断活跃，也不能自动删除未知 watcher 状态。
 - **写入口统一保护：** 在 Herdr 宿主占用期间，传统 `submit-*`、`init`、`auto`、`force-turn`、`step`、`scope-update`、`subtask`、`clean`、`uninit`、`stop` 等涉及业务状态或删除的命令要么转入受控路径，要么明确拒绝并给出操作建议。保护必须在**第一个副作用之前**：`cmdInitProject` 会先改 `CLAUDE.md`/`CODEX.md` 等文件才调用 `cmdInit`，`cmdAuto` 也会先清理旧状态文件，不能只在内部 `cmdInit` 加检查。当前宿主占用保护已推送并通过 CI；传统 CLI 写操作新增项目级原子目录短锁，`start`/`auto` 完成启动后在终端附着前释放它。**宿主租约原子领取尚未实现**；进程异常退出留下的短锁须显式核查，不能盲删或自动抢占。只读命令继续可用。
 - **人工使用：** 未绑定会话保留现有命令、默认输出、tag/policy/gate 规则；新 `host` 子命令和 `session.json` 不要求现有用户迁移。用户可通过显式 `release` 停止插件交接后回到人工模式，但先确认无在途意图。
@@ -144,7 +146,7 @@ Herdr 官方接口能管理 Pane/Agent 并返回创建时的 ID；插件动作�
 |---|---|---|
 | 前置 S0 基线 | `cli/package.json`、锁文件、CI/测试说明 | 干净安装、build、现有回归测试；冻结 Node 版本和公开能力差异表。当前 npm 下载曾 `ECONNRESET`，这一步仍未完成；沿用总计划的 S0，不在 S1 重复计时 |
 | S1.1 只读定位 | `cli/src/host/inspect.ts`、`cli/src/cli.ts` | 显式规范路径、只读 JSON 检查；错项目、状态损坏和未初始化状态有确定结果。当前已在 `feat/herdr-s1-inspect` 本地实现并通过回归 |
-| S1.2 会话身份、单宿主与席位 | 新 `host/{session,snapshot,lease,binding}.ts`，现有可变命令入口 | 新建会话 UUID 和宿主占用检查均已推送并通过 CI；当前切片增加传统命令短锁。下一步仍须实现旧会话显式接管、原子租约、活 watcher 冲突、绑定代次和一致快照，才能宣称单宿主成立 |
+| S1.2 会话身份、单宿主与席位 | 新 `host/{session,snapshot,lease,binding}.ts`，现有可变命令入口 | 新建会话 UUID 和宿主占用检查均已推送并通过 CI；命令短锁已推送，当前切片实现 `claim/release`、原子占用与活 tmux/watcher 拒绝。本机契约测试已通过；后续仍须旧会话显式接管、心跳/恢复、绑定代次与一致快照，才能宣称单宿主完整成立 |
 | S1.3 受控提交 | 新 `host/{candidate,transaction,receipt}.ts`；抽取 `commands.ts` 的 Ralph/Lisa 提交核心 | 候选不改业务状态；正式提交沿用 policy/gate；重复请求返回同回执；故障进入待核对 |
 | S1.4 回归与集成 | `cli/src/test/`、样板项目脚本、契约文档 | 原人工流程与 tmux 流程回归；跨进程并发、注入中断、重启、旧会话、错误席位/目录的可重复测试 |
 

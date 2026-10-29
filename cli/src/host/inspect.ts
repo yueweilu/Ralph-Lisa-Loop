@@ -165,22 +165,3 @@ export function inspectProject(project: string): HostInspection {
     step,
   };
 }
-
-export function cmdHost(args: string[]): void {
-  try {
-    if (args[0] !== "inspect") {
-      throw new HostContractError("UNKNOWN_HOST_COMMAND", 2, "Usage: ralph-lisa host inspect --project <absolute-path> --json");
-    }
-    const options = args.slice(1);
-    if (options.length !== 3 || options[0] !== "--project" || !options[1] || options[2] !== "--json") {
-      throw new HostContractError("INVALID_ARGUMENTS", 2, "Usage: ralph-lisa host inspect --project <absolute-path> --json");
-    }
-    console.log(JSON.stringify(inspectProject(options[1])));
-  } catch (error) {
-    const issue = error instanceof HostContractError
-      ? error
-      : new HostContractError("HOST_IO_ERROR", 8, "Unable to inspect host state");
-    console.log(JSON.stringify({ schema: 1, status: "error", code: issue.code, message: issue.message }));
-    process.exitCode = issue.exitCode;
-  }
-}

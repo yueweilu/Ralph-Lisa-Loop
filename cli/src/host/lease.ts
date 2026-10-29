@@ -1,0 +1,239 @@
+import * as crypto from "node:crypto";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { execFileSync, spawnSync } from "node:child_process";
+import { generateSessionName } from "../commands.js";
+import { acquireSessionCommandLock } from "./guard.js";
+import { HostContractError, inspectProject } from "./inspect.js";
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export interface HostLease {
+  schema: 1;
+  status: "claimed";
+  host: "herdr";
+  project_realpath: string;
+  state_realpath: string;
+  session_id: string;
+  owner_id: string;
+  lease_id: string;
+  claimed_at: string;
+}
+
+function requiredSession(project: string) {
+  const inspection = inspectProject(project);
+  if (!inspection.initialized || !inspection.state_realpath) {
+    throw new HostContractError("SESSION_NOT_INITIALIZED", 3, "Initialize the RLL session before claiming a host");
+  }
+  if (inspection.contract_state !== "identified" || !inspection.session_id) {
+    throw new HostContractError("ADOPT_REQUIRED", 3, "Legacy sessions require explicit host adopt before claim");
+  }
+  return inspection;
+}
+
+function assertNoManualRuntime(project: string, state: string): void {
+  for (const name of ["watcher.pid", "watcher_wrapper.pid"]) {
+    const pidPath = path.join(state, name);
+    let stat: fs.Stats;
+    try {
+      stat = fs.lstatSync(pidPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw new HostContractError("NEEDS_RECONCILE", 7, `Cannot inspect ${name}`);
+    }
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      throw new HostContractError("NEEDS_RECONCILE", 7, `${name} must be a regular file`);
+    }
+    const pidText = fs.readFileSync(pidPath, "utf8").trim();
+    if (!/^[1-9][0-9]*$/.test(pidText)) {
+      throw new HostContractError("NEEDS_RECONCILE", 7, `Invalid ${name}`);
+    }
+    const pid = Number(pidText);
+    if (!Number.isSafeInteger(pid)) {
+      throw new HostContractError("NEEDS_RECONCILE", 7, `Invalid ${name}`);
+    }
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") continue;
+      throw new HostContractError("HOST_BUSY", 4, `Cannot exclude an active ${name} process`);
+    }
+    let args: string;
+    try {
+      args = execFileSync("ps", ["-p", pidText, "-o", "args="], { encoding: "utf8" }).trim();
+    } catch {
+      throw new HostContractError("HOST_BUSY", 4, `Cannot verify ${name} process identity`);
+    }
+    if (args.includes(path.join(state, "watcher.sh"))) {
+      throw new HostContractError("HOST_BUSY", 4, "Stop the active tmux watcher before host claim");
+    }
+  }
+
+  const tmux = spawnSync("tmux", ["has-session", "-t", generateSessionName(project)], { encoding: "utf8" });
+  if (tmux.status === 0) {
+    throw new HostContractError("HOST_BUSY", 4, "Stop the active RLL tmux session before host claim");
+  }
+  if (tmux.error && (tmux.error as NodeJS.ErrnoException).code !== "ENOENT") {
+    throw new HostContractError("HOST_IO_ERROR", 8, "Cannot check the RLL tmux session");
+  }
+  if (!tmux.error && tmux.status !== 1) {
+    throw new HostContractError("HOST_IO_ERROR", 8, "Cannot determine the RLL tmux session state");
+  }
+}
+
+function hostDirectory(state: string): string {
+  const dir = path.join(state, "host");
+  try {
+    fs.mkdirSync(dir, { mode: 0o700 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  }
+  const stat = fs.lstatSync(dir);
+  if (!stat.isDirectory() || stat.isSymbolicLink() || fs.realpathSync.native(dir) !== dir) {
+    throw new HostContractError("NEEDS_RECONCILE", 7, "Invalid host directory");
+  }
+  return dir;
+}
+
+function entryExists(filePath: string): boolean {
+  try {
+    fs.lstatSync(filePath);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+function assertNoHostMarkers(host: string): void {
+  for (const name of ["lease", "lease.json", "claim.lock", "reconcile.json"]) {
+    if (entryExists(path.join(host, name))) {
+      throw new HostContractError("HOST_BUSY", 4, "Host is already claimed or needs reconciliation");
+    }
+  }
+  assertNoPendingIntents(host);
+}
+
+function assertNoPendingIntents(host: string): void {
+  const intentsDir = path.join(host, "intents");
+  if (entryExists(intentsDir)) {
+    const stat = fs.lstatSync(intentsDir);
+    if (!stat.isDirectory() || stat.isSymbolicLink() || fs.readdirSync(intentsDir).length > 0) {
+      throw new HostContractError("NEEDS_RECONCILE", 7, "Resolve pending host intents before changing the lease");
+    }
+  }
+}
+
+function acquireHostLock(state: string): () => void {
+  try {
+    return acquireSessionCommandLock(state);
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("HOST_BUSY:")) {
+      throw new HostContractError("HOST_BUSY", 4, error.message);
+    }
+    throw error;
+  }
+}
+
+function readLease(host: string): HostLease {
+  const leaseDir = path.join(host, "lease");
+  const stat = fs.lstatSync(leaseDir);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    throw new HostContractError("NEEDS_RECONCILE", 7, "Invalid lease directory");
+  }
+  const recordPath = path.join(leaseDir, "record.json");
+  const recordStat = fs.lstatSync(recordPath);
+  if (!recordStat.isFile() || recordStat.isSymbolicLink()) {
+    throw new HostContractError("NEEDS_RECONCILE", 7, "Invalid lease record");
+  }
+  const record = JSON.parse(fs.readFileSync(recordPath, "utf8")) as HostLease;
+  if (record.schema !== 1 || record.status !== "claimed" || record.host !== "herdr" ||
+      !UUID.test(record.lease_id) || !UUID.test(record.owner_id)) {
+    throw new HostContractError("NEEDS_RECONCILE", 7, "Invalid lease record");
+  }
+  return record;
+}
+
+export function claimHost(project: string, host: string, ownerId: string): HostLease {
+  if (host !== "herdr" || !UUID.test(ownerId)) {
+    throw new HostContractError("INVALID_ARGUMENTS", 2, "--host must be herdr and --owner-id must be a UUID");
+  }
+  const initial = requiredSession(project);
+  const releaseLock = acquireHostLock(initial.state_realpath!);
+  try {
+    const current = requiredSession(project);
+    if (current.session_id !== initial.session_id || current.state_realpath !== initial.state_realpath) {
+      throw new HostContractError("STALE_SESSION", 5, "Session changed while acquiring the host lock");
+    }
+    const hostDir = hostDirectory(current.state_realpath!);
+    assertNoHostMarkers(hostDir);
+    assertNoManualRuntime(current.project_realpath, current.state_realpath!);
+
+    // The directory is the durable atomic reservation. A crash leaves it in place.
+    const leaseDir = path.join(hostDir, "lease");
+    try {
+      fs.mkdirSync(leaseDir, { mode: 0o700 });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+        throw new HostContractError("HOST_BUSY", 4, "Host lease was claimed concurrently");
+      }
+      throw error;
+    }
+    const record: HostLease = {
+      schema: 1, status: "claimed", host: "herdr",
+      project_realpath: current.project_realpath,
+      state_realpath: current.state_realpath!,
+      session_id: current.session_id!,
+      owner_id: ownerId,
+      lease_id: crypto.randomUUID(),
+      claimed_at: new Date().toISOString(),
+    };
+    const fd = fs.openSync(path.join(leaseDir, "record.json"), "wx", 0o600);
+    try {
+      fs.writeFileSync(fd, JSON.stringify(record) + "\n", "utf8");
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    return record;
+  } finally {
+    releaseLock();
+  }
+}
+
+export function releaseHost(project: string, leaseId: string): { schema: 1; status: "released"; session_id: string; lease_id: string } {
+  if (!UUID.test(leaseId)) {
+    throw new HostContractError("INVALID_ARGUMENTS", 2, "--lease-id must be a UUID");
+  }
+  const initial = requiredSession(project);
+  const releaseLock = acquireHostLock(initial.state_realpath!);
+  try {
+    const current = requiredSession(project);
+    if (current.session_id !== initial.session_id || current.state_realpath !== initial.state_realpath) {
+      throw new HostContractError("STALE_SESSION", 5, "Session changed while acquiring the host lock");
+    }
+    const hostDir = hostDirectory(current.state_realpath!);
+    if (["reconcile.json", "claim.lock", "lease.json"].some((name) => entryExists(path.join(hostDir, name)))) {
+      throw new HostContractError("NEEDS_RECONCILE", 7, "Resolve pending host state before release");
+    }
+    assertNoPendingIntents(hostDir);
+    let record: HostLease;
+    try {
+      record = readLease(hostDir);
+    } catch (error) {
+      if (error instanceof HostContractError) throw error;
+      throw new HostContractError("NEEDS_RECONCILE", 7, "Lease is missing or unreadable");
+    }
+    if (record.lease_id !== leaseId) {
+      throw new HostContractError("LEASE_MISMATCH", 4, "Lease belongs to another coordinator");
+    }
+    if (record.project_realpath !== current.project_realpath || record.state_realpath !== current.state_realpath || record.session_id !== current.session_id) {
+      throw new HostContractError("NEEDS_RECONCILE", 7, "Lease belongs to another RLL session");
+    }
+    fs.unlinkSync(path.join(hostDir, "lease", "record.json"));
+    fs.rmdirSync(path.join(hostDir, "lease"));
+    return { schema: 1, status: "released", session_id: current.session_id!, lease_id: leaseId };
+  } finally {
+    releaseLock();
+  }
+}

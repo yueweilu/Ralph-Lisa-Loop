@@ -39,7 +39,7 @@ import {
   cmdSmokeCheck,
   cmdTestReport,
 } from "./commands.js";
-import { cmdHost } from "./host/inspect.js";
+import { cmdHost } from "./host/cli.js";
 import { guardCliMutation } from "./host/guard.js";
 
 const args = process.argv.slice(2);
@@ -230,6 +230,8 @@ function showHelp(): void {
   console.log("");
   console.log("Information:");
   console.log("  ralph-lisa host inspect --project <abs> --json  Inspect one project for host integration");
+  console.log("  ralph-lisa host claim --project <abs> --host herdr --owner-id <uuid> --json");
+  console.log("  ralph-lisa host release --project <abs> --lease-id <uuid> --json");
   console.log("  ralph-lisa status                   Show current status");
   console.log("  ralph-lisa read-review              Read Lisa's review (alias: read review.md)");
   console.log("  ralph-lisa read <file>              Read work.md/review.md/etc");
