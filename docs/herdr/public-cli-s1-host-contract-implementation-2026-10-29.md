@@ -5,7 +5,7 @@
 **状态：** 待实施设计，依据公开仓 `main@7440e29`、CLI `0.3.13` 的只读检查；本文不是完成回执。
 **位置：** [六阶段开发顺序](public-repo-herdr-plugin-start-2026-10-29.md)中的 S1。后续 S2 才做 Herdr 插件壳，S3 才做真实 Claude/Codex 双席交接。
 
-**开发位置与分支：** 本公开仓已在独立工作目录 `Ralph-Lisa-Loop-herdr/` 检出，当前只创建了文档整理分支 `docs/herdr-final-plan`。S1 源码开发须先完成 S0 基线 PR，再从更新后的公开 `main` 建 `feat/herdr-plugin`；S1.1–S1.4 分别用短期分支提交 PR 到该集成分支。集成分支通过 S1–S5 验收后才向公开 `main` 提最终 PR。**开发分支和 PR 尚未创建；**实际开工前须重新核对远端最新 SHA。完整分支表见[开发起点第 3 节](public-repo-herdr-plugin-start-2026-10-29.md#3-先建怎样的开发分支)。
+**开发位置与分支：** 本公开仓已在独立工作目录 `Ralph-Lisa-Loop-herdr/` 检出；文档整理分支 `docs/herdr-final-plan` 已保存，当前本地分支为 `chore/herdr-s0-baseline`。S1 源码开发须先完成 S0 基线 PR，再从更新后的公开 `main` 建 `feat/herdr-plugin`；S1.1–S1.4 分别用短期分支提交 PR 到该集成分支。集成分支通过 S1–S5 验收后才向公开 `main` 提最终 PR。**S1 开发分支和 PR 尚未创建；**实际开工前须重新核对远端最新 SHA。完整分支表见[开发起点第 3 节](public-repo-herdr-plugin-start-2026-10-29.md#3-先建怎样的开发分支)。
 
 ## 1. S1 要交付什么
 

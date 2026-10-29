@@ -81,6 +81,19 @@ ralph-lisa test-report --list            # List all test reports
 - [Codex CLI](https://github.com/openai/codex) — for Lisa
 - tmux — for auto mode (`brew install tmux` / `apt install tmux`)
 
+## Develop the CLI
+
+From a repository checkout, use the committed lockfile for repeatable installs:
+
+```bash
+cd cli
+npm ci
+npm run build
+npm test
+```
+
+The CLI supports Node.js 18 or newer. CI checks Node.js 18, 20, and 22.
+
 ## Documentation
 
 Full documentation on GitHub:
