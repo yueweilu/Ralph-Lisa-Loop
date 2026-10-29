@@ -39,7 +39,7 @@ function readRequired(dir: string, name: string): string {
   return value;
 }
 
-function canonicalProject(project: string): string {
+export function canonicalProject(project: string): string {
   if (!path.isAbsolute(project)) {
     throw new HostContractError("PROJECT_ABSOLUTE_REQUIRED", 2, "--project must be an absolute path");
   }

@@ -31,7 +31,7 @@ function requiredSession(project: string) {
   return inspection;
 }
 
-function assertNoManualRuntime(project: string, state: string): void {
+export function assertNoManualRuntime(project: string, state: string): void {
   for (const name of ["watcher.pid", "watcher_wrapper.pid"]) {
     const pidPath = path.join(state, name);
     let stat: fs.Stats;
@@ -95,7 +95,7 @@ function hostDirectory(state: string): string {
   return dir;
 }
 
-function entryExists(filePath: string): boolean {
+export function entryExists(filePath: string): boolean {
   try {
     fs.lstatSync(filePath);
     return true;
@@ -124,7 +124,7 @@ function assertNoPendingIntents(host: string): void {
   }
 }
 
-function acquireHostLock(state: string): () => void {
+export function acquireHostLock(state: string): () => void {
   try {
     return acquireSessionCommandLock(state);
   } catch (error) {
@@ -135,7 +135,7 @@ function acquireHostLock(state: string): () => void {
   }
 }
 
-function readLease(host: string): HostLease {
+export function readLease(host: string): HostLease {
   const leaseDir = path.join(host, "lease");
   const stat = fs.lstatSync(leaseDir);
   if (!stat.isDirectory() || stat.isSymbolicLink()) {
@@ -146,7 +146,12 @@ function readLease(host: string): HostLease {
   if (!recordStat.isFile() || recordStat.isSymbolicLink()) {
     throw new HostContractError("NEEDS_RECONCILE", 7, "Invalid lease record");
   }
-  const record = JSON.parse(fs.readFileSync(recordPath, "utf8")) as HostLease;
+  let record: HostLease;
+  try {
+    record = JSON.parse(fs.readFileSync(recordPath, "utf8")) as HostLease;
+  } catch {
+    throw new HostContractError("NEEDS_RECONCILE", 7, "Unreadable lease record");
+  }
   if (record.schema !== 1 || record.status !== "claimed" || record.host !== "herdr" ||
       !UUID.test(record.lease_id) || !UUID.test(record.owner_id)) {
     throw new HostContractError("NEEDS_RECONCILE", 7, "Invalid lease record");
