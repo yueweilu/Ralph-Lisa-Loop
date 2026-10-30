@@ -33,6 +33,7 @@ import {
 import { checkRalph, checkLisa } from "./policy.js";
 import { checkSubmission } from "./submission.js";
 import { evaluateGate } from "./gate.js";
+import { applyRalphSubmission, applyLisaSubmission } from "./submission-write.js";
 import { writeSessionIdentity } from "./host/session.js";
 import { assertHostMutationAllowed, releaseSessionCommandLock } from "./host/guard.js";
 
@@ -107,23 +108,6 @@ function resolveContent(args: string[]): { content: string; external: boolean } 
 
   // Replace literal \n sequences with real newlines (IMP-3: inline format fix)
   return { content: args.join(" ").replace(/\\n/g, "\n"), external: false };
-}
-
-/**
- * Get list of changed files via git diff.
- * Returns empty array if not in a git repo or git fails.
- */
-function getFilesChanged(): string[] {
-  try {
-    const output = execSync("git diff --name-only HEAD 2>/dev/null || git diff --name-only", {
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "pipe"],
-    }).trim();
-    if (!output) return [];
-    return output.split("\n").filter(Boolean);
-  } catch {
-    return [];
-  }
 }
 
 /**
@@ -308,64 +292,13 @@ export function cmdSubmitRalph(args: string[]): void {
   // V4-01: Auto gate — run test/lint before CODE/FIX submission
   runGate(tag);
 
-  const round = getRound();
-  const step = getStep();
-  const ts = timestamp();
-  const summary = extractSummary(content);
-
-  // Auto-inject task context so Lisa always sees the task goal
-  // Use last meaningful line (update-task appends new directions at the end)
-  const taskFile = readFile(path.join(dir, "task.md"));
-  const taskLines = taskFile.split("\n").filter((l) => l.trim() && !l.startsWith("#") && !l.startsWith("---") && !l.startsWith("Created:") && !l.startsWith("Updated:"));
-  const taskContext = taskLines[taskLines.length - 1] || "";
-
-  // Auto-attach files_changed for CODE/FIX submissions
-  let filesChangedSection = "";
-  if (tag === "CODE" || tag === "FIX") {
-    const files = getFilesChanged();
-    if (files.length > 0) {
-      filesChangedSection = `**Files Changed**:\n${files.map((f) => `- ${f}`).join("\n")}\n\n`;
-    }
-  }
-
-  // Auto-inject context.md so Lisa sees runtime directives (Proposal §3.5)
-  let contextSection = "";
-  const contextPath = path.join(dir, "context.md");
-  if (fs.existsSync(contextPath)) {
-    const ctxContent = readFile(contextPath);
-    if (ctxContent && !ctxContent.includes("(visible to Lisa).\n\n\n")) {
-      // Only inject if context has actual entries (not just the header)
-      const ctxLines = ctxContent.split("\n").filter((l) => l.startsWith("- ["));
-      if (ctxLines.length > 0) {
-        contextSection = `**Context**: ${ctxLines.join("; ")}\n`;
-      }
-    }
-  }
-
-  const taskLine = taskContext ? `**Task**: ${taskContext}\n` : "";
-  writeFile(
-    path.join(dir, "work.md"),
-    `# Ralph Work\n\n## [${tag}] Round ${round} | Step: ${step}\n${taskLine}${contextSection}**Updated**: ${ts}\n**Summary**: ${summary}\n${filesChangedSection ? "\n" + filesChangedSection : "\n"}${content}\n`
-  );
-
-  // External sources (--file/--stdin) get compact history to reduce context bloat
-  const historyContent = external
-    ? `[${tag}] ${summary}\n\n(Full content in work.md)`
-    : content;
-  appendHistory("Ralph", historyContent);
-  updateLastAction("Ralph", content);
-  setTurn("lisa");
+  const writeResult = applyRalphSubmission({ content, external, tag, onEvent: (event) => {
+    if (event.type === "tests_cleaned") console.log("Cleaned .dual-agent/tests/ (topic closed)");
+  } });
+  const summary = writeResult.summary;
 
   // CONSENSUS actions (Proposal §3.7 + §3.6)
   if (tag === "CONSENSUS") {
-    // Clean .dual-agent/tests/ on Ralph CONSENSUS (covers single-round closure:
-    // Lisa [PASS] + Ralph [CONSENSUS] — Lisa never submits [CONSENSUS] in this path)
-    const testsDir = path.join(dir, "tests");
-    if (fs.existsSync(testsDir)) {
-      fs.rmSync(testsDir, { recursive: true, force: true });
-      console.log("Cleaned .dual-agent/tests/ (topic closed)");
-    }
-
     // Subtask reminder (explicit, not auto-mark)
     const taskContent = readFile(path.join(dir, "task.md"));
     const incomplete = parseSubtasks(taskContent).filter((s) => !s.done);
@@ -461,77 +394,21 @@ export function cmdSubmitLisa(args: string[]): void {
 
   const tag = submission.tag;
   const violations = submission.violations;
-  const round = getRound();
-  const step = getStep();
-  const ts = timestamp();
-  const summary = extractSummary(content);
   const dir = stateDir();
-
-  // Append new review entry, keep last 3
-  const reviewPath = path.join(dir, "review.md");
-  const newEntry = `## [${tag}] Round ${round} | Step: ${step}\n**Updated**: ${ts}\n**Summary**: ${summary}\n\n${content}`;
-  const existing = readFile(reviewPath);
-  // Split existing entries by separator, filter out header/empty
-  const REVIEW_SEP = "\n\n---\n\n";
-  let entries: string[] = [];
-  if (existing && !existing.startsWith("# Lisa Review\n\n(Waiting")) {
-    // Remove the "# Lisa Review" header if present
-    const body = existing.replace(/^# Lisa Review\n\n/, "");
-    entries = body.split(REVIEW_SEP).filter((e) => e.trim());
-  }
-  entries.push(newEntry);
-  // Keep only last 3
-  if (entries.length > 3) {
-    entries = entries.slice(-3);
-  }
-  writeFile(reviewPath, `# Lisa Review\n\n${entries.join(REVIEW_SEP)}\n`);
-
-  // External sources (--file/--stdin) get compact history to reduce context bloat
-  const historyContent = external
-    ? `[${tag}] ${summary}\n\n(Full content in review.md)`
-    : content;
-  appendHistory("Lisa", historyContent);
-  updateLastAction("Lisa", content);
-  setTurn("ralph");
-
-  // Deadlock counter: track consecutive NEEDS_WORK rounds (Proposal §3.2)
-  const nwCountPath = path.join(dir, "needs_work_count.txt");
-  if (tag === "NEEDS_WORK") {
-    const currentCount = parseInt(readFile(nwCountPath) || "0", 10);
-    const newCount = currentCount + 1;
-    writeFile(nwCountPath, String(newCount));
-    const deadlockThreshold = parseInt(process.env.RL_DEADLOCK_THRESHOLD || "8", 10);
-    if (newCount >= deadlockThreshold) {
-      // Trigger deadlock — write flag for watcher to detect
-      const deadlockPath = path.join(dir, "deadlock.txt");
-      writeFile(deadlockPath, `DEADLOCK at round ${round}: ${newCount} consecutive NEEDS_WORK rounds\nTimestamp: ${ts}\nAction: Watcher will pause. User intervention required.`);
+  const writeResult = applyLisaSubmission({ content, external, tag, onEvent: (event) => {
+    if (event.type === "tests_cleaned") {
+      console.log("Cleaned .dual-agent/tests/ (topic closed)");
+    } else if (event.type === "deadlock") {
       console.log("");
       console.log(line("!", 40));
-      console.log(`DEADLOCK: ${newCount} consecutive NEEDS_WORK rounds.`);
+      console.log(`DEADLOCK: ${event.count} consecutive NEEDS_WORK rounds.`);
       console.log("Watcher will pause for user intervention.");
       console.log("To resolve: ralph-lisa scope-update or ralph-lisa force-turn");
       console.log(line("!", 40));
-      notifyUser(`[RLL] DEADLOCK: ${newCount} consecutive NEEDS_WORK rounds. User intervention needed.`);
+      notifyUser(`[RLL] DEADLOCK: ${event.count} consecutive NEEDS_WORK rounds. User intervention needed.`);
     }
-  } else {
-    // Reset counter on non-NEEDS_WORK review
-    writeFile(nwCountPath, "0");
-    const deadlockPath = path.join(dir, "deadlock.txt");
-    try { fs.unlinkSync(deadlockPath); } catch {}
-  }
-
-  // Clean .dual-agent/tests/ on CONSENSUS (Proposal §3.6 — evidence preserved until closure)
-  if (tag === "CONSENSUS") {
-    const testsDir = path.join(dir, "tests");
-    if (fs.existsSync(testsDir)) {
-      fs.rmSync(testsDir, { recursive: true, force: true });
-      console.log("Cleaned .dual-agent/tests/ (topic closed)");
-    }
-  }
-
-  // Increment round
-  const nextRound = (parseInt(round, 10) || 0) + 1;
-  setRound(nextRound);
+  } });
+  const { round, summary, roundAfter: nextRound } = writeResult;
 
   console.log(line());
   if (violations.length > 0) {
