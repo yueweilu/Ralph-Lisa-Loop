@@ -138,7 +138,7 @@ Herdr 官方接口能管理 Pane/Agent 并返回创建时的 ID；插件动作�
 
 1. 协调器用 Herdr API 核对当前 `workspace_id`、目标 Pane/Agent、Agent 类型、可用的原生会话引用和工作目录；确保候选来自本次绑定。Herdr 无法返回的字段明确记为 `unverified`，不编造成通过。
 2. `host commit` 以原子创建取得**短时写锁**，并核对宿主租约仍属于自己；在锁内重新读取 RLL `turn/round/step`、代次和绑定代次。锁争用超时返回 `HOST_BUSY`，不能忽略继续写。
-3. 校验候选正文哈希、角色合法 tag、现有 policy 及 `runGate` 的配置。阻断时不修改业务文件，写拒绝回执；warning 进入成功回执。现有 `runGate` 会直接 `process.exit`，实施时要抽出返回结构化结果的核心函数，让人工命令保留原退出码/文本。门禁可能耗时 120 秒/命令，锁与租约心跳设计须容纳这一点；若要在锁外运行门禁，必须在回到锁内时重新验证全部预期值。
+3. 校验候选正文哈希、角色合法 tag、现有 policy 及 `runGate` 的配置。阻断时不修改业务文件，写拒绝回执；warning 进入成功回执。`runGate` 已通过结构化核心取得结果，人工命令继续保留原退出码/文本；宿主调用时须指定已核对项目作为命令工作目录。门禁可能耗时 120 秒/命令，锁与租约心跳设计须容纳这一点；若要在锁外运行门禁，必须在回到锁内时重新验证全部预期值。
 4. 将写前意图持久化，记录所有将要改变的业务文件、原文件摘要和预期后状态；然后调用**同一份**提交业务逻辑，不复制两套 `submit` 规则。把现有 `cmdSubmitRalph/Lisa` 的校验与写入提取为可复用核心，人工命令和宿主命令共用。
 5. 顺序写文件后，在锁内重新读取并校验 `work/review/history/last_action/turn/round/needs_work_count/deadlock` 等实际受影响文件，确认达到预期，再把代次与不可变回执写入并完成落盘。Herdr 协调器**只在读到 `committed` 回执后**提示下一席。
 6. 若进程在意图落盘后、回执落盘前中断，重启只允许 `receipt/snapshot` 返回 `needs_reconcile`；即使终端上曾打印 `Submitted`，也不能自动重放。人工或专门的恢复流程比对意图、状态文件与备份，明确选择“确已提交并补回执”或“恢复原状态并重试”，保留审计记录。
@@ -165,7 +165,7 @@ Herdr 官方接口能管理 Pane/Agent 并返回创建时的 ID；插件动作�
 | 前置 S0 基线 | `cli/package.json`、锁文件、CI/测试说明 | 干净安装、build 与原有回归已在开发 fork 通过；公开能力差异和 Node 版本已固定。原仓合并仍待评审 |
 | S1.1 只读定位 | `cli/src/host/inspect.ts`、`cli/src/cli.ts` | 显式规范路径、只读 JSON 检查；错项目、状态损坏和未初始化状态有确定结果。已推送开发 fork 并通过 CI |
 | S1.2 会话身份、单宿主与席位 | 新 `host/{session,snapshot,lease,binding,adoption,recovery}.ts`，现有可变命令入口 | 新建会话 UUID、占用检查、短锁、`claim/release/heartbeat`、快照、席位绑定、旧会话接管和显式租约恢复均已推送并通过 CI；后续仍须 Herdr 真机归因 |
-| S1.3 受控提交 | 新 `host/{business,generation,candidate,transaction,receipt}.ts`；抽取 `commands.ts` 的 Ralph/Lisa 提交核心 | 代次 0、业务摘要及只保存、不自动提交的候选收件箱已完成。Ralph/Lisa 人工提交已共用轮次、tag、policy、NEEDS_WORK 校验核心；CODE/FIX gate 已抽成结构化结果；业务文件与轮次写入已抽成支持显式项目目录的同一核心，原命令继续复用。下一步是带短锁的事务意图、回执、去重和故障待核对；自动提交仍需真实 Herdr 席位归因验证后才能启用 |
+| S1.3 受控提交 | 新 `host/{business,generation,candidate,transaction,receipt}.ts`；抽取 `commands.ts` 的 Ralph/Lisa 提交核心 | 代次 0、业务摘要及只保存、不自动提交的候选收件箱已完成。Ralph/Lisa 人工提交已共用轮次、tag、policy、NEEDS_WORK 校验核心与业务写入核心。写入核心现能在落盘前生成各受影响文件的原摘要、确定的预期内容及后摘要，并在首次写入前重验原状态；gate 可指定项目工作目录。下一步仍须将计划作为持久意图在短锁内 fsync 落盘，再实现回执、去重和故障待核对；当前尚无正式 `host commit`，自动提交仍需真实 Herdr 席位归因验证后才能启用 |
 | S1.4 回归与集成 | `cli/src/test/`、样板项目脚本、契约文档 | 原人工流程与 tmux 流程回归；跨进程并发、注入中断、重启、旧会话、错误席位/目录的可重复测试 |
 
 正式启用候选归因与提交前先做一个**约一天的 Herdr 席位归因验证**：在独立样板 Workspace 启两个真实 Agent，记录插件动作上下文、Pane 环境、`agent get` 的 ID/类型/会话引用及 Pane 移动后变化。2026-10-30 核对到本机 Herdr CLI 为 `0.9.4`，Claude/Codex 命令可用；当前开发终端不在 Herdr 管理的 Pane 中，按 Herdr 自带操作说明未控制会话或复核 integration，因此此验证**还没有完成**。当前只允许保存 `source_verification=unverified` 的候选，不启用自动归因、正式提交或交接。若无法稳定证明候选对应的活动席位，插件首版在候选阶段要求人工确认；不得自动放行交接。

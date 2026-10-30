@@ -35,4 +35,12 @@ describe("structured Ralph gate", () => {
     assert.equal(passed.result, "pass");
     assert.equal(passed.checks.length, 2);
   });
+
+  it("passes an explicit project cwd to every host gate check", () => {
+    const calls: Array<[string, string | undefined]> = [];
+    const result = evaluateGate("CODE", { ...block, cwd: "/tmp/project" },
+      (command, cwd) => { calls.push([command, cwd]); });
+    assert.equal(result.result, "pass");
+    assert.deepEqual(calls, [["first", "/tmp/project"], ["second", "/tmp/project"]]);
+  });
 });

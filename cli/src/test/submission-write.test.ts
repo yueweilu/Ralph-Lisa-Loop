@@ -3,7 +3,11 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { applyLisaSubmission, applyRalphSubmission, type SubmissionWriteEvent } from "../submission-write.js";
+import { createHash } from "node:crypto";
+import {
+  applyLisaSubmission, applyRalphSubmission, applySubmissionPlan,
+  prepareLisaSubmission, prepareRalphSubmission, type SubmissionWriteEvent,
+} from "../submission-write.js";
 
 describe("shared submission business writes", () => {
   let project: string;
@@ -64,5 +68,53 @@ describe("shared submission business writes", () => {
     assert.equal(consensus.testsCleaned, true);
     assert.deepEqual(events, [{ type: "tests_cleaned" }]);
     assert.equal(fs.existsSync(path.join(state, "tests")), false);
+  });
+
+  it("prepares exact after hashes without mutation, then applies those bytes", () => {
+    const before = fs.readFileSync(path.join(state, "work.md"));
+    const plan = prepareRalphSubmission({ projectDir: project, tag: "PLAN", external: false,
+      content: "[PLAN] Build feature\n\nTest Plan: npm test" });
+    assert.deepEqual(plan.changes.map((change) => change.name),
+      ["work.md", "history.md", "last_action.txt", "turn.txt"]);
+    assert.deepEqual(fs.readFileSync(path.join(state, "work.md")), before);
+    assert.equal(fs.readFileSync(path.join(state, "turn.txt"), "utf8"), "ralph");
+    applySubmissionPlan(plan);
+    for (const change of plan.changes) {
+      const bytes = fs.readFileSync(path.join(state, change.name));
+      assert.equal(createHash("sha256").update(bytes).digest("hex"), change.after_sha256);
+    }
+  });
+
+  it("rejects a stale plan before changing any other file", () => {
+    const plan = prepareRalphSubmission({ projectDir: project, tag: "PLAN", external: false,
+      content: "[PLAN] Build feature\n\nTest Plan: npm test" });
+    fs.writeFileSync(path.join(state, "work.md"), "changed outside plan");
+    const historyBefore = fs.readFileSync(path.join(state, "history.md"));
+    assert.throws(() => applySubmissionPlan(plan), /state changed before applying work\.md/);
+    assert.deepEqual(fs.readFileSync(path.join(state, "history.md")), historyBefore);
+    assert.equal(fs.readFileSync(path.join(state, "turn.txt"), "utf8"), "ralph");
+  });
+
+  it("rejects changed planned bytes before the first write", () => {
+    const plan = prepareRalphSubmission({ projectDir: project, tag: "PLAN", external: false,
+      content: "[PLAN] Build feature\n\nTest Plan: npm test" });
+    plan.changes[0].after_bytes = Buffer.from("different content");
+    assert.throws(() => applySubmissionPlan(plan), /Invalid submission plan change/);
+    assert.equal(fs.readFileSync(path.join(state, "turn.txt"), "utf8"), "ralph");
+  });
+
+  it("includes deadlock and evidence cleanup in Lisa's planned changes", () => {
+    process.env.RL_DEADLOCK_THRESHOLD = "1";
+    fs.mkdirSync(path.join(state, "tests"));
+    fs.writeFileSync(path.join(state, "tests", "evidence.txt"), "original");
+    const plan = prepareLisaSubmission({ projectDir: project, tag: "NEEDS_WORK", external: false,
+      content: "[NEEDS_WORK] Add coverage" });
+    assert.ok(plan.changes.some((change) => change.name === "deadlock.txt" && change.after_sha256));
+    fs.writeFileSync(path.join(state, "tests", "evidence.txt"), "changed");
+    const consensus = prepareLisaSubmission({ projectDir: project, tag: "CONSENSUS", external: false,
+      content: "[CONSENSUS] Done" });
+    assert.ok(consensus.changes.some((change) => change.name === "tests" && change.action === "remove_tree"));
+    fs.writeFileSync(path.join(state, "tests", "evidence.txt"), "changed again");
+    assert.throws(() => applySubmissionPlan(consensus), /state changed before applying tests/);
   });
 });

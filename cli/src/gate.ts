@@ -5,6 +5,8 @@ export interface GateOptions {
   enabled: boolean;
   commands: string[];
   mode: "warn" | "block";
+  /** Host callers bind checks to the canonical project; legacy CLI uses its current cwd. */
+  cwd?: string;
 }
 
 export interface GateCheck {
@@ -18,7 +20,7 @@ export interface GateResult {
   checks: GateCheck[];
 }
 
-export type GateRunner = (command: string) => void;
+export type GateRunner = (command: string, cwd?: string) => void;
 export type GateObserver = (event: "start" | GateCheck) => void;
 
 export function gateOptionsFromEnv(): GateOptions {
@@ -29,8 +31,8 @@ export function gateOptionsFromEnv(): GateOptions {
   };
 }
 
-function defaultRunner(command: string): void {
-  execSync(command, { stdio: "pipe", timeout: 120000 });
+function defaultRunner(command: string, cwd?: string): void {
+  execSync(command, { cwd, stdio: "pipe", timeout: 120000 });
 }
 
 /** The observer preserves the legacy CLI's per-command progress output. */
@@ -49,7 +51,7 @@ export function evaluateGate(
   for (const command of options.commands) {
     let check: GateCheck;
     try {
-      runner(command);
+      runner(command, options.cwd);
       check = { command, result: "pass" };
     } catch (error: unknown) {
       const failure = error as { stderr?: Buffer | string; status?: number };

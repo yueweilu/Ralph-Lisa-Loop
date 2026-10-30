@@ -219,13 +219,16 @@ export function appendHistory(
   content: string,
   projectDir?: string
 ): void {
+  const entry = formatHistoryEntry(role, content, getRound(projectDir), getStep(projectDir), timestamp());
+  appendFile(path.join(stateDir(projectDir), "history.md"), entry);
+}
+
+export function formatHistoryEntry(
+  role: string, content: string, round: string, step: string, ts: string
+): string {
   const tag = extractTag(content);
   const summary = extractSummary(content);
-  const round = getRound(projectDir);
-  const step = getStep(projectDir);
-  const ts = timestamp();
-
-  const entry = `
+  return `
 ---
 
 ## [${role}] [${tag}] Round ${round} | Step: ${step}
@@ -235,7 +238,6 @@ export function appendHistory(
 ${content}
 
 `;
-  appendFile(path.join(stateDir(projectDir), "history.md"), entry);
 }
 
 export function updateLastAction(
@@ -243,11 +245,11 @@ export function updateLastAction(
   content: string,
   projectDir?: string
 ): void {
+  writeFile(path.join(stateDir(projectDir), "last_action.txt"), formatLastAction(role, content, timeShort()));
+}
+
+export function formatLastAction(role: string, content: string, ts: string): string {
   const tag = extractTag(content);
   const summary = extractSummary(content);
-  const ts = timeShort();
-  writeFile(
-    path.join(stateDir(projectDir), "last_action.txt"),
-    `[${tag}] ${summary} (by ${role}, ${ts})`
-  );
+  return `[${tag}] ${summary} (by ${role}, ${ts})`;
 }
