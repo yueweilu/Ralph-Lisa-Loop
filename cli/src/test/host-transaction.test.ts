@@ -62,6 +62,37 @@ describe("host write-ahead intent", () => {
     };
   }
 
+  function receipt(requestId: string) {
+    return run("host", "receipt", "--project", project, "--request-id", requestId, "--json");
+  }
+
+  it("returns unknown only while no write or receipt metadata exists", () => {
+    const requestId = randomUUID();
+    const result = receipt(requestId);
+    assert.equal(result.status, 0, result.stdout);
+    assert.equal(JSON.parse(result.stdout).status, "unknown");
+    assert.equal(JSON.parse(result.stdout).request_id, requestId);
+    const malformed = receipt("not-a-uuid");
+    assert.equal(malformed.status, 2);
+    assert.equal(JSON.parse(malformed.stdout).code, "INVALID_ARGUMENTS");
+  });
+
+  it("treats interrupted intent writes and unsupported receipt metadata as uncertain", () => {
+    const requestId = randomUUID();
+    const intents = path.join(host, "intents");
+    fs.mkdirSync(intents);
+    const pendingFile = path.join(intents, `${requestId}.pending`);
+    fs.writeFileSync(pendingFile, "partial");
+    const interrupted = receipt(requestId);
+    assert.equal(interrupted.status, 7);
+    assert.equal(JSON.parse(interrupted.stdout).reason, "interrupted_intent_write");
+    fs.unlinkSync(pendingFile);
+    fs.mkdirSync(path.join(host, "receipts"));
+    const unsupported = receipt(requestId);
+    assert.equal(unsupported.status, 7);
+    assert.equal(JSON.parse(unsupported.stdout).reason, "receipt_store_requires_review");
+  });
+
   it("persists only hashes before any business write and freezes snapshot and release", () => {
     const workBefore = fs.readFileSync(path.join(state, "work.md"));
     const turnBefore = fs.readFileSync(path.join(state, "turn.txt"));
@@ -76,6 +107,13 @@ describe("host write-ahead intent", () => {
     assert.deepEqual(readHostIntent(host, intent.request_id), intent);
     assert.deepEqual(fs.readFileSync(path.join(state, "work.md")), workBefore);
     assert.deepEqual(fs.readFileSync(path.join(state, "turn.txt")), turnBefore);
+    const pending = receipt(intent.request_id);
+    assert.equal(pending.status, 7);
+    assert.equal(JSON.parse(pending.stdout).status, "needs_reconcile");
+    assert.equal(JSON.parse(pending.stdout).intent.content_sha256, intent.content_sha256);
+    const other = receipt(randomUUID());
+    assert.equal(other.status, 7);
+    assert.equal(JSON.parse(other.stdout).reason, "another_request_needs_reconcile");
     const snapshot = run("host", "snapshot", "--project", project, "--json");
     assert.equal(snapshot.status, 7);
     assert.equal(JSON.parse(snapshot.stdout).code, "NEEDS_RECONCILE");
@@ -96,6 +134,9 @@ describe("host write-ahead intent", () => {
     assert.equal(snapshot.status, 7);
     assert.equal(JSON.parse(snapshot.stdout).code, "NEEDS_RECONCILE");
     assert.equal(fs.existsSync(path.join(host, "receipts")), false);
+    const pending = receipt(intent.request_id);
+    assert.equal(pending.status, 7);
+    assert.equal(JSON.parse(pending.stdout).status, "needs_reconcile");
   });
 
   it("rejects a candidate-content mismatch without writing an intent", () => {
@@ -120,5 +161,19 @@ describe("host write-ahead intent", () => {
     changed.changes[0].name = "../work.md";
     fs.writeFileSync(file, JSON.stringify(changed) + "\n");
     assert.throws(() => readHostIntent(host, intent.request_id), /Invalid host intent/);
+    const pending = receipt(intent.request_id);
+    assert.equal(pending.status, 7);
+    assert.equal(JSON.parse(pending.stdout).reason, "invalid_intent_record");
+  });
+
+  it("keeps receipt status uncertain if a business file is torn after intent", () => {
+    const request = input();
+    const release = acquireHostLock(state);
+    try { persistHostIntent(request); } finally { release(); }
+    fs.writeFileSync(path.join(state, "turn.txt"), "");
+    const result = receipt(request.requestId);
+    assert.equal(result.status, 7);
+    assert.equal(JSON.parse(result.stdout).status, "needs_reconcile");
+    assert.equal(JSON.parse(result.stdout).session_id, null);
   });
 });
