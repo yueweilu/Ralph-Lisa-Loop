@@ -130,6 +130,7 @@ function assertNoHostMarkers(host: string): void {
     }
   }
   assertNoPendingIntents(host);
+  assertNoPendingCandidates(host);
 }
 
 export function assertNoPendingIntents(host: string): void {
@@ -139,6 +140,16 @@ export function assertNoPendingIntents(host: string): void {
     if (!stat.isDirectory() || stat.isSymbolicLink() || fs.readdirSync(intentsDir).length > 0) {
       throw new HostContractError("NEEDS_RECONCILE", 7, "Resolve pending host intents before changing the lease");
     }
+  }
+}
+
+export function assertNoPendingCandidates(host: string): void {
+  const candidates = path.join(host, "candidates");
+  if (!entryExists(candidates)) return;
+  const stat = fs.lstatSync(candidates);
+  if (!stat.isDirectory() || stat.isSymbolicLink() || fs.realpathSync.native(candidates) !== candidates ||
+      fs.readdirSync(candidates).some((name) => !UUID.test(name))) {
+    throw new HostContractError("NEEDS_RECONCILE", 7, "Incomplete or invalid candidate inbox");
   }
 }
 
@@ -253,6 +264,7 @@ export function heartbeatHost(project: string, leaseId: string, ownerId: string)
       throw new HostContractError("NEEDS_RECONCILE", 7, "Resolve pending host state before heartbeat");
     }
     assertNoPendingIntents(hostDir);
+    assertNoPendingCandidates(hostDir);
     let record: HostLease;
     try {
       record = readLease(hostDir);
@@ -310,6 +322,7 @@ export function releaseHost(project: string, leaseId: string): { schema: 1; stat
       throw new HostContractError("NEEDS_RECONCILE", 7, "Resolve pending host state before release");
     }
     assertNoPendingIntents(hostDir);
+    assertNoPendingCandidates(hostDir);
     let record: HostLease;
     try {
       record = readLease(hostDir);

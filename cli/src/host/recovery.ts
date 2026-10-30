@@ -7,6 +7,7 @@ import { canonicalProject, HostContractError, inspectProject } from "./inspect.j
 import { acquireHostLock, assertAdoptionReady, assertNoManualRuntime, assertNoPendingIntents, entryExists, HostLease, readLease } from "./lease.js";
 import { businessDigest } from "./business.js";
 import { assertGenerationMatchesBusiness, GenerationRecord, readGeneration } from "./generation.js";
+import { candidateInventory } from "./candidate.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -20,6 +21,8 @@ interface Evidence {
   binding_generation: number | null;
   binding_lease_id: string | null;
   generation: GenerationRecord | null;
+  candidate_count: number;
+  candidates_digest: string | null;
   evidence_sha256: string;
   host_dir: string;
 }
@@ -60,7 +63,7 @@ function collect(project: string): Evidence {
       throw new HostContractError("NEEDS_RECONCILE", 7, `Host marker ${name} requires reconciliation`);
     }
   }
-  for (const name of ["receipts", "candidates"]) {
+  for (const name of ["receipts"]) {
     if (entryExists(path.join(host, name))) {
       throw new HostContractError("NEEDS_RECONCILE", 7, `Unsupported host metadata during lease recovery: ${name}`);
     }
@@ -88,6 +91,7 @@ function collect(project: string): Evidence {
   if (generation) {
     assertGenerationMatchesBusiness(generation, stateDigest, current.turn!, current.round!, current.step!);
   }
+  const candidates = candidateInventory(host, current.project_realpath, current.state_realpath, current.session_id);
   const body = {
     project_realpath: current.project_realpath,
     state_realpath: current.state_realpath,
@@ -97,6 +101,8 @@ function collect(project: string): Evidence {
     binding_generation: binding?.binding_generation ?? null,
     binding_lease_id: binding?.lease_id ?? null,
     generation,
+    candidate_count: candidates.count,
+    candidates_digest: candidates.digest,
   };
   return {
     ...body,
@@ -122,6 +128,7 @@ export function leaseRecoveryCheck(project: string): object {
       heartbeat_at: evidence.lease.heartbeat_at ?? null,
       binding_generation: evidence.binding_generation,
       generation: evidence.generation?.generation ?? null,
+      candidate_count: evidence.candidate_count,
       state_digest: evidence.state_digest,
       evidence_sha256: evidence.evidence_sha256,
       required_checks: ["coordinator_stopped", "herdr_agents_stopped", "no_unrecorded_delivery"],
@@ -172,6 +179,7 @@ export function recoverLease(project: string, leaseId: string, expectedEvidence:
       last_heartbeat_at: evidence.lease.heartbeat_at ?? null,
       state_digest: evidence.state_digest, binding_generation: evidence.binding_generation,
       generation: evidence.generation?.generation ?? null,
+      candidate_count: evidence.candidate_count,
       evidence_sha256: expectedEvidence, decision, replay: "not_replayed",
       recovered_at: new Date().toISOString(),
     });

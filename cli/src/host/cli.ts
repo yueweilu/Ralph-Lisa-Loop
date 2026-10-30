@@ -5,6 +5,7 @@ import { bindSeat } from "./binding.js";
 import { adoptLegacy, confirmAdoption } from "./adoption.js";
 import { leaseRecoveryCheck, recoverLease } from "./recovery.js";
 import { prepareGeneration } from "./generation.js";
+import { proposeCandidate } from "./candidate.js";
 
 function options(args: string[], names: string[]): Record<string, string> {
   if (args.length !== names.length * 2 + 1 || args.at(-1) !== "--json") {
@@ -74,6 +75,11 @@ export function cmdHost(args: string[]): void {
         result = prepareGeneration(opts["--project"], opts["--lease-id"], opts["--expected-digest"]);
         break;
       }
+      case "propose": {
+        const opts = options(args.slice(1), ["--project", "--role", "--file", "--candidate-id"]);
+        result = proposeCandidate(opts["--project"], opts["--role"], opts["--file"], opts["--candidate-id"]);
+        break;
+      }
       case "bind-seat": {
         const opts = options(args.slice(1), ["--project", "--lease-id", "--role", "--workspace-id", "--pane-id", "--agent-target"]);
         result = bindSeat(opts["--project"], opts["--lease-id"], opts["--role"],
@@ -86,7 +92,7 @@ export function cmdHost(args: string[]): void {
         break;
       }
       default:
-        throw new HostContractError("UNKNOWN_HOST_COMMAND", 2, "Usage: ralph-lisa host <inspect|adopt|confirm-adoption|claim|heartbeat|recovery-check|recover-lease|bind-seat|snapshot|prepare-generation|release> ... --json");
+        throw new HostContractError("UNKNOWN_HOST_COMMAND", 2, "Usage: ralph-lisa host <inspect|adopt|confirm-adoption|claim|heartbeat|recovery-check|recover-lease|bind-seat|snapshot|prepare-generation|propose|release> ... --json");
     }
     console.log(JSON.stringify(result));
   } catch (error) {

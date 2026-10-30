@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { HostContractError, inspectProject } from "./inspect.js";
-import { acquireHostLock, assertAdoptionReady, assertNoPendingIntents, entryExists, readLease } from "./lease.js";
+import { acquireHostLock, assertAdoptionReady, assertNoPendingCandidates, assertNoPendingIntents, entryExists, readLease } from "./lease.js";
 
 export interface SeatBinding {
   pane_id: string;
@@ -102,6 +102,7 @@ export function bindSeat(
       }
     }
     assertNoPendingIntents(host);
+    assertNoPendingCandidates(host);
     let lease;
     try {
       lease = readLease(host);

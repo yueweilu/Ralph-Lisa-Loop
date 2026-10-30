@@ -6,6 +6,7 @@ import { acquireHostLock, assertAdoptionReady, assertNoManualRuntime, entryExist
 import { HostBinding, readBinding, SeatBinding } from "./binding.js";
 import { businessDigest } from "./business.js";
 import { assertGenerationMatchesBusiness, readGeneration } from "./generation.js";
+import { candidateInventory } from "./candidate.js";
 
 export interface HostSnapshot {
   schema: 1;
@@ -25,6 +26,7 @@ export interface HostSnapshot {
   workspace_id: string | null;
   seats: { ralph: SeatBinding | null; lisa: SeatBinding | null } | null;
   last_receipt_id: string | null;
+  candidate_count: number;
 }
 
 interface HostBindingSummary {
@@ -58,8 +60,8 @@ function hostBindingSummary(state: string, project: string, sessionId: string): 
       throw new HostContractError("NEEDS_RECONCILE", 7, "Pending host intents require reconciliation");
     }
   }
-  // Later slices must validate receipts and candidates before exposing them.
-  for (const future of ["receipts", "candidates"]) {
+  // Receipts are not yet supported by this slice.
+  for (const future of ["receipts"]) {
     if (entryExists(path.join(host, future))) {
       throw new HostContractError("NEEDS_RECONCILE", 7, `Unsupported host metadata: ${future}`);
     }
@@ -118,6 +120,8 @@ export function snapshotProject(project: string): HostSnapshot {
     if (generation) {
       assertGenerationMatchesBusiness(generation, digest, current.turn!, current.round!, current.step!);
     }
+    const candidates = candidateInventory(path.join(current.state_realpath, "host"),
+      current.project_realpath, current.state_realpath, current.session_id);
     return {
       schema: 1,
       status: "ok",
@@ -136,6 +140,7 @@ export function snapshotProject(project: string): HostSnapshot {
       workspace_id: host.binding?.workspace_id ?? null,
       seats: host.binding?.seats ?? null,
       last_receipt_id: generation?.last_receipt_id ?? null,
+      candidate_count: candidates.count,
     };
   } finally {
     releaseLock();

@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { businessDigest } from "./business.js";
 import { canonicalProject, HostContractError, inspectProject } from "./inspect.js";
-import { acquireHostLock, assertAdoptionReady, assertNoManualRuntime, assertNoPendingIntents, entryExists, readLease } from "./lease.js";
+import { acquireHostLock, assertAdoptionReady, assertNoManualRuntime, assertNoPendingCandidates, assertNoPendingIntents, entryExists, readLease } from "./lease.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -89,12 +89,13 @@ export function prepareGeneration(project: string, leaseId: string, expectedDige
       throw new HostContractError("NEEDS_RECONCILE", 7, "Invalid host directory");
     }
     assertAdoptionReady(host, current.project_realpath, current.state_realpath!, current.session_id!);
-    for (const name of ["claim.lock", "reconcile.json", "lease.json", "binding.pending", "adoption.pending", "generation.pending", "receipts", "candidates"]) {
+    for (const name of ["claim.lock", "reconcile.json", "lease.json", "binding.pending", "adoption.pending", "generation.pending", "receipts"]) {
       if (entryExists(path.join(host, name))) {
         throw new HostContractError("NEEDS_RECONCILE", 7, `Host metadata ${name} requires reconciliation`);
       }
     }
     assertNoPendingIntents(host);
+    assertNoPendingCandidates(host);
     let lease;
     try {
       lease = readLease(host);
@@ -118,6 +119,9 @@ export function prepareGeneration(project: string, leaseId: string, expectedDige
     if (previous) {
       assertGenerationMatchesBusiness(previous, digest, current.turn!, current.round!, current.step!);
       return previous;
+    }
+    if (entryExists(path.join(host, "candidates"))) {
+      throw new HostContractError("NEEDS_RECONCILE", 7, "Candidates exist before the first generation");
     }
     const now = new Date().toISOString();
     const record: GenerationRecord = {
