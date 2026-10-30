@@ -3,6 +3,7 @@ import { claimHost, heartbeatHost, releaseHost } from "./lease.js";
 import { snapshotProject } from "./snapshot.js";
 import { bindSeat } from "./binding.js";
 import { adoptLegacy, confirmAdoption } from "./adoption.js";
+import { leaseRecoveryCheck, recoverLease } from "./recovery.js";
 
 function options(args: string[], names: string[]): Record<string, string> {
   if (args.length !== names.length * 2 + 1 || args.at(-1) !== "--json") {
@@ -42,6 +43,16 @@ export function cmdHost(args: string[]): void {
         result = heartbeatHost(opts["--project"], opts["--lease-id"], opts["--owner-id"]);
         break;
       }
+      case "recovery-check": {
+        const opts = options(args.slice(1), ["--project"]);
+        result = leaseRecoveryCheck(opts["--project"]);
+        break;
+      }
+      case "recover-lease": {
+        const opts = options(args.slice(1), ["--project", "--lease-id", "--expected-evidence", "--decision"]);
+        result = recoverLease(opts["--project"], opts["--lease-id"], opts["--expected-evidence"], opts["--decision"]);
+        break;
+      }
       case "adopt": {
         const opts = options(args.slice(1), ["--project"]);
         result = adoptLegacy(opts["--project"]);
@@ -69,7 +80,7 @@ export function cmdHost(args: string[]): void {
         break;
       }
       default:
-        throw new HostContractError("UNKNOWN_HOST_COMMAND", 2, "Usage: ralph-lisa host <inspect|adopt|confirm-adoption|claim|heartbeat|bind-seat|snapshot|release> ... --json");
+        throw new HostContractError("UNKNOWN_HOST_COMMAND", 2, "Usage: ralph-lisa host <inspect|adopt|confirm-adoption|claim|heartbeat|recovery-check|recover-lease|bind-seat|snapshot|release> ... --json");
     }
     console.log(JSON.stringify(result));
   } catch (error) {
