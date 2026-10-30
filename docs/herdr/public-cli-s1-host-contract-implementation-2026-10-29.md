@@ -165,7 +165,7 @@ Herdr 官方接口能管理 Pane/Agent 并返回创建时的 ID；插件动作�
 | 前置 S0 基线 | `cli/package.json`、锁文件、CI/测试说明 | 干净安装、build 与原有回归已在开发 fork 通过；公开能力差异和 Node 版本已固定。原仓合并仍待评审 |
 | S1.1 只读定位 | `cli/src/host/inspect.ts`、`cli/src/cli.ts` | 显式规范路径、只读 JSON 检查；错项目、状态损坏和未初始化状态有确定结果。已推送开发 fork 并通过 CI |
 | S1.2 会话身份、单宿主与席位 | 新 `host/{session,snapshot,lease,binding,adoption,recovery}.ts`，现有可变命令入口 | 新建会话 UUID、占用检查、短锁、`claim/release/heartbeat`、快照、席位绑定、旧会话接管和显式租约恢复均已推送并通过 CI；后续仍须 Herdr 真机归因 |
-| S1.3 受控提交 | 新 `host/{business,generation,candidate,transaction,receipt}.ts`；抽取 `commands.ts` 的 Ralph/Lisa 提交核心 | 代次 0、业务摘要及只保存、不自动提交的候选收件箱已完成。Ralph/Lisa 人工提交已共用轮次、tag、policy、NEEDS_WORK 校验核心与业务写入核心。写入核心现能在落盘前生成各受影响文件的原摘要、确定的预期内容及后摘要，并在首次写入前重验原状态；gate 可指定项目工作目录。下一步仍须将计划作为持久意图在短锁内 fsync 落盘，再实现回执、去重和故障待核对；当前尚无正式 `host commit`，自动提交仍需真实 Herdr 席位归因验证后才能启用 |
+| S1.3 受控提交 | 新 `host/{business,generation,candidate,transaction,receipt}.ts`；抽取 `commands.ts` 的 Ralph/Lisa 提交核心 | 代次 0、业务摘要及只保存、不自动提交的候选收件箱已完成。Ralph/Lisa 人工提交已共用轮次、tag、policy、NEEDS_WORK 校验核心与业务写入核心；写入核心可先生成原摘要和预期后摘要。内部事务模块现能在调用方持有短锁时核对租约、候选、席位、代次，并以临时文件、fsync、rename 持久化不含正文的写前意图。快照与租约操作遇未完成意图会进入待核对。仍须把该模块接入正式 `host commit`，完成回执、去重与恢复；自动提交须等真实 Herdr 席位归因验证 |
 | S1.4 回归与集成 | `cli/src/test/`、样板项目脚本、契约文档 | 原人工流程与 tmux 流程回归；跨进程并发、注入中断、重启、旧会话、错误席位/目录的可重复测试 |
 
 正式启用候选归因与提交前先做一个**约一天的 Herdr 席位归因验证**：在独立样板 Workspace 启两个真实 Agent，记录插件动作上下文、Pane 环境、`agent get` 的 ID/类型/会话引用及 Pane 移动后变化。2026-10-30 核对到本机 Herdr CLI 为 `0.9.4`，Claude/Codex 命令可用；当前开发终端不在 Herdr 管理的 Pane 中，按 Herdr 自带操作说明未控制会话或复核 integration，因此此验证**还没有完成**。当前只允许保存 `source_verification=unverified` 的候选，不启用自动归因、正式提交或交接。若无法稳定证明候选对应的活动席位，插件首版在候选阶段要求人工确认；不得自动放行交接。

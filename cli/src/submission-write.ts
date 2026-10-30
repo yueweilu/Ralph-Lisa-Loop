@@ -42,6 +42,9 @@ export interface PlannedFileChange {
 
 export interface SubmissionWritePlan {
   stateDir: string;
+  role: "ralph" | "lisa";
+  tag: string;
+  content_sha256: string;
   changes: PlannedFileChange[];
   result: SubmissionWriteResult;
 }
@@ -168,7 +171,8 @@ export function prepareRalphSubmission(options: SubmissionWriteOptions): Submiss
   builder.addWrite("last_action.txt", formatLastAction("Ralph", content, timeShort()));
   builder.addWrite("turn.txt", "lisa");
   const testsCleaned = tag === "CONSENSUS" ? builder.addTreeDelete("tests") : false;
-  return { stateDir: dir, changes: builder.changes,
+  return { stateDir: dir, role: "ralph", tag,
+    content_sha256: sha256(Buffer.from(content, "utf8")), changes: builder.changes,
     result: { round, step, summary, turnAfter: "lisa", roundAfter: parseInt(round, 10) || 0,
       testsCleaned, deadlockCount: null } };
 }
@@ -221,7 +225,8 @@ export function prepareLisaSubmission(options: SubmissionWriteOptions): Submissi
   const testsCleaned = tag === "CONSENSUS" ? builder.addTreeDelete("tests") : false;
   const roundAfter = (parseInt(round, 10) || 0) + 1;
   builder.addWrite("round.txt", String(roundAfter));
-  return { stateDir: dir, changes: builder.changes,
+  return { stateDir: dir, role: "lisa", tag,
+    content_sha256: sha256(Buffer.from(content, "utf8")), changes: builder.changes,
     result: { round, step, summary, turnAfter: "ralph", roundAfter, testsCleaned, deadlockCount } };
 }
 
@@ -231,10 +236,8 @@ function currentDigest(file: string, action: PlannedFileChange["action"]): strin
   return bytes ? sha256(bytes) : null;
 }
 
-/** Recheck every pre-state before the first mutation; never regenerate a plan on retry. */
-export function applySubmissionPlan(
-  plan: SubmissionWritePlan, onEvent?: (event: SubmissionWriteEvent) => void
-): SubmissionWriteResult {
+/** Recheck every pre-state before creating an intent or making the first mutation. */
+export function validateSubmissionPlan(plan: SubmissionWritePlan): void {
   for (const change of plan.changes) {
     if ((change.action === "write" && !WRITABLE_FILES.has(change.name)) ||
         (change.action === "delete" && change.name !== "deadlock.txt") ||
@@ -248,6 +251,13 @@ export function applySubmissionPlan(
       throw new Error(`Submission state changed before applying ${change.name}`);
     }
   }
+}
+
+/** Never regenerate a plan on retry. */
+export function applySubmissionPlan(
+  plan: SubmissionWritePlan, onEvent?: (event: SubmissionWriteEvent) => void
+): SubmissionWriteResult {
+  validateSubmissionPlan(plan);
   for (const change of plan.changes) {
     const file = path.join(plan.stateDir, change.name);
     if (change.action === "write") {
