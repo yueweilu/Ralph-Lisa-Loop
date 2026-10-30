@@ -32,6 +32,7 @@ import {
 } from "./state.js";
 import { checkRalph, checkLisa } from "./policy.js";
 import { checkSubmission } from "./submission.js";
+import { evaluateGate } from "./gate.js";
 import { writeSessionIdentity } from "./host/session.js";
 import { assertHostMutationAllowed, releaseSessionCommandLock } from "./host/guard.js";
 
@@ -134,28 +135,12 @@ function getFilesChanged(): string[] {
  * Gate results are NOT written to work.md (prevents Lisa anchoring).
  */
 export function runGate(tag: string): void {
-  if (tag !== "CODE" && tag !== "FIX") return;
-  if (process.env.RL_RALPH_GATE !== "true") return;
-
-  const commands = (process.env.RL_GATE_COMMANDS || "").split("|").filter(Boolean);
-  if (commands.length === 0) return;
-
-  const mode = process.env.RL_GATE_MODE === "block" ? "block" : "warn";
-  const failures: Array<{ cmd: string; error: string }> = [];
-
-  console.log("Running gate checks...");
-  for (const cmd of commands) {
-    try {
-      execSync(cmd, { stdio: "pipe", timeout: 120000 });
-      console.log(`  PASS  ${cmd}`);
-    } catch (e: any) {
-      const stderr = e.stderr ? e.stderr.toString().trim().split("\n").slice(-3).join("\n") : "exit code " + e.status;
-      failures.push({ cmd, error: stderr });
-      console.log(`  FAIL  ${cmd}`);
-    }
-  }
-
-  if (failures.length === 0) {
+  const gate = evaluateGate(tag, undefined, undefined, (event) => {
+    if (event === "start") console.log("Running gate checks...");
+    else console.log(`  ${event.result === "pass" ? "PASS" : "FAIL"}  ${event.command}`);
+  });
+  if (gate.result === "not_enabled") return;
+  if (gate.result === "pass") {
     console.log("Gate: all checks passed.");
     console.log("");
     return;
@@ -163,17 +148,17 @@ export function runGate(tag: string): void {
 
   console.log("");
   console.log(line());
-  if (mode === "block") {
+  if (gate.result === "block") {
     console.error("Gate BLOCKED submission:");
-    for (const f of failures) {
-      console.error(`  - ${f.cmd}: ${f.error}`);
+    for (const check of gate.checks.filter((check) => check.result === "fail")) {
+      console.error(`  - ${check.command}: ${check.error}`);
     }
     console.error(line());
     process.exit(1);
   } else {
     console.log("Gate warnings (submission proceeds):");
-    for (const f of failures) {
-      console.log(`  - ${f.cmd}: ${f.error}`);
+    for (const check of gate.checks.filter((check) => check.result === "fail")) {
+      console.log(`  - ${check.command}: ${check.error}`);
     }
     console.log(line());
     console.log("");
