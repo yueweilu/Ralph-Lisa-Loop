@@ -1,5 +1,5 @@
 import { HostContractError, inspectProject } from "./inspect.js";
-import { claimHost, releaseHost } from "./lease.js";
+import { claimHost, heartbeatHost, releaseHost } from "./lease.js";
 import { snapshotProject } from "./snapshot.js";
 import { bindSeat } from "./binding.js";
 import { adoptLegacy, confirmAdoption } from "./adoption.js";
@@ -37,6 +37,11 @@ export function cmdHost(args: string[]): void {
         result = claimHost(opts["--project"], opts["--host"], opts["--owner-id"]);
         break;
       }
+      case "heartbeat": {
+        const opts = options(args.slice(1), ["--project", "--lease-id", "--owner-id"]);
+        result = heartbeatHost(opts["--project"], opts["--lease-id"], opts["--owner-id"]);
+        break;
+      }
       case "adopt": {
         const opts = options(args.slice(1), ["--project"]);
         result = adoptLegacy(opts["--project"]);
@@ -64,7 +69,7 @@ export function cmdHost(args: string[]): void {
         break;
       }
       default:
-        throw new HostContractError("UNKNOWN_HOST_COMMAND", 2, "Usage: ralph-lisa host <inspect|adopt|confirm-adoption|claim|bind-seat|snapshot|release> ... --json");
+        throw new HostContractError("UNKNOWN_HOST_COMMAND", 2, "Usage: ralph-lisa host <inspect|adopt|confirm-adoption|claim|heartbeat|bind-seat|snapshot|release> ... --json");
     }
     console.log(JSON.stringify(result));
   } catch (error) {

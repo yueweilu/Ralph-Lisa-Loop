@@ -34,7 +34,7 @@
 
 ## 3. 先建怎样的开发分支
 
-**代码开发仓库是公开的 `YW1975/Ralph-Lisa-Loop`。** 已在独立的 `Ralph-Lisa-Loop-herdr/` 目录完成检出；该目录与原有内部工作区平级。公开插件的源码、测试和经审查的文档都在本仓维护，不依赖内部工作区。S0 与此前完成的 S1 切片已推送开发 fork 并通过 CI；当前在 `feat/herdr-s1-adopt-legacy` 开发旧会话接管，尚未合并上游 `main`。
+**代码开发仓库是公开的 `YW1975/Ralph-Lisa-Loop`。** 已在独立的 `Ralph-Lisa-Loop-herdr/` 目录完成检出；该目录与原有内部工作区平级。公开插件的源码、测试和经审查的文档都在本仓维护，不依赖内部工作区。S0 至旧会话接管的已完成 S1 切片已推送开发 fork 并通过 CI；当前在 `feat/herdr-s1-lease-heartbeat` 开发租约心跳，尚未合并上游 `main`。
 
 ```text
 工作区父目录/
@@ -57,7 +57,8 @@
 | `feat/herdr-s1-inspect` | 暂基于 `feat/herdr-plugin` | 显式项目定位与只读 JSON 检查；已推送并通过 CI | 后续进入集成分支；不直接合并公开 `main` |
 | `feat/herdr-s1-identity` | `feat/herdr-s1-inspect` | 新建会话的稳定 ID 与规范路径记录；已推送并通过 CI | 旧会话接管另做切片 |
 | `feat/herdr-s1-mutation-guard` → `feat/herdr-s1-bind-seat` | 前一已验证切片 | 写保护、命令短锁、租约、快照、席位绑定；各分支已推送并通过 CI | 依次纳入集成分支，暂不合并公开 `main` |
-| `feat/herdr-s1-adopt-legacy` | `feat/herdr-s1-bind-seat` | 旧会话备份、冻结和明确确认；当前切片 | 本机与 CI 验证后推送开发 fork |
+| `feat/herdr-s1-adopt-legacy` | `feat/herdr-s1-bind-seat` | 旧会话备份、冻结和明确确认；已推送并通过 CI | 依次纳入集成分支 |
+| `feat/herdr-s1-lease-heartbeat` | `feat/herdr-s1-adopt-legacy` | 同一宿主租约的心跳序号与时间；当前切片 | 本机与 CI 验证后推送开发 fork |
 | 后续 `feat/herdr-s1-*`、`feat/herdr-s2-*` 等 | 最近已验证的开发切片 | 事务回执、manifest、双席协调等 | 每个切片独立测试、提交、推送和核验 |
 
 这样先把不改变产品行为的 S0 基线单独合入公开 `main`，随后把尚未完整交付的 Herdr 能力留在集成分支。当前为推进开发，S1 切片暂时逐个叠在前一切片之上；正式 PR 前按合并后的公开 `main` 核对和调整。切片依次合并并复测；集成分支不在别人基于它开发后强制改写历史。最终 PR 合并到公开仓 `main` 前，复核与当前 `main` 的差异、完整历史/依赖/许可及敏感内容，跑干净安装、旧 CLI 回归和真实 Claude/Codex 流程。**已完成切片均推到 fork；原仓 PR 尚未创建。**
@@ -101,4 +102,4 @@ S1 的工程细节、命令/回执样例与验收矩阵见[公开 CLI 宿主契�
 
 建议先安排 **S0 约 3–5 人日的计划额度**（含公开边界审查、依赖/测试基线和契约清单），完成后再逐切片重估总工期；这不是已实测工时或报价。本机依赖安装现已成功，远端 CI 与真实 Herdr 集成尚未验证，不应把未跑过的双席测试写成通过。
 
-**当前已完成：** 公开仓独立检出及只读接口盘点、本机 Herdr 版本和集成状态核对、当前文件的快速敏感模式扫描、官方插件与 Marketplace 要求复核；S0 固定依赖和锁文件通过本机 `npm ci`、构建与 382 项基线测试；S0、只读检查、新建会话身份、宿主占用保护、命令短锁、`host claim/release`、`host snapshot` 和 `host bind-seat` 分支已在开发 fork 的 CI 成功。当前分支本机验证旧会话接管的备份、冻结和明确确认。**尚未完成：** 完整历史/许可审计、租约心跳与恢复、S1 正式提交/回执契约、隔离 `plugin link`、真实 Agent 双席或原仓发布。
+**当前已完成：** 公开仓独立检出及只读接口盘点、本机 Herdr 版本和集成状态核对、当前文件的快速敏感模式扫描、官方插件与 Marketplace 要求复核；S0 固定依赖和锁文件通过本机 `npm ci`、构建与 382 项基线测试；S0、只读检查、新建会话身份、宿主占用保护、命令短锁、`host claim/release`、`host snapshot`、`host bind-seat` 和旧会话接管分支已在开发 fork 的 CI 成功。当前分支实现租约心跳。**尚未完成：** 完整历史/许可审计、租约失效核查与恢复、S1 正式提交/回执契约、隔离 `plugin link`、真实 Agent 双席或原仓发布。

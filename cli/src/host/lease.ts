@@ -18,6 +18,8 @@ export interface HostLease {
   owner_id: string;
   lease_id: string;
   claimed_at: string;
+  heartbeat_seq?: number;
+  heartbeat_at?: string;
 }
 
 function requiredSession(project: string) {
@@ -157,6 +159,9 @@ export function readLease(host: string): HostLease {
   if (!stat.isDirectory() || stat.isSymbolicLink()) {
     throw new HostContractError("NEEDS_RECONCILE", 7, "Invalid lease directory");
   }
+  if (entryExists(path.join(leaseDir, "record.pending"))) {
+    throw new HostContractError("NEEDS_RECONCILE", 7, "Interrupted lease heartbeat requires reconciliation");
+  }
   const recordPath = path.join(leaseDir, "record.json");
   const recordStat = fs.lstatSync(recordPath);
   if (!recordStat.isFile() || recordStat.isSymbolicLink()) {
@@ -169,7 +174,11 @@ export function readLease(host: string): HostLease {
     throw new HostContractError("NEEDS_RECONCILE", 7, "Unreadable lease record");
   }
   if (record.schema !== 1 || record.status !== "claimed" || record.host !== "herdr" ||
-      !UUID.test(record.lease_id) || !UUID.test(record.owner_id)) {
+      !UUID.test(record.lease_id) || !UUID.test(record.owner_id) ||
+      ((record.heartbeat_seq === undefined) !== (record.heartbeat_at === undefined)) ||
+      (record.heartbeat_seq !== undefined &&
+        (!Number.isSafeInteger(record.heartbeat_seq) || record.heartbeat_seq < 0 ||
+         typeof record.heartbeat_at !== "string" || !Number.isFinite(Date.parse(record.heartbeat_at))))) {
     throw new HostContractError("NEEDS_RECONCILE", 7, "Invalid lease record");
   }
   return record;
@@ -201,6 +210,7 @@ export function claimHost(project: string, host: string, ownerId: string): HostL
       }
       throw error;
     }
+    const claimedAt = new Date().toISOString();
     const record: HostLease = {
       schema: 1, status: "claimed", host: "herdr",
       project_realpath: current.project_realpath,
@@ -208,7 +218,9 @@ export function claimHost(project: string, host: string, ownerId: string): HostL
       session_id: current.session_id!,
       owner_id: ownerId,
       lease_id: crypto.randomUUID(),
-      claimed_at: new Date().toISOString(),
+      claimed_at: claimedAt,
+      heartbeat_seq: 0,
+      heartbeat_at: claimedAt,
     };
     const fd = fs.openSync(path.join(leaseDir, "record.json"), "wx", 0o600);
     try {
@@ -218,6 +230,64 @@ export function claimHost(project: string, host: string, ownerId: string): HostL
       fs.closeSync(fd);
     }
     return record;
+  } finally {
+    releaseLock();
+  }
+}
+
+/** A heartbeat records the current owner; it never expires or steals a lease. */
+export function heartbeatHost(project: string, leaseId: string, ownerId: string): HostLease {
+  if (!UUID.test(leaseId) || !UUID.test(ownerId)) {
+    throw new HostContractError("INVALID_ARGUMENTS", 2, "--lease-id and --owner-id must be UUIDs");
+  }
+  const initial = requiredSession(project);
+  const releaseLock = acquireHostLock(initial.state_realpath!);
+  try {
+    const current = requiredSession(project);
+    if (current.session_id !== initial.session_id || current.state_realpath !== initial.state_realpath) {
+      throw new HostContractError("STALE_SESSION", 5, "Session changed while acquiring the host lock");
+    }
+    const hostDir = hostDirectory(current.state_realpath!);
+    assertAdoptionReady(hostDir, current.project_realpath, current.state_realpath!, current.session_id!);
+    if (["reconcile.json", "claim.lock", "lease.json", "binding.pending", "adoption.pending"].some((name) => entryExists(path.join(hostDir, name)))) {
+      throw new HostContractError("NEEDS_RECONCILE", 7, "Resolve pending host state before heartbeat");
+    }
+    assertNoPendingIntents(hostDir);
+    let record: HostLease;
+    try {
+      record = readLease(hostDir);
+    } catch (error) {
+      if (error instanceof HostContractError) throw error;
+      throw new HostContractError("HOST_NOT_CLAIMED", 4, "Claim the Herdr host before heartbeat");
+    }
+    if (record.lease_id !== leaseId || record.owner_id !== ownerId) {
+      throw new HostContractError("LEASE_MISMATCH", 4, "Lease belongs to another coordinator");
+    }
+    if (record.project_realpath !== current.project_realpath || record.state_realpath !== current.state_realpath ||
+        record.session_id !== current.session_id) {
+      throw new HostContractError("NEEDS_RECONCILE", 7, "Lease belongs to another RLL session");
+    }
+    assertNoManualRuntime(current.project_realpath, current.state_realpath!);
+    const sequence = record.heartbeat_seq ?? 0;
+    if (sequence === Number.MAX_SAFE_INTEGER) {
+      throw new HostContractError("NEEDS_RECONCILE", 7, "Lease heartbeat sequence exhausted");
+    }
+    const previousTime = Date.parse(record.heartbeat_at ?? record.claimed_at);
+    const next: HostLease = {
+      ...record,
+      heartbeat_seq: sequence + 1,
+      heartbeat_at: new Date(Math.max(Date.now(), Number.isFinite(previousTime) ? previousTime + 1 : 0)).toISOString(),
+    };
+    const pending = path.join(hostDir, "lease", "record.pending");
+    const fd = fs.openSync(pending, "wx", 0o600);
+    try {
+      fs.writeFileSync(fd, JSON.stringify(next) + "\n", "utf8");
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.renameSync(pending, path.join(hostDir, "lease", "record.json"));
+    return next;
   } finally {
     releaseLock();
   }

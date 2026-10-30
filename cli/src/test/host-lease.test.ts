@@ -125,4 +125,86 @@ describe("host claim and release", () => {
     assert.equal(fs.readFileSync(path.join(state, "turn.txt"), "utf8"), turnBefore);
     assert.equal(fs.existsSync(path.join(state, "host")), false);
   });
+
+  it("advances a matching lease heartbeat without changing its identity", () => {
+    const ownerId = randomUUID();
+    const claimed = run("host", "claim", "--project", project, "--host", "herdr", "--owner-id", ownerId, "--json");
+    assert.equal(claimed.status, 0, claimed.stdout);
+    const lease = JSON.parse(claimed.stdout);
+    assert.equal(lease.heartbeat_seq, 0);
+    const heartbeat = () => run("host", "heartbeat", "--project", project,
+      "--lease-id", lease.lease_id, "--owner-id", ownerId, "--json");
+    const first = heartbeat();
+    assert.equal(first.status, 0, first.stdout);
+    const firstRecord = JSON.parse(first.stdout);
+    assert.equal(firstRecord.heartbeat_seq, 1);
+    assert.equal(firstRecord.lease_id, lease.lease_id);
+    assert.equal(firstRecord.session_id, lease.session_id);
+    assert.ok(Date.parse(firstRecord.heartbeat_at) > Date.parse(lease.heartbeat_at));
+    const second = heartbeat();
+    assert.equal(second.status, 0, second.stdout);
+    const secondRecord = JSON.parse(second.stdout);
+    assert.equal(secondRecord.heartbeat_seq, 2);
+    assert.ok(Date.parse(secondRecord.heartbeat_at) > Date.parse(firstRecord.heartbeat_at));
+    assert.equal(run("host", "snapshot", "--project", project, "--json").status, 0);
+    assert.equal(run("host", "release", "--project", project, "--lease-id", lease.lease_id, "--json").status, 0);
+  });
+
+  it("rejects heartbeat from a different owner or lease", () => {
+    const ownerId = randomUUID();
+    const lease = JSON.parse(run("host", "claim", "--project", project, "--host", "herdr", "--owner-id", ownerId, "--json").stdout);
+    for (const [leaseId, owner] of [[randomUUID(), ownerId], [lease.lease_id, randomUUID()]]) {
+      const result = run("host", "heartbeat", "--project", project,
+        "--lease-id", leaseId, "--owner-id", owner, "--json");
+      assert.equal(result.status, 4);
+      assert.equal(JSON.parse(result.stdout).code, "LEASE_MISMATCH");
+    }
+    const stored = JSON.parse(fs.readFileSync(path.join(project, ".dual-agent", "host", "lease", "record.json"), "utf8"));
+    assert.equal(stored.heartbeat_seq, 0);
+  });
+
+  it("freezes lease actions and snapshots after an interrupted heartbeat", () => {
+    const ownerId = randomUUID();
+    const lease = JSON.parse(run("host", "claim", "--project", project, "--host", "herdr", "--owner-id", ownerId, "--json").stdout);
+    const pending = path.join(project, ".dual-agent", "host", "lease", "record.pending");
+    fs.writeFileSync(pending, "{}\n");
+    const heartbeat = run("host", "heartbeat", "--project", project,
+      "--lease-id", lease.lease_id, "--owner-id", ownerId, "--json");
+    assert.equal(heartbeat.status, 7);
+    assert.equal(JSON.parse(heartbeat.stdout).code, "NEEDS_RECONCILE");
+    assert.equal(run("host", "snapshot", "--project", project, "--json").status, 7);
+    assert.equal(run("host", "release", "--project", project, "--lease-id", lease.lease_id, "--json").status, 7);
+    assert.equal(fs.existsSync(pending), true);
+  });
+
+  it("upgrades an existing lease record without heartbeat fields", () => {
+    const ownerId = randomUUID();
+    const lease = JSON.parse(run("host", "claim", "--project", project, "--host", "herdr", "--owner-id", ownerId, "--json").stdout);
+    const file = path.join(project, ".dual-agent", "host", "lease", "record.json");
+    delete lease.heartbeat_seq;
+    delete lease.heartbeat_at;
+    fs.writeFileSync(file, JSON.stringify(lease) + "\n");
+    const result = run("host", "heartbeat", "--project", project,
+      "--lease-id", lease.lease_id, "--owner-id", ownerId, "--json");
+    assert.equal(result.status, 0, result.stdout);
+    assert.equal(JSON.parse(result.stdout).heartbeat_seq, 1);
+  });
+
+  it("refuses heartbeat when the old tmux session reappears", () => {
+    const ownerId = randomUUID();
+    const lease = JSON.parse(run("host", "claim", "--project", project, "--host", "herdr", "--owner-id", ownerId, "--json").stdout);
+    const bin = path.join(project, "heartbeat-bin");
+    fs.mkdirSync(bin);
+    const tmux = path.join(bin, "tmux");
+    fs.writeFileSync(tmux, "#!/bin/sh\nexit 0\n");
+    fs.chmodSync(tmux, 0o755);
+    const result = spawnSync(process.execPath, [cli, "host", "heartbeat", "--project", project,
+      "--lease-id", lease.lease_id, "--owner-id", ownerId, "--json"], {
+      cwd: project, env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH || ""}` }, encoding: "utf8",
+    });
+    assert.equal(result.status, 4);
+    assert.equal(JSON.parse(result.stdout).code, "HOST_BUSY");
+    const stored = JSON.parse(fs.readFileSync(path.join(project, ".dual-agent", "host", "lease", "record.json"), "utf8"));
+    assert.equal(stored.heartbeat_seq, 0);
+  });
 });
