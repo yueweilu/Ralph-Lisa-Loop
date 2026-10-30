@@ -1,10 +1,11 @@
-import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { STATE_DIR } from "../state.js";
 import { canonicalProject, HostContractError, inspectProject } from "./inspect.js";
 import { acquireHostLock, assertAdoptionReady, assertNoManualRuntime, entryExists, readLease } from "./lease.js";
 import { HostBinding, readBinding, SeatBinding } from "./binding.js";
+import { businessDigest } from "./business.js";
+import { assertGenerationMatchesBusiness, readGeneration } from "./generation.js";
 
 export interface HostSnapshot {
   schema: 1;
@@ -18,12 +19,12 @@ export interface HostSnapshot {
   host_state: "unclaimed" | "claimed";
   owner_id: string | null;
   state_digest: string;
-  generation: null;
+  generation: number | null;
   binding_generation: number | null;
   binding_state: "unbound" | "partial" | "bound" | "stale";
   workspace_id: string | null;
   seats: { ralph: SeatBinding | null; lisa: SeatBinding | null } | null;
-  last_receipt_id: null;
+  last_receipt_id: string | null;
 }
 
 interface HostBindingSummary {
@@ -37,36 +38,6 @@ const NO_BINDING: HostBindingSummary = {
   ownerId: null, bindingGeneration: null, bindingState: "unbound", binding: null,
 };
 
-export const BUSINESS_FILES = [
-  "task.md", "work.md", "review.md", "history.md", "last_action.txt",
-  "turn.txt", "round.txt", "step.txt",
-];
-
-export function businessDigest(state: string, turn: string, round: number, step: string): string {
-  const hash = crypto.createHash("sha256");
-  const readValues = new Map<string, string>();
-  for (const name of BUSINESS_FILES) {
-    const file = path.join(state, name);
-    let bytes: Buffer;
-    try {
-      const stat = fs.lstatSync(file);
-      if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("not a regular file");
-      bytes = fs.readFileSync(file);
-    } catch {
-      throw new HostContractError("STATE_INVALID", 7, `Missing, linked, or unreadable ${name}`);
-    }
-    hash.update(name).update("\0").update(String(bytes.length)).update("\0").update(bytes);
-    if (["turn.txt", "round.txt", "step.txt"].includes(name)) {
-      readValues.set(name, bytes.toString("utf8").trim());
-    }
-  }
-  if (readValues.get("turn.txt") !== turn || readValues.get("round.txt") !== String(round) ||
-      readValues.get("step.txt") !== step) {
-    throw new HostContractError("NEEDS_RECONCILE", 7, "Turn, round, or step changed during snapshot");
-  }
-  return hash.digest("hex");
-}
-
 function hostBindingSummary(state: string, project: string, sessionId: string): HostBindingSummary {
   const host = path.join(state, "host");
   if (!entryExists(host)) return NO_BINDING;
@@ -75,7 +46,7 @@ function hostBindingSummary(state: string, project: string, sessionId: string): 
     throw new HostContractError("NEEDS_RECONCILE", 7, "Invalid host directory");
   }
   assertAdoptionReady(host, project, state, sessionId);
-  for (const marker of ["claim.lock", "reconcile.json", "lease.json", "binding.pending", "adoption.pending"]) {
+  for (const marker of ["claim.lock", "reconcile.json", "lease.json", "binding.pending", "adoption.pending", "generation.pending"]) {
     if (entryExists(path.join(host, marker))) {
       throw new HostContractError("NEEDS_RECONCILE", 7, `Host marker ${marker} requires reconciliation`);
     }
@@ -87,8 +58,8 @@ function hostBindingSummary(state: string, project: string, sessionId: string): 
       throw new HostContractError("NEEDS_RECONCILE", 7, "Pending host intents require reconciliation");
     }
   }
-  // Later slices must validate these files and replace the null generation fields.
-  for (const future of ["generation.json", "receipts", "candidates"]) {
+  // Later slices must validate receipts and candidates before exposing them.
+  for (const future of ["receipts", "candidates"]) {
     if (entryExists(path.join(host, future))) {
       throw new HostContractError("NEEDS_RECONCILE", 7, `Unsupported host metadata: ${future}`);
     }
@@ -142,6 +113,11 @@ export function snapshotProject(project: string): HostSnapshot {
     assertNoManualRuntime(current.project_realpath, current.state_realpath);
     const digest = businessDigest(current.state_realpath, current.turn!, current.round!, current.step!);
     const host = hostBindingSummary(current.state_realpath, current.project_realpath, current.session_id);
+    const generation = readGeneration(path.join(current.state_realpath, "host"),
+      current.project_realpath, current.state_realpath, current.session_id);
+    if (generation) {
+      assertGenerationMatchesBusiness(generation, digest, current.turn!, current.round!, current.step!);
+    }
     return {
       schema: 1,
       status: "ok",
@@ -154,12 +130,12 @@ export function snapshotProject(project: string): HostSnapshot {
       host_state: host.ownerId ? "claimed" : "unclaimed",
       owner_id: host.ownerId,
       state_digest: digest,
-      generation: null,
+      generation: generation?.generation ?? null,
       binding_generation: host.bindingGeneration,
       binding_state: host.bindingState,
       workspace_id: host.binding?.workspace_id ?? null,
       seats: host.binding?.seats ?? null,
-      last_receipt_id: null,
+      last_receipt_id: generation?.last_receipt_id ?? null,
     };
   } finally {
     releaseLock();

@@ -124,7 +124,7 @@ export function assertAdoptionReady(host: string, project: string, state: string
 }
 
 function assertNoHostMarkers(host: string): void {
-  for (const name of ["lease", "lease.json", "claim.lock", "reconcile.json", "binding.pending", "adoption.pending"]) {
+  for (const name of ["lease", "lease.json", "claim.lock", "reconcile.json", "binding.pending", "adoption.pending", "generation.pending"]) {
     if (entryExists(path.join(host, name))) {
       throw new HostContractError("HOST_BUSY", 4, "Host is already claimed or needs reconciliation");
     }
@@ -249,7 +249,7 @@ export function heartbeatHost(project: string, leaseId: string, ownerId: string)
     }
     const hostDir = hostDirectory(current.state_realpath!);
     assertAdoptionReady(hostDir, current.project_realpath, current.state_realpath!, current.session_id!);
-    if (["reconcile.json", "claim.lock", "lease.json", "binding.pending", "adoption.pending"].some((name) => entryExists(path.join(hostDir, name)))) {
+    if (["reconcile.json", "claim.lock", "lease.json", "binding.pending", "adoption.pending", "generation.pending"].some((name) => entryExists(path.join(hostDir, name)))) {
       throw new HostContractError("NEEDS_RECONCILE", 7, "Resolve pending host state before heartbeat");
     }
     assertNoPendingIntents(hostDir);
@@ -306,7 +306,7 @@ export function releaseHost(project: string, leaseId: string): { schema: 1; stat
     }
     const hostDir = hostDirectory(current.state_realpath!);
     assertAdoptionReady(hostDir, current.project_realpath, current.state_realpath!, current.session_id!);
-    if (["reconcile.json", "claim.lock", "lease.json", "binding.pending", "adoption.pending"].some((name) => entryExists(path.join(hostDir, name)))) {
+    if (["reconcile.json", "claim.lock", "lease.json", "binding.pending", "adoption.pending", "generation.pending"].some((name) => entryExists(path.join(hostDir, name)))) {
       throw new HostContractError("NEEDS_RECONCILE", 7, "Resolve pending host state before release");
     }
     assertNoPendingIntents(hostDir);

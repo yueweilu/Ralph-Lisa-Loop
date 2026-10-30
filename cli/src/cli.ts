@@ -238,6 +238,7 @@ function showHelp(): void {
   console.log("  ralph-lisa host recover-lease --project <abs> --lease-id <uuid> --expected-evidence <sha256> --decision verified-stopped-no-replay --json");
   console.log("  ralph-lisa host bind-seat --project <abs> --lease-id <uuid> --role <ralph|lisa> --workspace-id <id> --pane-id <id> --agent-target <id> --json");
   console.log("  ralph-lisa host snapshot --project <abs> --json  Consistent host and RLL state digest");
+  console.log("  ralph-lisa host prepare-generation --project <abs> --lease-id <uuid> --expected-digest <sha256> --json");
   console.log("  ralph-lisa host release --project <abs> --lease-id <uuid> --json");
   console.log("  ralph-lisa status                   Show current status");
   console.log("  ralph-lisa read-review              Read Lisa's review (alias: read review.md)");

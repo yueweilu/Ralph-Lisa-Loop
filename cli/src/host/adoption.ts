@@ -5,7 +5,7 @@ import { STATE_DIR } from "../state.js";
 import { writeSessionIdentity } from "./session.js";
 import { canonicalProject, HostContractError, inspectProject } from "./inspect.js";
 import { acquireHostLock, assertNoManualRuntime, entryExists } from "./lease.js";
-import { BUSINESS_FILES, businessDigest } from "./snapshot.js";
+import { BUSINESS_FILES, businessDigest } from "./business.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/;

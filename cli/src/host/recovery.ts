@@ -5,7 +5,8 @@ import { STATE_DIR } from "../state.js";
 import { readBinding } from "./binding.js";
 import { canonicalProject, HostContractError, inspectProject } from "./inspect.js";
 import { acquireHostLock, assertAdoptionReady, assertNoManualRuntime, assertNoPendingIntents, entryExists, HostLease, readLease } from "./lease.js";
-import { businessDigest } from "./snapshot.js";
+import { businessDigest } from "./business.js";
+import { assertGenerationMatchesBusiness, GenerationRecord, readGeneration } from "./generation.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -18,6 +19,7 @@ interface Evidence {
   state_digest: string;
   binding_generation: number | null;
   binding_lease_id: string | null;
+  generation: GenerationRecord | null;
   evidence_sha256: string;
   host_dir: string;
 }
@@ -53,12 +55,12 @@ function collect(project: string): Evidence {
   if (!entryExists(host)) throw new HostContractError("HOST_NOT_CLAIMED", 4, "No host lease to recover");
   regularDirectory(host);
   assertAdoptionReady(host, current.project_realpath, current.state_realpath, current.session_id);
-  for (const name of ["reconcile.json", "claim.lock", "lease.json", "binding.pending", "adoption.pending"]) {
+  for (const name of ["reconcile.json", "claim.lock", "lease.json", "binding.pending", "adoption.pending", "generation.pending"]) {
     if (entryExists(path.join(host, name))) {
       throw new HostContractError("NEEDS_RECONCILE", 7, `Host marker ${name} requires reconciliation`);
     }
   }
-  for (const name of ["generation.json", "receipts", "candidates"]) {
+  for (const name of ["receipts", "candidates"]) {
     if (entryExists(path.join(host, name))) {
       throw new HostContractError("NEEDS_RECONCILE", 7, `Unsupported host metadata during lease recovery: ${name}`);
     }
@@ -82,6 +84,10 @@ function collect(project: string): Evidence {
     throw new HostContractError("NEEDS_RECONCILE", 7, "Binding belongs to another RLL session");
   }
   const stateDigest = businessDigest(current.state_realpath, current.turn!, current.round!, current.step!);
+  const generation = readGeneration(host, current.project_realpath, current.state_realpath, current.session_id);
+  if (generation) {
+    assertGenerationMatchesBusiness(generation, stateDigest, current.turn!, current.round!, current.step!);
+  }
   const body = {
     project_realpath: current.project_realpath,
     state_realpath: current.state_realpath,
@@ -90,6 +96,7 @@ function collect(project: string): Evidence {
     state_digest: stateDigest,
     binding_generation: binding?.binding_generation ?? null,
     binding_lease_id: binding?.lease_id ?? null,
+    generation,
   };
   return {
     ...body,
@@ -114,6 +121,7 @@ export function leaseRecoveryCheck(project: string): object {
       heartbeat_seq: evidence.lease.heartbeat_seq ?? null,
       heartbeat_at: evidence.lease.heartbeat_at ?? null,
       binding_generation: evidence.binding_generation,
+      generation: evidence.generation?.generation ?? null,
       state_digest: evidence.state_digest,
       evidence_sha256: evidence.evidence_sha256,
       required_checks: ["coordinator_stopped", "herdr_agents_stopped", "no_unrecorded_delivery"],
@@ -163,6 +171,7 @@ export function recoverLease(project: string, leaseId: string, expectedEvidence:
       last_heartbeat_seq: evidence.lease.heartbeat_seq ?? null,
       last_heartbeat_at: evidence.lease.heartbeat_at ?? null,
       state_digest: evidence.state_digest, binding_generation: evidence.binding_generation,
+      generation: evidence.generation?.generation ?? null,
       evidence_sha256: expectedEvidence, decision, replay: "not_replayed",
       recovered_at: new Date().toISOString(),
     });

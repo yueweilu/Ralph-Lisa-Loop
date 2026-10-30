@@ -96,7 +96,7 @@ export function bindSeat(
       throw new HostContractError("NEEDS_RECONCILE", 7, "Invalid host directory");
     }
     assertAdoptionReady(host, current.project_realpath, current.state_realpath!, current.session_id!);
-    for (const name of ["claim.lock", "reconcile.json", "lease.json", "binding.pending"]) {
+    for (const name of ["claim.lock", "reconcile.json", "lease.json", "binding.pending", "generation.pending"]) {
       if (entryExists(path.join(host, name))) {
         throw new HostContractError("NEEDS_RECONCILE", 7, `Host marker ${name} requires reconciliation`);
       }
