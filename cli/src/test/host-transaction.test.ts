@@ -8,6 +8,7 @@ import { spawnSync } from "node:child_process";
 import { applySubmissionPlan, prepareRalphSubmission } from "../submission-write.js";
 import { businessDigest } from "../host/business.js";
 import { acquireHostLock } from "../host/lease.js";
+import { advanceGenerationAfterIntent, persistCommittedReceipt, readCommittedReceipt } from "../host/receipt-store.js";
 import { auditHostIntent, persistHostIntent, readHostIntent } from "../host/transaction.js";
 
 describe("host write-ahead intent", () => {
@@ -140,6 +141,62 @@ describe("host write-ahead intent", () => {
     assert.equal(pending.status, 7);
     assert.equal(JSON.parse(pending.stdout).status, "needs_reconcile");
     assert.equal(JSON.parse(pending.stdout).intent.audit_status, "applied");
+  });
+
+  it("advances generation only after audited writes and stores one immutable receipt", () => {
+    const request = input();
+    const release = acquireHostLock(state);
+    try {
+      const intent = persistHostIntent(request);
+      const checks = { policy: { result: "pass" as const, warnings: [] },
+        gate: { result: "not_enabled" as const } };
+      assert.throws(() => advanceGenerationAfterIntent(host, request.requestId), /Business writes do not match/);
+      assert.throws(() => persistCommittedReceipt(host, request.requestId, checks), /Business writes do not match/);
+      applySubmissionPlan(request.plan);
+      assert.throws(() => persistCommittedReceipt(host, request.requestId, checks), /Generation was not advanced/);
+      const generation = advanceGenerationAfterIntent(host, request.requestId);
+      assert.equal(generation.generation, 1);
+      assert.equal(generation.last_receipt_id, request.requestId);
+      assert.equal(generation.state_digest, intent.state_digest_after);
+      assert.deepEqual(advanceGenerationAfterIntent(host, request.requestId), generation);
+      const committed = persistCommittedReceipt(host, request.requestId, checks);
+      assert.equal(committed.status, "committed");
+      assert.equal(committed.generation_after, 1);
+      assert.equal(committed.state_digest_after, intent.state_digest_after);
+      assert.deepEqual(readCommittedReceipt(host, request.requestId), committed);
+      assert.deepEqual(persistCommittedReceipt(host, request.requestId, checks), committed);
+      assert.throws(() => persistCommittedReceipt(host, request.requestId,
+        { policy: { result: "warn", warnings: ["changed"] }, gate: checks.gate }),
+      /Existing receipt differs/);
+    } finally { release(); }
+    const pending = receipt(request.requestId);
+    assert.equal(pending.status, 7);
+    assert.equal(JSON.parse(pending.stdout).status, "needs_reconcile");
+    const snapshot = run("host", "snapshot", "--project", project, "--json");
+    assert.equal(snapshot.status, 7);
+  });
+
+  it("rejects a changed business file before generation advancement", () => {
+    const request = input();
+    const release = acquireHostLock(state);
+    try {
+      persistHostIntent(request);
+      applySubmissionPlan(request.plan);
+      fs.writeFileSync(path.join(state, "turn.txt"), "ralph\n");
+      assert.equal(auditHostIntent(host, request.requestId).status, "partial");
+      assert.throws(() => advanceGenerationAfterIntent(host, request.requestId), /Business writes do not match/);
+      assert.equal(fs.existsSync(path.join(host, "receipts")), false);
+    } finally { release(); }
+  });
+
+  it("rejects a receipt directory symlink", () => {
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "rll-receipts-outside-"));
+    try {
+      fs.symlinkSync(outside, path.join(host, "receipts"));
+      assert.throws(() => readCommittedReceipt(host, randomUUID()), /Invalid host receipt directory/);
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
   });
 
   it("identifies a partly applied write without treating it as committed", () => {
