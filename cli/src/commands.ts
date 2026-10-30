@@ -30,7 +30,8 @@ import {
   appendHistory,
   updateLastAction,
 } from "./state.js";
-import { runPolicyCheck, checkRalph, checkLisa, checkNeedsWorkResponse } from "./policy.js";
+import { checkRalph, checkLisa } from "./policy.js";
+import { checkSubmission } from "./submission.js";
 import { writeSessionIdentity } from "./host/session.js";
 import { assertHostMutationAllowed, releaseSessionCommandLock } from "./host/guard.js";
 
@@ -266,15 +267,17 @@ export function cmdSubmitRalph(args: string[]): void {
     process.exit(1);
   }
 
-  const turn = getTurn();
-  if (turn !== "ralph") {
+  const dir = stateDir();
+  const reviewContent = readFile(path.join(dir, "review.md"));
+  const lastLisaTag = extractLastTag(reviewContent);
+  const submission = checkSubmission("ralph", content, getTurn(), lastLisaTag);
+  if (submission.failure === "wrong_turn") {
     console.error("Error: It's Lisa's turn. Wait for her response.");
     console.error("Run: ralph-lisa whose-turn");
     process.exit(1);
   }
 
-  const tag = extractTag(content);
-  if (!tag) {
+  if (submission.failure === "invalid_tag") {
     console.error("Error: Content must start with a valid tag.");
     console.error("Format: [TAG] One line summary");
     console.error("");
@@ -285,11 +288,10 @@ export function cmdSubmitRalph(args: string[]): void {
   }
 
   // Policy check (IMP-4: clear status/warning separation)
-  const { proceed, violations } = runPolicyCheck("ralph", tag, content);
-  if (!proceed) {
+  if (submission.failure === "policy") {
     console.error(line());
     console.error("Submission BLOCKED by policy:");
-    for (const v of violations) {
+    for (const v of submission.violations) {
       console.error(`  - ${v.message}`);
     }
     console.error(line());
@@ -297,34 +299,26 @@ export function cmdSubmitRalph(args: string[]): void {
   }
 
   // NEEDS_WORK response enforcement (Proposal §3.2)
-  const dir = stateDir();
-  const reviewContent = readFile(path.join(dir, "review.md"));
-  const lastLisaTag = extractLastTag(reviewContent);
-  const { getPolicyMode } = require("./policy.js");
-  const nwMode = getPolicyMode();
-  if (nwMode !== "off") {
-    const nwViolations = checkNeedsWorkResponse(tag, lastLisaTag);
-    if (nwViolations.length > 0) {
-      if (nwMode === "block") {
-        console.error(line());
-        console.error("Submission BLOCKED — must respond to NEEDS_WORK:");
-        for (const v of nwViolations) {
-          console.error(`  - ${v.message}`);
-        }
-        console.error(line());
-        process.exit(1);
-      } else {
-        console.log(line());
-        console.log("Warning — submitting after NEEDS_WORK without addressing it:");
-        for (const v of nwViolations) {
-          console.log(`  - ${v.message}`);
-        }
-        console.log(line());
-        console.log("");
-      }
-      violations.push(...nwViolations);
+  if (submission.failure === "needs_work") {
+    console.error(line());
+    console.error("Submission BLOCKED — must respond to NEEDS_WORK:");
+    for (const v of submission.violations) {
+      console.error(`  - ${v.message}`);
     }
+    console.error(line());
+    process.exit(1);
   }
+  if (submission.needsWorkWarnings.length > 0) {
+    console.log(line());
+    console.log("Warning — submitting after NEEDS_WORK without addressing it:");
+    for (const v of submission.needsWorkWarnings) {
+      console.log(`  - ${v.message}`);
+    }
+    console.log(line());
+    console.log("");
+  }
+  const tag = submission.tag;
+  const violations = submission.violations;
 
   // V4-01: Auto gate — run test/lint before CODE/FIX submission
   runGate(tag);
@@ -452,15 +446,14 @@ export function cmdSubmitLisa(args: string[]): void {
     process.exit(1);
   }
 
-  const turn = getTurn();
-  if (turn !== "lisa") {
+  const submission = checkSubmission("lisa", content, getTurn());
+  if (submission.failure === "wrong_turn") {
     console.error("Error: It's Ralph's turn. Wait for his submission.");
     console.error("Run: ralph-lisa whose-turn");
     process.exit(1);
   }
 
-  const tag = extractTag(content);
-  if (!tag) {
+  if (submission.failure === "invalid_tag") {
     console.error("Error: Content must start with a valid tag.");
     console.error("Format: [TAG] One line summary");
     console.error("");
@@ -471,17 +464,18 @@ export function cmdSubmitLisa(args: string[]): void {
   }
 
   // Policy check (IMP-4: clear status/warning separation)
-  const { proceed, violations } = runPolicyCheck("lisa", tag, content);
-  if (!proceed) {
+  if (submission.failure === "policy") {
     console.error(line());
     console.error("Submission BLOCKED by policy:");
-    for (const v of violations) {
+    for (const v of submission.violations) {
       console.error(`  - ${v.message}`);
     }
     console.error(line());
     process.exit(1);
   }
 
+  const tag = submission.tag;
+  const violations = submission.violations;
   const round = getRound();
   const step = getStep();
   const ts = timestamp();
