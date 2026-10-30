@@ -8,7 +8,7 @@ import { spawnSync } from "node:child_process";
 import { applySubmissionPlan, prepareRalphSubmission } from "../submission-write.js";
 import { businessDigest } from "../host/business.js";
 import { acquireHostLock } from "../host/lease.js";
-import { persistHostIntent, readHostIntent } from "../host/transaction.js";
+import { auditHostIntent, persistHostIntent, readHostIntent } from "../host/transaction.js";
 
 describe("host write-ahead intent", () => {
   let project: string;
@@ -111,6 +111,8 @@ describe("host write-ahead intent", () => {
     assert.equal(pending.status, 7);
     assert.equal(JSON.parse(pending.stdout).status, "needs_reconcile");
     assert.equal(JSON.parse(pending.stdout).intent.content_sha256, intent.content_sha256);
+    assert.equal(JSON.parse(pending.stdout).intent.audit_status, "before");
+    assert.equal(auditHostIntent(host, intent.request_id).status, "before");
     const other = receipt(randomUUID());
     assert.equal(other.status, 7);
     assert.equal(JSON.parse(other.stdout).reason, "another_request_needs_reconcile");
@@ -137,6 +139,24 @@ describe("host write-ahead intent", () => {
     const pending = receipt(intent.request_id);
     assert.equal(pending.status, 7);
     assert.equal(JSON.parse(pending.stdout).status, "needs_reconcile");
+    assert.equal(JSON.parse(pending.stdout).intent.audit_status, "applied");
+  });
+
+  it("identifies a partly applied write without treating it as committed", () => {
+    const request = input();
+    const release = acquireHostLock(state);
+    let intent;
+    try {
+      intent = persistHostIntent(request);
+      fs.writeFileSync(path.join(state, request.plan.changes[0].name), request.plan.changes[0].after_bytes!);
+    } finally { release(); }
+    const audit = auditHostIntent(host, intent.request_id);
+    assert.equal(audit.status, "partial");
+    assert.equal(audit.files[0].matches_after, true);
+    assert.equal(audit.files[1].matches_before, true);
+    const lookup = receipt(intent.request_id);
+    assert.equal(lookup.status, 7);
+    assert.equal(JSON.parse(lookup.stdout).intent.audit_status, "partial");
   });
 
   it("rejects a candidate-content mismatch without writing an intent", () => {

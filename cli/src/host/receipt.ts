@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { STATE_DIR } from "../state.js";
 import { canonicalProject, HostContractError, inspectProject } from "./inspect.js";
 import { acquireHostLock, entryExists } from "./lease.js";
-import { readHostIntent } from "./transaction.js";
+import { auditHostIntent, readHostIntent } from "./transaction.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -22,6 +22,8 @@ export interface HostReceiptStatus {
     content_sha256: string;
     state_digest_before: string;
     state_digest_after: string;
+    audit_status: "before" | "applied" | "partial";
+    state_digest_observed: string | null;
   };
 }
 
@@ -97,12 +99,14 @@ export function receiptStatus(project: string, requestId: string): HostReceiptSt
           intent.state_realpath !== current.state_realpath || intent.session_id !== sessionId) {
         return reconcile(requestId, sessionId, "intent_session_mismatch");
       }
+      const audit = auditHostIntent(host, requestId);
       return { ...reconcile(requestId, sessionId, "prepared_intent_without_receipt"),
         intent: {
           candidate_id: intent.candidate_id, role: intent.role,
           generation_before: intent.generation_before, content_sha256: intent.content_sha256,
           state_digest_before: intent.state_digest_before,
           state_digest_after: intent.state_digest_after,
+          audit_status: audit.status, state_digest_observed: audit.state_digest_observed,
         } };
     } catch {
       return reconcile(requestId, sessionId, "invalid_intent_record");

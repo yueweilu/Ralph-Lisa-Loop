@@ -236,6 +236,16 @@ function currentDigest(file: string, action: PlannedFileChange["action"]): strin
   return bytes ? sha256(bytes) : null;
 }
 
+/** Read one affected path without mutation for intent reconciliation evidence. */
+export function observedSubmissionDigest(
+  state: string, name: string, action: PlannedFileChange["action"]
+): string | null {
+  if (name.includes("/") || name === "." || name === "..") {
+    throw new Error("Invalid submission path");
+  }
+  return currentDigest(path.join(state, name), action);
+}
+
 /** Recheck every pre-state before creating an intent or making the first mutation. */
 export function validateSubmissionPlan(plan: SubmissionWritePlan): void {
   for (const change of plan.changes) {

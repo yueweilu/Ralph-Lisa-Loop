@@ -2,7 +2,7 @@
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { SubmissionWritePlan, validateSubmissionPlan } from "../submission-write.js";
+import { observedSubmissionDigest, SubmissionWritePlan, validateSubmissionPlan } from "../submission-write.js";
 import { BUSINESS_FILES, businessDigest } from "./business.js";
 import { readBinding } from "./binding.js";
 import { candidateInventory } from "./candidate.js";
@@ -55,6 +55,20 @@ export interface HostIntentInput {
   expectedGeneration: number;
   expectedBindingGeneration: number;
   plan: SubmissionWritePlan;
+}
+
+export interface HostIntentAudit {
+  schema: 1;
+  status: "before" | "applied" | "partial";
+  request_id: string;
+  state_digest_observed: string | null;
+  files: Array<{
+    name: string;
+    action: HostIntent["changes"][number]["action"];
+    observed_sha256: string | null;
+    matches_before: boolean;
+    matches_after: boolean;
+  }>;
 }
 
 function regularDirectory(dir: string): void {
@@ -234,4 +248,41 @@ export function readHostIntent(host: string, requestId: string): HostIntent | nu
     throw new HostContractError("NEEDS_RECONCILE", 7, "Invalid host intent");
   }
   return record as unknown as HostIntent;
+}
+
+/** Evidence only: an exact after-state still needs a durable receipt and generation update. */
+export function auditHostIntent(host: string, requestId: string): HostIntentAudit {
+  const intent = readHostIntent(host, requestId);
+  if (!intent) throw new HostContractError("REQUEST_UNKNOWN", 5, "No intent for this request");
+  if (path.join(intent.state_realpath, "host") !== host) {
+    throw new HostContractError("NEEDS_RECONCILE", 7, "Intent belongs to another host directory");
+  }
+  const files = intent.changes.map((change) => {
+    let observed: string | null = null;
+    let readable = true;
+    try {
+      observed = observedSubmissionDigest(intent.state_realpath, change.name, change.action);
+    } catch {
+      // Unreadable, linked or unexpected paths are partial evidence.
+      readable = false;
+    }
+    return { name: change.name, action: change.action, observed_sha256: observed,
+      matches_before: readable && observed === change.before_sha256,
+      matches_after: readable && observed === change.after_sha256 };
+  });
+  let stateDigest: string | null = null;
+  try {
+    const current = inspectProject(intent.project_realpath);
+    if (current.state_realpath === intent.state_realpath && current.session_id === intent.session_id) {
+      stateDigest = businessDigest(intent.state_realpath, current.turn!, current.round!, current.step!);
+    }
+  } catch {
+    // A torn business file is represented by a null observed digest.
+  }
+  const status = files.every((file) => file.matches_after) &&
+    stateDigest === intent.state_digest_after ? "applied"
+    : files.every((file) => file.matches_before) &&
+      stateDigest === intent.state_digest_before ? "before" : "partial";
+  return { schema: 1, status, request_id: intent.request_id,
+    state_digest_observed: stateDigest, files };
 }
