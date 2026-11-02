@@ -7,6 +7,7 @@ import { leaseRecoveryCheck, recoverLease } from "./recovery.js";
 import { prepareGeneration } from "./generation.js";
 import { proposeCandidate } from "./candidate.js";
 import { receiptStatus } from "./receipt.js";
+import { checkHostCommit } from "./commit-check.js";
 
 function options(args: string[], names: string[]): Record<string, string> {
   if (args.length !== names.length * 2 + 1 || args.at(-1) !== "--json") {
@@ -25,6 +26,13 @@ function options(args: string[], names: string[]): Record<string, string> {
     throw new HostContractError("INVALID_ARGUMENTS", 2, "Missing host option");
   }
   return values;
+}
+
+function decimal(value: string): number {
+  if (!/^(0|[1-9][0-9]*)$/.test(value)) {
+    throw new HostContractError("INVALID_ARGUMENTS", 2, "Expected generation must be a decimal integer");
+  }
+  return Number(value);
 }
 
 export function cmdHost(args: string[]): void {
@@ -87,6 +95,14 @@ export function cmdHost(args: string[]): void {
         if ((result as { status?: string }).status === "needs_reconcile") process.exitCode = 7;
         break;
       }
+      case "commit-check": {
+        const opts = options(args.slice(1), ["--project", "--lease-id", "--request-id",
+          "--candidate-id", "--expected-generation", "--expected-binding-generation"]);
+        result = checkHostCommit(opts["--project"], opts["--lease-id"], opts["--request-id"],
+          opts["--candidate-id"], decimal(opts["--expected-generation"]),
+          decimal(opts["--expected-binding-generation"]));
+        break;
+      }
       case "bind-seat": {
         const opts = options(args.slice(1), ["--project", "--lease-id", "--role", "--workspace-id", "--pane-id", "--agent-target"]);
         result = bindSeat(opts["--project"], opts["--lease-id"], opts["--role"],
@@ -99,7 +115,7 @@ export function cmdHost(args: string[]): void {
         break;
       }
       default:
-        throw new HostContractError("UNKNOWN_HOST_COMMAND", 2, "Usage: ralph-lisa host <inspect|adopt|confirm-adoption|claim|heartbeat|recovery-check|recover-lease|bind-seat|snapshot|prepare-generation|propose|receipt|release> ... --json");
+        throw new HostContractError("UNKNOWN_HOST_COMMAND", 2, "Usage: ralph-lisa host <inspect|adopt|confirm-adoption|claim|heartbeat|recovery-check|recover-lease|bind-seat|snapshot|prepare-generation|propose|commit-check|receipt|release> ... --json");
     }
     console.log(JSON.stringify(result));
   } catch (error) {

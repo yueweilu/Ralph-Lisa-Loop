@@ -90,6 +90,84 @@ describe("host write-ahead intent", () => {
     assert.equal(fs.existsSync(path.join(host, "intents")), false);
   });
 
+  it("checks a candidate for submission without writing or claiming source verification", () => {
+    const request = input();
+    const before = ["work.md", "history.md", "turn.txt"]
+      .map((name) => fs.readFileSync(path.join(state, name)));
+    const check = run("host", "commit-check", "--project", project,
+      "--lease-id", leaseId, "--request-id", request.requestId,
+      "--candidate-id", candidateId, "--expected-generation", "0",
+      "--expected-binding-generation", String(bindingGeneration), "--json");
+    assert.equal(check.status, 0, check.stdout);
+    const result = JSON.parse(check.stdout);
+    assert.equal(result.status, "awaiting_source_confirmation");
+    assert.equal(result.source_verification, "unverified");
+    assert.equal(result.commit_ready, false);
+    assert.equal(result.policy.result, "pass");
+    assert.equal(result.gate, "not_enabled");
+    assert.equal(result.request_id, request.requestId);
+    assert.equal(result.pane_id, "pane-r");
+    assert.equal(result.agent_target, "agent-r");
+    assert.equal(result.generation_before, 0);
+    assert.equal(result.binding_generation, bindingGeneration);
+    assert.deepEqual(["work.md", "history.md", "turn.txt"]
+      .map((name) => fs.readFileSync(path.join(state, name))), before);
+    assert.equal(fs.existsSync(path.join(host, "intents")), false);
+    assert.equal(JSON.parse(receipt(request.requestId).stdout).status, "unknown");
+    const wrongLease = run("host", "commit-check", "--project", project,
+      "--lease-id", randomUUID(), "--request-id", request.requestId,
+      "--candidate-id", candidateId, "--expected-generation", "0",
+      "--expected-binding-generation", String(bindingGeneration), "--json");
+    assert.equal(wrongLease.status, 4);
+    assert.equal(JSON.parse(wrongLease.stdout).code, "LEASE_MISMATCH");
+    const stale = run("host", "commit-check", "--project", project,
+      "--lease-id", leaseId, "--request-id", request.requestId,
+      "--candidate-id", candidateId, "--expected-generation", "1",
+      "--expected-binding-generation", String(bindingGeneration), "--json");
+    assert.equal(stale.status, 5);
+    assert.equal(JSON.parse(stale.stdout).code, "STALE_GENERATION");
+    const malformed = run("host", "commit-check", "--project", project,
+      "--lease-id", leaseId, "--request-id", request.requestId,
+      "--candidate-id", candidateId, "--expected-generation", "0x0",
+      "--expected-binding-generation", String(bindingGeneration), "--json");
+    assert.equal(malformed.status, 2);
+    assert.equal(JSON.parse(malformed.stdout).code, "INVALID_ARGUMENTS");
+    const commit = run("host", "commit", "--project", project, "--json");
+    assert.equal(commit.status, 2);
+    assert.equal(JSON.parse(commit.stdout).code, "UNKNOWN_HOST_COMMAND");
+  });
+
+  it("reports a pending test gate without running its command", () => {
+    const codeContent = "[CODE] Changed commands.ts:42\n\nTest Results:\n1/1 passed\n";
+    const codeCandidate = randomUUID();
+    fs.writeFileSync(path.join(project, "code.md"), codeContent);
+    const proposed = run("host", "propose", "--project", project, "--role", "ralph",
+      "--file", "code.md", "--candidate-id", codeCandidate, "--json");
+    assert.equal(proposed.status, 0, proposed.stdout);
+    const previous = [process.env.RL_POLICY_MODE, process.env.RL_RALPH_GATE,
+      process.env.RL_GATE_COMMANDS, process.env.RL_GATE_MODE];
+    process.env.RL_POLICY_MODE = "block";
+    process.env.RL_RALPH_GATE = "true";
+    process.env.RL_GATE_COMMANDS = "node -e \"require('fs').writeFileSync('gate-ran','yes')\"";
+    process.env.RL_GATE_MODE = "block";
+    try {
+      const check = run("host", "commit-check", "--project", project,
+        "--lease-id", leaseId, "--request-id", randomUUID(),
+        "--candidate-id", codeCandidate, "--expected-generation", "0",
+        "--expected-binding-generation", String(bindingGeneration), "--json");
+      assert.equal(check.status, 0, check.stdout);
+      assert.equal(JSON.parse(check.stdout).status, "awaiting_source_confirmation");
+      assert.equal(JSON.parse(check.stdout).gate, "pending");
+      assert.equal(fs.existsSync(path.join(project, "gate-ran")), false);
+      assert.equal(fs.existsSync(path.join(host, "intents")), false);
+    } finally {
+      for (const [index, name] of ["RL_POLICY_MODE", "RL_RALPH_GATE", "RL_GATE_COMMANDS", "RL_GATE_MODE"].entries()) {
+        if (previous[index] === undefined) delete process.env[name];
+        else process.env[name] = previous[index];
+      }
+    }
+  });
+
   it("stores a policy rejection without changing business state or generation", () => {
     const blockedContent = "[CODE] Implementation done";
     const blockedCandidate = randomUUID();
@@ -104,6 +182,14 @@ describe("host write-ahead intent", () => {
     const generation = fs.readFileSync(path.join(host, "generation.json"));
     const previousMode = process.env.RL_POLICY_MODE;
     process.env.RL_POLICY_MODE = "block";
+    const preflight = run("host", "commit-check", "--project", project,
+      "--lease-id", leaseId, "--request-id", request.requestId,
+      "--candidate-id", blockedCandidate, "--expected-generation", "0",
+      "--expected-binding-generation", String(bindingGeneration), "--json");
+    assert.equal(preflight.status, 0, preflight.stdout);
+    assert.equal(JSON.parse(preflight.stdout).status, "policy_blocked");
+    assert.equal(JSON.parse(preflight.stdout).policy.result, "block");
+    assert.equal(fs.existsSync(path.join(host, "rejections")), false);
     const release = acquireHostLock(state);
     let rejected;
     try {
@@ -124,6 +210,12 @@ describe("host write-ahead intent", () => {
     const lookup = receipt(request.requestId);
     assert.equal(lookup.status, 0, lookup.stdout);
     assert.equal(JSON.parse(lookup.stdout).status, "rejected");
+    const repeatedCheck = run("host", "commit-check", "--project", project,
+      "--lease-id", leaseId, "--request-id", request.requestId,
+      "--candidate-id", blockedCandidate, "--expected-generation", "0",
+      "--expected-binding-generation", String(bindingGeneration), "--json");
+    assert.equal(repeatedCheck.status, 5);
+    assert.equal(JSON.parse(repeatedCheck.stdout).code, "DUPLICATE_CONFLICT");
     assert.equal(JSON.parse(receipt(secondRejection.requestId).stdout).status, "rejected");
     assert.equal(run("host", "snapshot", "--project", project, "--json").status, 0);
     const continuedCandidate = randomUUID();
