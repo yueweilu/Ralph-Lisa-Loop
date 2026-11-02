@@ -6,7 +6,7 @@
 **状态：** 分阶段实施中；原始基线为公开仓 `main@7440e29`、CLI `0.3.13`，各切片的实际完成情况以下文和 GitHub CI 为准。本文不是完整交付回执。
 **位置：** [六阶段开发顺序](public-repo-herdr-plugin-start-2026-10-29.md)中的 S1。后续 S2 才做 Herdr 插件壳，S3 才做真实 Claude/Codex 双席交接。
 
-**开发位置与分支：** 本公开仓已在独立工作目录 `Ralph-Lisa-Loop-herdr/` 检出；S0 和各 S1 切片在开发 fork 的独立分支追踪，当前 S1.3 意图归档切片基于 `feat/herdr-s1-receipt-lookup`。S1 尚未完整交付，也没有向原仓提交 PR。完整分支约定见[开发起点第 3 节](public-repo-herdr-plugin-start-2026-10-29.md#3-先建怎样的开发分支)。
+**开发位置与分支：** 本公开仓已在独立工作目录 `Ralph-Lisa-Loop-herdr/` 检出；S0 和各 S1 切片在开发 fork 的独立分支追踪，当前 S1.3 历史回执链切片基于 `feat/herdr-s1-intent-archive`。S1 尚未完整交付，也没有向原仓提交 PR。完整分支约定见[开发起点第 3 节](public-repo-herdr-plugin-start-2026-10-29.md#3-先建怎样的开发分支)。
 
 ## 1. S1 要交付什么
 
@@ -80,9 +80,9 @@ Herdr 官方接口能管理 Pane/Agent 并返回创建时的 ID；插件动作�
 
 `binding.json` 当前保存 `project_realpath`、`state_realpath`、`session_id`、`lease_id`、`host_kind=herdr`、`workspace_id`、两席 `pane_id/agent_target`、`binding_generation`。CLI 不连接 Herdr 验证这些 ID，因此 `agent_session=null`、`verification=unverified`；后续插件必须用 Herdr 真实返回值核对。重复绑定同样席位不增代次，Pane 或 Agent 目标变化时增 1；两席不能占同一 Pane 或 Agent 目标。释放租约后的旧绑定在快照里标为 `stale`，新租约首次绑定时清空旧两席并继续增加代次。Pane 移动要显式重绑。Herdr 对 Pane ID 变化的官方说明见[Agent 自动化](https://herdr.dev/docs/agent-automation/)。
 
-**单真源：** 现有 RLL 状态文件仍是业务真源；`host/` 保存协调与事务元数据，不能另造第二套任务/轮次判定。`snapshot` 在项目短锁下读取轮次、宿主占用与关键业务文件的 SHA-256 摘要，拒绝不完整租约、待处理标记和异常文件。席位绑定的 `binding_generation`、`binding_state`、工作区和两席 ID 已加入快照；两席的 `verification` 仍是 `unverified`，须由插件向 Herdr 核验。显式准备后快照返回 `generation=0`，未准备时为 `null`；当前切片增加候选数量及完整性核验。最近回执仍为 `null`，候选不代表业务提交，插件不能据此自动投递。若准备后外部进程或人工命令修改业务状态，快照返回 `NEEDS_RECONCILE`，不隐式重置代次。该快照与经同一短锁协调的 CLI 写命令一致；不宣称能阻止任意外部写入。
+**单真源：** 现有 RLL 状态文件仍是业务真源；`host/` 保存协调与事务元数据，不能另造第二套任务/轮次判定。`snapshot` 在项目短锁下读取轮次、宿主占用与关键业务文件的 SHA-256 摘要，拒绝不完整租约、待处理标记和异常文件。席位绑定的 `binding_generation`、`binding_state`、工作区和两席 ID 已加入快照；两席的 `verification` 仍是 `unverified`，须由插件向 Herdr 核验。显式准备后快照返回 `generation=0`，未准备时为 `null`；内部测试完成提交和归档后，快照核验全部历史回执与意图，返回当前代次及 `last_receipt_id`。候选本身不代表业务提交，插件不能据此自动投递。若准备后外部进程或人工命令修改业务状态，快照返回 `NEEDS_RECONCILE`，不隐式重置代次。该快照与经同一短锁协调的 CLI 写命令一致；不宣称能阻止任意外部写入。
 
-内部测试写入成功回执后，`host receipt` 只读查询可返回首个经验证的 `committed`；内部归档函数可在回执、意图、代次和业务状态一致时将意图移出待处理目录，保留完整审计记录。`snapshot` 仍因回执目录尚未接入历史链核验而返回 `NEEDS_RECONCILE`，协调器此时不得提示下一席。
+内部测试写入成功回执后，`host receipt` 可查询已归档的历史 `committed` 回执；内部归档函数只在当前回执、意图、代次和业务状态一致时移走待处理意图。快照、候选、代次准备与租约恢复检查会逐代核对回执、归档意图、前后业务摘要和当前代次；缺页、额外文件或链断裂时返回 `NEEDS_RECONCILE`。意图尚在写入过程中时仍冻结交接；正式 `host commit` 未开放。
 
 **候选收件箱：** `host propose` 只接收项目内的普通 UTF-8 文件，最大 256 KiB；相对路径从显式项目根解析，拒绝链接、项目外路径和宿主元数据。必须有当前轮次、有效租约、对应席位绑定和已准备的代次。候选写入包含正文摘要、当前代次/绑定代次及预期目标 Pane/Agent；`source_verification=unverified` 明确说明这些目标 ID **不是来源证明**。同一 ID/内容/状态重试返回同一候选；冲突 ID 拒绝。写入中断、元数据或正文损坏时快照冻结。租约释放或显式恢复后候选仍留作历史证据，不会自动重放。
 
@@ -104,11 +104,11 @@ Herdr 官方接口能管理 Pane/Agent 并返回创建时的 ID；插件动作�
 | `ralph-lisa host recovery-check --project <abs> --json` | 人工诊断/协调器 | 在短锁内读取租约、心跳、席位代次、候选完整性和业务摘要；拒绝在途意图及活跃 tmux/watcher | `status=review_required`、租约 ID、owner ID、候选数量、核对项与 `evidence_sha256` |
 | `ralph-lisa host recover-lease --project <abs> --lease-id <uuid> --expected-evidence <sha256> --decision verified-stopped-no-replay --json` | 人工核对后的协调器 | 重新检查证据未变化，归档旧租约；中断时保留冻结标记；不重放轮次 | `status=recovered`、归档路径、恢复回执 ID |
 | `ralph-lisa host bind-seat --project <abs> --lease-id <id> --role <ralph\|lisa> --workspace-id <id> --pane-id <id> --agent-target <id> --json` | 协调器 | 核对租约、会话和同一 Workspace；写入/更新席位，变化时增加绑定代次 | 完整绑定与 `binding_generation`，两席均标 `unverified` |
-| `ralph-lisa host snapshot --project <abs> --json` | 协调器 | 在短锁内读取会话、轮次、宿主占用、席位绑定、候选数量和业务摘要；活 tmux/watcher 或不完整状态返回错误 | `session_id`、`turn`、`round`、`step`、`host_state`、`state_digest`、`binding_generation/state`、`candidate_count`；准备后 `generation=0`，未准备时为 `null`；最近回执仍为 `null` |
+| `ralph-lisa host snapshot --project <abs> --json` | 协调器 | 在短锁内读取会话、轮次、宿主占用、席位绑定、候选数量、业务摘要及历史回执链；不完整状态返回错误 | `session_id`、`turn`、`round`、`step`、`host_state`、`state_digest`、`binding_generation/state`、`candidate_count`；准备后有当前 `generation`，内部测试提交并归档后有 `last_receipt_id` |
 | `ralph-lisa host prepare-generation --project <abs> --lease-id <uuid> --expected-digest <sha256> --json` | 协调器 | 核对租约、会话和业务摘要后建立只读代次基线；重复调用不重置代次 | `generation=0`、当前业务摘要与轮次、`last_receipt_id=null` |
 | `ralph-lisa host propose --project <abs> --role <role> --file <project-path> --candidate-id <uuid> --json` | Agent/受控辅助脚本 | 写候选，不改 `work/review/turn/round`；项目路径、当前会话/租约/代次/绑定代次与正文哈希均核对 | `candidate_id`、`content_sha256`、`status=candidate`、`source_verification=unverified` |
 | `ralph-lisa host commit --project <abs> --lease-id <id> --request-id <uuid> --candidate-id <uuid> --expected-generation <n> --expected-binding-generation <n> --json` | 协调器 | 核对候选、活跃席位、轮次及门禁；执行唯一正式提交 | 不可变 receipt，包括前后代次、前后轮次、角色、正文哈希、门禁结果 |
-| `ralph-lisa host receipt --project <abs> --request-id <uuid> --json` | 协调器 | 只读查询请求状态；无记录时 `unknown`，未完成意图或不明元数据时 `needs_reconcile`；仅在内部测试写入的首个回执、意图、代次与实际业务状态完全一致时返回 `committed` | 最终契约为 `committed` / `rejected` / `unknown` / `needs_reconcile`；历史回执、拒绝回执与正式提交仍待实现 |
+| `ralph-lisa host receipt --project <abs> --request-id <uuid> --json` | 协调器 | 只读查询请求状态；无记录时 `unknown`，未完成意图或不明元数据时 `needs_reconcile`；历史链及当前业务状态一致时可查询内部测试产生的任一成功回执 | 最终契约为 `committed` / `rejected` / `unknown` / `needs_reconcile`；拒绝回执与正式提交仍待实现 |
 | `ralph-lisa host release --project <abs> --lease-id <id> --json` | 协调器 | 核对租约 ID 和会话身份，拒绝带在途意图的释放；不删除 RLL 会话 | `released` |
 
 机器接口 `stdout` **只输出一条 JSON 对象**；诊断写 `stderr`，退出码分层。传统命令的文本输出保持原样。不要把 `status` 的文本解析成机器接口，也不要以 `agent idle/done` 或 Pane 输出代表 RLL 提交。
@@ -168,7 +168,7 @@ Herdr 官方接口能管理 Pane/Agent 并返回创建时的 ID；插件动作�
 | 前置 S0 基线 | `cli/package.json`、锁文件、CI/测试说明 | 干净安装、build 与原有回归已在开发 fork 通过；公开能力差异和 Node 版本已固定。原仓合并仍待评审 |
 | S1.1 只读定位 | `cli/src/host/inspect.ts`、`cli/src/cli.ts` | 显式规范路径、只读 JSON 检查；错项目、状态损坏和未初始化状态有确定结果。已推送开发 fork 并通过 CI |
 | S1.2 会话身份、单宿主与席位 | 新 `host/{session,snapshot,lease,binding,adoption,recovery}.ts`，现有可变命令入口 | 新建会话 UUID、占用检查、短锁、`claim/release/heartbeat`、快照、席位绑定、旧会话接管和显式租约恢复均已推送并通过 CI；后续仍须 Herdr 真机归因 |
-| S1.3 受控提交 | 新 `host/{business,generation,candidate,transaction,receipt,receipt-store}.ts`；抽取 `commands.ts` 的 Ralph/Lisa 提交核心 | 代次 0、业务摘要及只保存、不自动提交的候选收件箱已完成。人工提交已共用校验、gate 与业务写入核心；写入计划可先生成原摘要和预期后摘要。内部事务模块能在调用方持有短锁时核对租约、候选、席位、代次，并以临时文件、fsync、rename 持久化不含正文的写前意图。意图审计可核对写入前、已写入、部分写入；内部函数仅在审计确认全部业务文件匹配时推进代次并落不可变成功回执，重试同 ID 不重复写入。`host receipt` 现可核验内部测试产生的首个成功回执；内部归档函数只在回执和实际状态一致时将意图移出待处理目录，归档后查询仍可核验。`snapshot` 仍因回执目录未接入历史链核验而冻结。正式 `host commit`、历史/拒绝回执及异常恢复仍待实现，自动提交须等真实 Herdr 席位归因验证 |
+| S1.3 受控提交 | 新 `host/{business,generation,candidate,transaction,receipt,receipt-store}.ts`；抽取 `commands.ts` 的 Ralph/Lisa 提交核心 | 代次 0、业务摘要及只保存、不自动提交的候选收件箱已完成。人工提交已共用校验、gate 与业务写入核心；写入计划可先生成原摘要和预期后摘要。内部事务模块能在调用方持有短锁时核对租约、候选、席位、代次，并以临时文件、fsync、rename 持久化不含正文的写前意图。意图审计可核对写入前、已写入、部分写入；内部函数仅在审计确认全部业务文件匹配时推进代次并落不可变成功回执，重试同 ID 不重复写入。内部归档函数保留完整意图证据；历史回执链核验已接入 `snapshot`、`receipt`、`propose`、`prepare-generation` 和租约恢复检查，隔离样板可完成 Ralph→Lisa 两次内部提交并查询两条回执，篡改旧回执或链状态会冻结。正式 `host commit`、拒绝回执及异常恢复仍待实现，自动提交须等真实 Herdr 席位归因验证 |
 | S1.4 回归与集成 | `cli/src/test/`、样板项目脚本、契约文档 | 原人工流程与 tmux 流程回归；跨进程并发、注入中断、重启、旧会话、错误席位/目录的可重复测试 |
 
 正式启用候选归因与提交前先做一个**约一天的 Herdr 席位归因验证**：在独立样板 Workspace 启两个真实 Agent，记录插件动作上下文、Pane 环境、`agent get` 的 ID/类型/会话引用及 Pane 移动后变化。2026-10-30 核对到本机 Herdr CLI 为 `0.9.4`，Claude/Codex 命令可用；当前开发终端不在 Herdr 管理的 Pane 中，按 Herdr 自带操作说明未控制会话或复核 integration，因此此验证**还没有完成**。当前只允许保存 `source_verification=unverified` 的候选，不启用自动归因、正式提交或交接。若无法稳定证明候选对应的活动席位，插件首版在候选阶段要求人工确认；不得自动放行交接。

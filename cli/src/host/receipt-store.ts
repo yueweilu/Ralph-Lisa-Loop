@@ -1,9 +1,10 @@
 /** Internal generation and immutable receipt writes after an audited intent. */
+import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { readGeneration, type GenerationRecord } from "./generation.js";
 import { HostContractError } from "./inspect.js";
-import { entryExists } from "./lease.js";
+import { assertNoPendingIntents, entryExists } from "./lease.js";
 import { auditHostIntent, auditHostIntentRecord, readArchivedHostIntent, readHostIntent, type HostIntent } from "./transaction.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -35,6 +36,13 @@ export interface CommittedHostReceipt {
 export interface ReceiptChecks {
   policy: CommittedHostReceipt["policy"];
   gate: CommittedHostReceipt["gate"];
+}
+
+export interface CommittedReceiptLedger {
+  count: number;
+  digest: string | null;
+  receipts: CommittedHostReceipt[];
+  latest: CommittedHostReceipt | null;
 }
 
 function regularDirectory(dir: string): void {
@@ -139,6 +147,96 @@ export function readCommittedReceipt(host: string, requestId: string): Committed
   return r as unknown as CommittedHostReceipt;
 }
 
+/** Check every archived intent and receipt before a later generation is considered ready. */
+export function committedReceiptLedger(
+  host: string, project: string, state: string, sessionId: string, generation: GenerationRecord | null,
+  activeLatestRequestId?: string
+): CommittedReceiptLedger {
+  const receiptsDir = path.join(host, "receipts");
+  const archiveDir = path.join(host, "archived-intents");
+  if (!entryExists(receiptsDir)) {
+    if (entryExists(archiveDir)) {
+      regularDirectory(archiveDir);
+      if (fs.readdirSync(archiveDir).length > 0) {
+        throw new HostContractError("NEEDS_RECONCILE", 7, "Archived intents have no receipts");
+      }
+    }
+    if (generation && generation.generation > 0) {
+      throw new HostContractError("NEEDS_RECONCILE", 7, "Generation has no committed receipts");
+    }
+    return { count: 0, digest: null, receipts: [], latest: null };
+  }
+  regularDirectory(receiptsDir);
+  const pendingId = activeLatestRequestId?.toLowerCase();
+  if (pendingId) {
+    if (!UUID.test(pendingId)) throw new HostContractError("INVALID_ARGUMENTS", 2, "Invalid active request ID");
+    const intentsDir = path.join(host, "intents");
+    regularDirectory(intentsDir);
+    if (JSON.stringify(fs.readdirSync(intentsDir)) !== JSON.stringify([`${pendingId}.json`])) {
+      throw new HostContractError("NEEDS_RECONCILE", 7, "Unexpected pending host intent");
+    }
+  } else {
+    assertNoPendingIntents(host);
+  }
+  const receiptNames = fs.readdirSync(receiptsDir).sort();
+  const expectedArchiveNames = receiptNames.filter((name) => name !== `${pendingId}.json`);
+  let archiveNames: string[] = [];
+  if (entryExists(archiveDir)) {
+    regularDirectory(archiveDir);
+    archiveNames = fs.readdirSync(archiveDir).sort();
+  }
+  if (!generation || receiptNames.length === 0 ||
+      receiptNames.length !== generation.generation ||
+      (pendingId && !receiptNames.includes(`${pendingId}.json`)) ||
+      JSON.stringify(expectedArchiveNames) !== JSON.stringify(archiveNames) ||
+      receiptNames.some((name) => !name.endsWith(".json") ||
+        !UUID.test(name.slice(0, -5)) || name !== name.toLowerCase())) {
+    throw new HostContractError("NEEDS_RECONCILE", 7, "Committed receipt inventory is incomplete");
+  }
+  const pairs = receiptNames.map((name) => {
+    const id = name.slice(0, -5);
+    const receipt = readCommittedReceipt(host, id);
+    const intent = id === pendingId ? readHostIntent(host, id) : readArchivedHostIntent(host, id);
+    if (!receipt || !intent || path.join(state, "host") !== host ||
+        receipt.project_realpath !== project || receipt.state_realpath !== state ||
+        receipt.session_id !== sessionId || intent.project_realpath !== project ||
+        intent.state_realpath !== state || intent.session_id !== sessionId ||
+        receipt.request_id !== intent.request_id || receipt.candidate_id !== intent.candidate_id ||
+        receipt.lease_id !== intent.lease_id || receipt.role !== intent.role ||
+        receipt.generation_before !== intent.generation_before ||
+        receipt.binding_generation !== intent.binding_generation ||
+        receipt.turn_after !== intent.turn_after || receipt.round_after !== intent.round_after ||
+        receipt.step_after !== intent.step_before || receipt.content_sha256 !== intent.content_sha256 ||
+        receipt.state_digest_after !== intent.state_digest_after ||
+        intent.turn_after === intent.turn_before ||
+        intent.round_after !== intent.round_before + (intent.role === "lisa" ? 1 : 0)) {
+      throw new HostContractError("NEEDS_RECONCILE", 7, "Committed receipt differs from archived intent");
+    }
+    return { receipt, intent };
+  }).sort((a, b) => a.receipt.generation_before - b.receipt.generation_before);
+  const hash = crypto.createHash("sha256");
+  for (let index = 0; index < pairs.length; index++) {
+    const { receipt, intent } = pairs[index];
+    const previous = pairs[index - 1]?.receipt;
+    if (receipt.generation_before !== index || receipt.generation_after !== index + 1 ||
+        (previous && (intent.state_digest_before !== previous.state_digest_after ||
+          intent.turn_before !== previous.turn_after || intent.round_before !== previous.round_after ||
+          intent.step_before !== previous.step_after))) {
+      throw new HostContractError("NEEDS_RECONCILE", 7, "Committed receipt chain has a gap or changed transition");
+    }
+    hash.update(JSON.stringify({ receipt, intent })).update("\n");
+  }
+  const receipts = pairs.map(({ receipt }) => receipt);
+  const latest = receipts[receipts.length - 1];
+  if ((pendingId && latest.request_id !== pendingId) ||
+      generation.last_receipt_id !== latest.request_id ||
+      generation.state_digest !== latest.state_digest_after || generation.turn !== latest.turn_after ||
+      generation.round !== latest.round_after || generation.step !== latest.step_after) {
+    throw new HostContractError("NEEDS_RECONCILE", 7, "Latest receipt differs from generation");
+  }
+  return { count: receipts.length, digest: hash.digest("hex"), receipts, latest };
+}
+
 /** Only the latest receipt can be checked against live business state. */
 export function verifyLatestCommittedReceipt(
   host: string, requestId: string, project: string, state: string, sessionId: string
@@ -149,15 +247,6 @@ export function verifyLatestCommittedReceipt(
   const archived = readArchivedHostIntent(host, requestId);
   if (active && archived) {
     throw new HostContractError("NEEDS_RECONCILE", 7, "Intent appears in both active and archived stores");
-  }
-  const archive = path.join(host, "archived-intents");
-  if (entryExists(archive)) {
-    regularDirectory(archive);
-    const names = fs.readdirSync(archive);
-    const expected = archived ? [`${requestId.toLowerCase()}.json`] : [];
-    if (JSON.stringify(names) !== JSON.stringify(expected)) {
-      throw new HostContractError("NEEDS_RECONCILE", 7, "Unexpected archived intent entry");
-    }
   }
   const intent = active ?? archived;
   if (!intent || path.join(state, "host") !== host ||
@@ -184,6 +273,7 @@ export function verifyLatestCommittedReceipt(
       auditHostIntentRecord(intent).status !== "applied") {
     throw new HostContractError("NEEDS_RECONCILE", 7, "Committed receipt differs from live generation or business state");
   }
+  committedReceiptLedger(host, project, state, sessionId, generation, active ? requestId : undefined);
   return receipt;
 }
 

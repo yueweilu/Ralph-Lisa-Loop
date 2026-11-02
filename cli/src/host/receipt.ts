@@ -5,7 +5,9 @@ import { STATE_DIR } from "../state.js";
 import { canonicalProject, HostContractError, inspectProject } from "./inspect.js";
 import { acquireHostLock, entryExists } from "./lease.js";
 import { auditHostIntent, readHostIntent } from "./transaction.js";
-import { verifyLatestCommittedReceipt } from "./receipt-store.js";
+import { committedReceiptLedger, verifyLatestCommittedReceipt } from "./receipt-store.js";
+import { assertGenerationMatchesBusiness, readGeneration } from "./generation.js";
+import { businessDigest } from "./business.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -71,6 +73,12 @@ export function receiptStatus(project: string, requestId: string): HostReceiptSt
       "adoption.pending", "generation.pending"]) {
       if (entryExists(path.join(host, marker))) return reconcile(requestId, sessionId, `pending_${marker}`);
     }
+    let generation;
+    try {
+      generation = readGeneration(host, root, current.state_realpath, sessionId);
+    } catch {
+      return reconcile(requestId, sessionId, "invalid_generation_record");
+    }
     const receipts = path.join(host, "receipts");
     if (entryExists(receipts)) {
       let names: string[];
@@ -83,16 +91,34 @@ export function receiptStatus(project: string, requestId: string): HostReceiptSt
       } catch {
         return reconcile(requestId, sessionId, "unreadable_receipt_directory");
       }
-      // The first committed request is the only state this slice can verify end to end.
-      if (names.length !== 1 || names[0] !== `${requestId}.json`) {
-        return reconcile(requestId, sessionId, "receipt_store_requires_review");
+      if (names.includes(`${requestId}.json`)) {
+        try {
+          if (readHostIntent(host, requestId)) {
+            const committed = verifyLatestCommittedReceipt(host, requestId, root, current.state_realpath, sessionId);
+            return committed ?? reconcile(requestId, sessionId, "missing_committed_receipt");
+          }
+        } catch {
+          return reconcile(requestId, sessionId, "invalid_committed_receipt");
+        }
       }
       try {
-        const committed = verifyLatestCommittedReceipt(host, requestId, root, current.state_realpath, sessionId);
-        return committed ?? reconcile(requestId, sessionId, "missing_committed_receipt");
+        const ledger = committedReceiptLedger(host, root, current.state_realpath, sessionId, generation);
+        if (generation) {
+          assertGenerationMatchesBusiness(generation,
+            businessDigest(current.state_realpath, current.turn!, current.round!, current.step!),
+            current.turn!, current.round!, current.step!);
+        }
+        return ledger.receipts.find((record) => record.request_id === requestId) ??
+          { schema: 1, status: "unknown", request_id: requestId, session_id: sessionId };
       } catch {
-        return reconcile(requestId, sessionId, "invalid_committed_receipt");
+        return reconcile(requestId, sessionId,
+          names.includes(`${requestId}.json`) ? "invalid_committed_receipt" : "receipt_store_requires_review");
       }
+    }
+    try {
+      committedReceiptLedger(host, root, current.state_realpath, sessionId, generation);
+    } catch {
+      return reconcile(requestId, sessionId, "receipt_store_requires_review");
     }
     const intents = path.join(host, "intents");
     if (!entryExists(intents)) {

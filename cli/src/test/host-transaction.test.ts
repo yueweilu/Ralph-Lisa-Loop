@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { applySubmissionPlan, prepareRalphSubmission } from "../submission-write.js";
+import { applySubmissionPlan, prepareLisaSubmission, prepareRalphSubmission } from "../submission-write.js";
 import { businessDigest } from "../host/business.js";
 import { acquireHostLock, assertNoPendingIntents } from "../host/lease.js";
 import { advanceGenerationAfterIntent, archiveCommittedIntent, persistCommittedReceipt, readCommittedReceipt } from "../host/receipt-store.js";
@@ -179,6 +179,10 @@ describe("host write-ahead intent", () => {
     assert.equal(committed.status, 0, committed.stdout);
     assert.equal(JSON.parse(committed.stdout).status, "committed");
     assert.equal(JSON.parse(committed.stdout).generation_after, 1);
+    const resumed = run("host", "snapshot", "--project", project, "--json");
+    assert.equal(resumed.status, 0, resumed.stdout);
+    assert.equal(JSON.parse(resumed.stdout).generation, 1);
+    assert.equal(JSON.parse(resumed.stdout).last_receipt_id, request.requestId);
     const archivedFile = path.join(host, "archived-intents", `${request.requestId}.json`);
     const activeCopy = path.join(host, "intents", `${request.requestId}.json`);
     fs.copyFileSync(archivedFile, activeCopy);
@@ -212,7 +216,8 @@ describe("host write-ahead intent", () => {
     fs.writeFileSync(intentFile, intentBytes);
     assert.equal(receipt(request.requestId).status, 0);
     const other = receipt(randomUUID());
-    assert.equal(other.status, 7);
+    assert.equal(other.status, 0);
+    assert.equal(JSON.parse(other.stdout).status, "unknown");
     const interrupted = path.join(host, "receipts", `${request.requestId}.pending`);
     fs.writeFileSync(interrupted, "partial");
     assert.equal(receipt(request.requestId).status, 7);
@@ -239,6 +244,74 @@ describe("host write-ahead intent", () => {
       assert.throws(() => advanceGenerationAfterIntent(host, request.requestId), /Business writes do not match/);
       assert.equal(fs.existsSync(path.join(host, "receipts")), false);
     } finally { release(); }
+  });
+
+  it("continues through a Lisa turn and checks both historical receipts", () => {
+    const checks = { policy: { result: "pass" as const, warnings: [] },
+      gate: { result: "not_enabled" as const } };
+    const first = input();
+    let release = acquireHostLock(state);
+    try {
+      persistHostIntent(first);
+      applySubmissionPlan(first.plan);
+      advanceGenerationAfterIntent(host, first.requestId);
+      persistCommittedReceipt(host, first.requestId, checks);
+      archiveCommittedIntent(host, first.requestId);
+    } finally { release(); }
+    const bind = run("host", "bind-seat", "--project", project,
+      "--lease-id", leaseId, "--role", "lisa", "--workspace-id", "workspace-1",
+      "--pane-id", "pane-l", "--agent-target", "agent-l", "--json");
+    assert.equal(bind.status, 0, bind.stdout);
+    const lisaBindingGeneration = JSON.parse(bind.stdout).binding_generation;
+    const lisaContent = "[APPROVE] Reviewed the plan and approved it.\n";
+    const lisaCandidateId = randomUUID();
+    fs.writeFileSync(path.join(project, "proposal-lisa.md"), lisaContent);
+    const propose = run("host", "propose", "--project", project, "--role", "lisa",
+      "--file", "proposal-lisa.md", "--candidate-id", lisaCandidateId, "--json");
+    assert.equal(propose.status, 0, propose.stdout);
+    const second = {
+      project, leaseId, candidateId: lisaCandidateId, requestId: randomUUID(),
+      expectedGeneration: 1, expectedBindingGeneration: lisaBindingGeneration,
+      plan: prepareLisaSubmission({ projectDir: project, tag: "APPROVE", external: true, content: lisaContent }),
+    };
+    release = acquireHostLock(state);
+    try {
+      persistHostIntent(second);
+      applySubmissionPlan(second.plan);
+      advanceGenerationAfterIntent(host, second.requestId);
+      persistCommittedReceipt(host, second.requestId, checks);
+      archiveCommittedIntent(host, second.requestId);
+    } finally { release(); }
+    const snapshot = run("host", "snapshot", "--project", project, "--json");
+    assert.equal(snapshot.status, 0, snapshot.stdout);
+    assert.equal(JSON.parse(snapshot.stdout).generation, 2);
+    assert.equal(JSON.parse(snapshot.stdout).turn, "ralph");
+    assert.equal(JSON.parse(snapshot.stdout).round, 2);
+    assert.equal(JSON.parse(snapshot.stdout).last_receipt_id, second.requestId);
+    const preparedAgain = run("host", "prepare-generation", "--project", project,
+      "--lease-id", leaseId, "--expected-digest", JSON.parse(snapshot.stdout).state_digest, "--json");
+    assert.equal(preparedAgain.status, 0, preparedAgain.stdout);
+    assert.equal(JSON.parse(preparedAgain.stdout).generation, 2);
+    const recovery = run("host", "recovery-check", "--project", project, "--json");
+    assert.equal(recovery.status, 0, recovery.stdout);
+    assert.equal(JSON.parse(receipt(first.requestId).stdout).status, "committed");
+    assert.equal(JSON.parse(receipt(second.requestId).stdout).status, "committed");
+    const firstReceiptFile = path.join(host, "receipts", `${first.requestId}.json`);
+    const firstReceiptBytes = fs.readFileSync(firstReceiptFile);
+    fs.unlinkSync(firstReceiptFile);
+    assert.equal(run("host", "snapshot", "--project", project, "--json").status, 7);
+    assert.equal(receipt(second.requestId).status, 7);
+    assert.equal(run("host", "recovery-check", "--project", project, "--json").status, 7);
+    fs.writeFileSync(firstReceiptFile, firstReceiptBytes);
+    const secondIntentFile = path.join(host, "archived-intents", `${second.requestId}.json`);
+    const secondIntentBytes = fs.readFileSync(secondIntentFile);
+    const wrongLink = JSON.parse(secondIntentBytes.toString("utf8"));
+    wrongLink.state_digest_before = "0".repeat(64);
+    fs.writeFileSync(secondIntentFile, JSON.stringify(wrongLink) + "\n");
+    assert.equal(run("host", "snapshot", "--project", project, "--json").status, 7);
+    assert.equal(receipt(first.requestId).status, 7);
+    fs.writeFileSync(secondIntentFile, secondIntentBytes);
+    assert.equal(run("host", "snapshot", "--project", project, "--json").status, 0);
   });
 
   it("rejects a receipt directory symlink", () => {

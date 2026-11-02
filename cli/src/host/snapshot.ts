@@ -7,6 +7,7 @@ import { HostBinding, readBinding, SeatBinding } from "./binding.js";
 import { businessDigest } from "./business.js";
 import { assertGenerationMatchesBusiness, readGeneration } from "./generation.js";
 import { candidateInventory } from "./candidate.js";
+import { committedReceiptLedger } from "./receipt-store.js";
 
 export interface HostSnapshot {
   schema: 1;
@@ -58,12 +59,6 @@ function hostBindingSummary(state: string, project: string, sessionId: string): 
     const intentsStat = fs.lstatSync(intents);
     if (!intentsStat.isDirectory() || intentsStat.isSymbolicLink() || fs.readdirSync(intents).length > 0) {
       throw new HostContractError("NEEDS_RECONCILE", 7, "Pending host intents require reconciliation");
-    }
-  }
-  // Receipts are not yet supported by this slice.
-  for (const future of ["receipts"]) {
-    if (entryExists(path.join(host, future))) {
-      throw new HostContractError("NEEDS_RECONCILE", 7, `Unsupported host metadata: ${future}`);
     }
   }
   const binding = readBinding(host);
@@ -120,6 +115,8 @@ export function snapshotProject(project: string): HostSnapshot {
     if (generation) {
       assertGenerationMatchesBusiness(generation, digest, current.turn!, current.round!, current.step!);
     }
+    committedReceiptLedger(path.join(current.state_realpath, "host"),
+      current.project_realpath, current.state_realpath, current.session_id, generation);
     const candidates = candidateInventory(path.join(current.state_realpath, "host"),
       current.project_realpath, current.state_realpath, current.session_id);
     return {

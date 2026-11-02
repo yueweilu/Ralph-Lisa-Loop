@@ -8,6 +8,7 @@ import { acquireHostLock, assertAdoptionReady, assertNoManualRuntime, assertNoPe
 import { businessDigest } from "./business.js";
 import { assertGenerationMatchesBusiness, GenerationRecord, readGeneration } from "./generation.js";
 import { candidateInventory } from "./candidate.js";
+import { committedReceiptLedger } from "./receipt-store.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -21,6 +22,7 @@ interface Evidence {
   binding_generation: number | null;
   binding_lease_id: string | null;
   generation: GenerationRecord | null;
+  receipts_digest: string | null;
   candidate_count: number;
   candidates_digest: string | null;
   evidence_sha256: string;
@@ -63,11 +65,6 @@ function collect(project: string): Evidence {
       throw new HostContractError("NEEDS_RECONCILE", 7, `Host marker ${name} requires reconciliation`);
     }
   }
-  for (const name of ["receipts"]) {
-    if (entryExists(path.join(host, name))) {
-      throw new HostContractError("NEEDS_RECONCILE", 7, `Unsupported host metadata during lease recovery: ${name}`);
-    }
-  }
   assertNoPendingIntents(host);
   assertNoManualRuntime(current.project_realpath, current.state_realpath);
   let lease: HostLease;
@@ -91,6 +88,8 @@ function collect(project: string): Evidence {
   if (generation) {
     assertGenerationMatchesBusiness(generation, stateDigest, current.turn!, current.round!, current.step!);
   }
+  const receipts = committedReceiptLedger(host, current.project_realpath, current.state_realpath,
+    current.session_id, generation);
   const candidates = candidateInventory(host, current.project_realpath, current.state_realpath, current.session_id);
   const body = {
     project_realpath: current.project_realpath,
@@ -101,6 +100,7 @@ function collect(project: string): Evidence {
     binding_generation: binding?.binding_generation ?? null,
     binding_lease_id: binding?.lease_id ?? null,
     generation,
+    receipts_digest: receipts.digest,
     candidate_count: candidates.count,
     candidates_digest: candidates.digest,
   };
