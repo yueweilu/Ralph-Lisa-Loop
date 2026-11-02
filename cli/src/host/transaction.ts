@@ -9,6 +9,7 @@ import { candidateInventory } from "./candidate.js";
 import { assertGenerationMatchesBusiness, readGeneration } from "./generation.js";
 import { canonicalProject, HostContractError, inspectProject } from "./inspect.js";
 import { assertAdoptionReady, assertNoManualRuntime, assertNoPendingIntents, entryExists, readLease } from "./lease.js";
+import { committedReceiptLedger } from "./receipt-store.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -140,6 +141,7 @@ export function persistHostIntent(input: HostIntentInput): HostIntent {
   }
   const digestBefore = businessDigest(state, current.turn!, current.round!, current.step!);
   assertGenerationMatchesBusiness(generation, digestBefore, current.turn!, current.round!, current.step!);
+  committedReceiptLedger(host, root, state, current.session_id, generation);
   const candidate = candidateInventory(host, root, state, current.session_id).candidates
     .find((value) => value.candidate_id === input.candidateId.toLowerCase());
   if (!candidate || candidate.lease_id !== lease.lease_id ||

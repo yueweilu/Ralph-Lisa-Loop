@@ -274,6 +274,15 @@ describe("host write-ahead intent", () => {
       expectedGeneration: 1, expectedBindingGeneration: lisaBindingGeneration,
       plan: prepareLisaSubmission({ projectDir: project, tag: "APPROVE", external: true, content: lisaContent }),
     };
+    const priorReceiptFile = path.join(host, "receipts", `${first.requestId}.json`);
+    const priorReceiptBytes = fs.readFileSync(priorReceiptFile);
+    fs.writeFileSync(priorReceiptFile, "{}\n");
+    release = acquireHostLock(state);
+    try {
+      assert.throws(() => persistHostIntent(second), /Invalid committed receipt/);
+    } finally { release(); }
+    assert.equal(fs.existsSync(path.join(host, "intents", `${second.requestId}.json`)), false);
+    fs.writeFileSync(priorReceiptFile, priorReceiptBytes);
     release = acquireHostLock(state);
     try {
       persistHostIntent(second);
