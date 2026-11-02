@@ -6,7 +6,7 @@
 **状态：** 分阶段实施中；原始基线为公开仓 `main@7440e29`、CLI `0.3.13`，各切片的实际完成情况以下文和 GitHub CI 为准。本文不是完整交付回执。
 **位置：** [六阶段开发顺序](public-repo-herdr-plugin-start-2026-10-29.md)中的 S1。后续 S2 才做 Herdr 插件壳，S3 才做真实 Claude/Codex 双席交接。
 
-**开发位置与分支：** 本公开仓已在独立工作目录 `Ralph-Lisa-Loop-herdr/` 检出；S0 和各 S1 切片在开发 fork 的独立分支追踪，当前 S1.3 提交预检切片位于 `feat/herdr-s1-commit-preflight`，基于 `feat/herdr-s1-rejection-ledger`。S1 尚未完整交付，也没有向原仓提交 PR。完整分支约定见[开发起点第 3 节](public-repo-herdr-plugin-start-2026-10-29.md#3-先建怎样的开发分支)。
+**开发位置与分支：** 本公开仓已在独立工作目录 `Ralph-Lisa-Loop-herdr/` 检出；S0 和各 S1 切片在开发 fork 的独立分支追踪，当前 S1.3 人工来源确认切片位于 `feat/herdr-s1-human-confirmation`，基于 `feat/herdr-s1-commit-preflight`。S1 尚未完整交付，也没有向原仓提交 PR。完整分支约定见[开发起点第 3 节](public-repo-herdr-plugin-start-2026-10-29.md#3-先建怎样的开发分支)。
 
 ## 1. S1 要交付什么
 
@@ -71,6 +71,8 @@ Herdr 官方接口能管理 Pane/Agent 并返回创建时的 ID；插件动作�
     receipts/<request-id>.json # 已确认的不可变提交回执
     rejections/<request-id>.json # policy/gate 阻断回执；逐条核对候选与历史代次
     rejections/index.json  # 拒绝请求 ID 与内容摘要索引；缺页或中断时冻结
+    confirmations/<request-id>.json # 人工确认候选来源的声明；不等于 Herdr 验证
+    confirmations/index.json # 声明请求 ID 与内容摘要索引；缺页或中断时冻结
     candidates/<id>/           # 候选正文 content.txt 与元数据 record.json
     candidates/<id>.pending/   # 候选写入中断时的冻结标记
     reconcile.json             # 部分提交或归属不明时的冻结原因
@@ -92,7 +94,9 @@ Herdr 官方接口能管理 Pane/Agent 并返回创建时的 ID；插件动作�
 
 **候选收件箱：** `host propose` 只接收项目内的普通 UTF-8 文件，最大 256 KiB；相对路径从显式项目根解析，拒绝链接、项目外路径和宿主元数据。必须有当前轮次、有效租约、对应席位绑定和已准备的代次。候选写入包含正文摘要、当前代次/绑定代次及预期目标 Pane/Agent；`source_verification=unverified` 明确说明这些目标 ID **不是来源证明**。同一 ID/内容/状态重试返回同一候选；冲突 ID 拒绝。写入中断、元数据或正文损坏时快照冻结。租约释放或显式恢复后候选仍留作历史证据，不会自动重放。
 
-**正式提交前预检：** `host commit-check` 已接入只读 CLI。它在项目短锁下读取候选正文，重新核对租约、席位、代次、历史回执、业务状态及提交计划，返回候选摘要与预期 Pane/Agent。policy 阻断返回 `status=policy_blocked`；其余返回 `status=awaiting_source_confirmation`、`source_verification=unverified`、`commit_ready=false`。启用的测试门禁只显示 `pending`，预检不会运行命令；policy 阻断时显示 `skipped_policy`。预检不创建意图、回执或业务写入，也不承诺未来某次提交仍有效；正式提交必须重新核验并补真实 Herdr 来源归因或明确的人工确认。该入口不等于已开放 `host commit`。
+**正式提交前预检与人工确认：** `host commit-check` 在项目短锁下读取候选正文，重新核对租约、席位、代次、历史回执、业务状态及提交计划，返回候选摘要与预期 Pane/Agent。policy 阻断返回 `status=policy_blocked`；未确认时返回 `awaiting_source_confirmation`。启用的测试门禁只显示 `pending`，预检不会运行命令；policy 阻断时显示 `skipped_policy`。预检不创建意图、回执或业务写入，也不承诺未来某次提交仍有效。人工确认后，`commit-check` 返回 `human_source_asserted`，但仍标记 `source_verification=unverified`、`commit_ready=false`。
+
+`host confirm-candidate` 接收预检的候选正文 SHA-256、请求 ID、租约与席位代次，以及明确的 `reviewed_candidate_source` 决定；在同一短锁内重新预检，再把声明写为持久记录。policy 阻断、正文摘要变化或请求归属冲突时拒绝。重复同一声明在当前代次返回原记录，不重复写入。声明记录和索引纳入快照、候选、代次准备、意图、回执查询及租约恢复检查；历史缺页或损坏时冻结。**CLI 不能证明是谁在界面上看过候选，也不能证明候选确实由绑定的 Herdr Agent 生成。** 后续插件必须展示候选正文与这些 ID，并由真实用户操作后调用确认；正式提交还须重新核验。该声明不是自动来源归因，也不代表正式 `host commit` 已开放。
 
 **旧会话：** 缺少 `session.json` 的人工会话继续按原 CLI 工作。`host adopt` 在项目短锁内检查规范路径、业务文件及活跃 tmux/watcher，逐字节备份关键状态，再建立 `session_id` 和 `baseline_generation=0` 的接管记录。`reconcile.json` 在确认前冻结写入与租约领取。用户核对备份和当前轮次后，调用 `host confirm-adoption --backup-id <id> --decision no-replay`；命令再核对原文件和备份摘要，确认后解除冻结，不补发历史轮次。接管记录本身不创建 `generation.json`；后续领取宿主租约并核对快照后，才显式调用 `prepare-generation` 建立代次 0。macOS 外部终端的 Agent 需用户先停止，CLI 当前无法可靠检测其退出。绝不通过重新 `init` 完成接管。
 
@@ -115,7 +119,8 @@ Herdr 官方接口能管理 Pane/Agent 并返回创建时的 ID；插件动作�
 | `ralph-lisa host snapshot --project <abs> --json` | 协调器 | 在短锁内读取会话、轮次、宿主占用、席位绑定、候选数量、业务摘要及历史回执链；不完整状态返回错误 | `session_id`、`turn`、`round`、`step`、`host_state`、`state_digest`、`binding_generation/state`、`candidate_count`；准备后有当前 `generation`，内部测试提交并归档后有 `last_receipt_id` |
 | `ralph-lisa host prepare-generation --project <abs> --lease-id <uuid> --expected-digest <sha256> --json` | 协调器 | 核对租约、会话和业务摘要后建立只读代次基线；重复调用不重置代次 | `generation=0`、当前业务摘要与轮次、`last_receipt_id=null` |
 | `ralph-lisa host propose --project <abs> --role <role> --file <project-path> --candidate-id <uuid> --json` | Agent/受控辅助脚本 | 写候选，不改 `work/review/turn/round`；项目路径、当前会话/租约/代次/绑定代次与正文哈希均核对 | `candidate_id`、`content_sha256`、`status=candidate`、`source_verification=unverified` |
-| `ralph-lisa host commit-check --project <abs> --lease-id <uuid> --request-id <uuid> --candidate-id <uuid> --expected-generation <n> --expected-binding-generation <n> --json` | 协调器/人工诊断 | 只读预检候选、宿主租约、席位、业务代次、提交计划与 policy；不执行测试门禁或写入 | `awaiting_source_confirmation` 或 `policy_blocked`，含候选摘要、预期 Pane/Agent、policy 与 gate 预检状态；`commit_ready=false` |
+| `ralph-lisa host commit-check --project <abs> --lease-id <uuid> --request-id <uuid> --candidate-id <uuid> --expected-generation <n> --expected-binding-generation <n> --json` | 协调器/人工诊断 | 只读预检候选、宿主租约、席位、业务代次、提交计划与 policy；不执行测试门禁或写入 | `awaiting_source_confirmation`、`human_source_asserted` 或 `policy_blocked`，含候选摘要、预期 Pane/Agent、policy 与 gate 预检状态；`commit_ready=false` |
+| `ralph-lisa host confirm-candidate --project <abs> --lease-id <uuid> --request-id <uuid> --candidate-id <uuid> --expected-generation <n> --expected-binding-generation <n> --expected-content-sha256 <sha256> --decision reviewed_candidate_source --json` | 用户确认后的协调器 | 在短锁内重验预检、policy、候选摘要和请求归属，持久保存人工声明；不写业务状态或执行测试门禁 | `status=human_asserted`、候选/席位/代次摘要；`source_verification=unverified` |
 | `ralph-lisa host commit --project <abs> --lease-id <id> --request-id <uuid> --candidate-id <uuid> --expected-generation <n> --expected-binding-generation <n> --json` | 协调器 | 核对候选、活跃席位、轮次及门禁；执行唯一正式提交 | 不可变 receipt，包括前后代次、前后轮次、角色、正文哈希、门禁结果 |
 | `ralph-lisa host receipt --project <abs> --request-id <uuid> --json` | 协调器 | 只读查询请求状态；无记录时 `unknown`，未完成意图或不明元数据时 `needs_reconcile`；历史链及当前业务状态一致时可查询内部测试产生的成功或拒绝回执 | 最终契约为 `committed` / `rejected` / `unknown` / `needs_reconcile`；正式提交仍待实现 |
 | `ralph-lisa host release --project <abs> --lease-id <id> --json` | 协调器 | 核对租约 ID 和会话身份，拒绝带在途意图的释放；不删除 RLL 会话 | `released` |
@@ -180,7 +185,11 @@ Herdr 官方接口能管理 Pane/Agent 并返回创建时的 ID；插件动作�
 | S1.3 受控提交 | 新 `host/{business,generation,candidate,transaction,receipt,receipt-store,rejection,commit-check}.ts`；抽取 `commands.ts` 的 Ralph/Lisa 提交核心 | 代次 0、业务摘要及只保存、不自动提交的候选收件箱已完成。人工提交已共用校验、gate 与业务写入核心；写入计划可先生成原摘要和预期后摘要。内部事务模块能在调用方持有短锁时核对租约、候选、席位、代次，并以临时文件、fsync、rename 持久化不含正文的写前意图。意图审计可核对写入前、已写入、部分写入；内部函数仅在审计确认全部业务文件匹配时推进代次并落不可变成功回执，重试同 ID 不重复写入。内部归档函数保留完整意图证据；历史成功回执链核验已接入 `snapshot`、`receipt`、`propose`、`prepare-generation` 和租约恢复检查，隔离样板可完成 Ralph→Lisa 两次内部提交并查询两条回执，篡改旧回执或链状态会冻结。内部拒绝路径可为 policy/gate 阻断写不可变回执，保持业务与代次不变；拒绝历史逐条核验已接入相同读取与后续候选入口，隔离样板可在多次拒绝后提交并查询历史拒绝与成功回执。`host commit-check` 可无写入地核对候选、席位、状态和 policy，并明确保留来源未验证与门禁未执行状态。正式 `host commit` 与异常恢复仍待实现，自动提交须等真实 Herdr 席位归因验证 |
 | S1.4 回归与集成 | `cli/src/test/`、样板项目脚本、契约文档 | 原人工流程与 tmux 流程回归；跨进程并发、注入中断、重启、旧会话、错误席位/目录的可重复测试 |
 
-正式启用候选归因与提交前先做一个**约一天的 Herdr 席位归因验证**：在独立样板 Workspace 启两个真实 Agent，记录插件动作上下文、Pane 环境、`agent get` 的 ID/类型/会话引用及 Pane 移动后变化。2026-10-30 核对到本机 Herdr CLI 为 `0.9.4`，Claude/Codex 命令可用；当前开发终端不在 Herdr 管理的 Pane 中，按 Herdr 自带操作说明未控制会话或复核 integration，因此此验证**还没有完成**。当前只允许保存 `source_verification=unverified` 的候选，不启用自动归因、正式提交或交接。若无法稳定证明候选对应的活动席位，插件首版在候选阶段要求人工确认；不得自动放行交接。
+当前 S1.3 已增加 `host confirm-candidate` 人工声明记录与历史核验；隔离测试覆盖摘要错误、policy 阻断、幂等声明、声明后内部提交，以及旧声明或索引损坏后的冻结。该切片不代表 Herdr 真机来源验证、用户已实际审阅候选或正式提交开放。
+
+正式启用候选归因与提交前先做一个**约一天的 Herdr 席位归因验证**：在独立样板 Workspace 启两个真实 Agent，记录插件动作上下文、Pane 环境、`agent get` 的 ID/类型/会话引用及 Pane 移动后变化。2026-10-30 核对到本机 Herdr CLI 为 `0.9.4`，Claude/Codex 命令可用；当前开发终端不在 Herdr 管理的 Pane 中，按 Herdr 自带操作说明未控制会话或复核 integration，因此此验证**还没有完成**。当前可保存 `source_verification=unverified` 的候选及人工声明，不启用自动归因、正式提交或交接。若无法稳定证明候选对应的活动席位，插件首版在候选阶段要求人工确认；不得自动放行交接。
+
+2026-11-02 再次核对本机 `herdr 0.9.4`：本次开发进程的 `HERDR_ENV` 并非 `1`。Herdr 自带 `herdr --skill` 明确要求在这种情况下停止检查或控制当前会话。因此本次只完成 CLI 人工声明记录与隔离测试，**没有**取得真实 Herdr Pane/Agent 归因证据，也没有替用户执行确认。需从 Herdr 管理的 Pane 启动验证进程后再做真机归因测试。
 
 **规划工期，不是已实测工时：** 席位归因验证约 1 人日；S1.1 约 2–3；S1.2 约 2–3；S1.3 约 3–5；S1.4 约 2–3，合计约 **10–15 人日**。前置 S0 的 3–5 人日另计；需在 S0、席位归因验证和首个 PR 后重估。若候选归因必须改为人工确认流程或需要额外的跨平台锁实现，另增加约 2–4 人日。此估算只覆盖 CLI S1，不含 Herdr 插件、真实双席恢复或发布。
 

@@ -10,6 +10,7 @@ import { assertGenerationMatchesBusiness, GenerationRecord, readGeneration } fro
 import { candidateInventory } from "./candidate.js";
 import { committedReceiptLedger } from "./receipt-store.js";
 import { rejectedReceiptInventory } from "./rejection.js";
+import { humanConfirmationInventory } from "./confirmation.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -25,6 +26,7 @@ interface Evidence {
   generation: GenerationRecord | null;
   receipts_digest: string | null;
   rejections_digest: string | null;
+  confirmations_digest: string | null;
   candidate_count: number;
   candidates_digest: string | null;
   evidence_sha256: string;
@@ -95,6 +97,8 @@ function collect(project: string): Evidence {
   const candidates = candidateInventory(host, current.project_realpath, current.state_realpath, current.session_id);
   const rejections = rejectedReceiptInventory(host, current.project_realpath,
     current.state_realpath, current.session_id, generation, receipts, candidates.candidates);
+  const confirmations = humanConfirmationInventory(host, current.project_realpath,
+    current.state_realpath, current.session_id, generation, receipts, candidates.candidates);
   const body = {
     project_realpath: current.project_realpath,
     state_realpath: current.state_realpath,
@@ -106,6 +110,7 @@ function collect(project: string): Evidence {
     generation,
     receipts_digest: receipts.digest,
     rejections_digest: rejections.digest,
+    confirmations_digest: confirmations.digest,
     candidate_count: candidates.count,
     candidates_digest: candidates.digest,
   };

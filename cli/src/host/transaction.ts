@@ -11,6 +11,7 @@ import { canonicalProject, HostContractError, inspectProject } from "./inspect.j
 import { assertAdoptionReady, assertNoManualRuntime, assertNoPendingIntents, entryExists, readLease } from "./lease.js";
 import { committedReceiptLedger } from "./receipt-store.js";
 import { readRejectedReceipt, rejectedReceiptInventory } from "./rejection.js";
+import { humanConfirmationInventory } from "./confirmation.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -149,6 +150,7 @@ export function prepareHostIntent(input: HostIntentInput): HostIntent {
   }
   const candidates = candidateInventory(host, root, state, current.session_id).candidates;
   rejectedReceiptInventory(host, root, state, current.session_id, generation, ledger, candidates);
+  humanConfirmationInventory(host, root, state, current.session_id, generation, ledger, candidates);
   const candidate = candidates
     .find((value) => value.candidate_id === input.candidateId.toLowerCase());
   if (!candidate || candidate.lease_id !== lease.lease_id ||

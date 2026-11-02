@@ -168,6 +168,66 @@ describe("host write-ahead intent", () => {
     }
   });
 
+  it("records a human source assertion and validates it across a later commit", () => {
+    const request = input();
+    const preflight = run("host", "commit-check", "--project", project,
+      "--lease-id", leaseId, "--request-id", request.requestId,
+      "--candidate-id", candidateId, "--expected-generation", "0",
+      "--expected-binding-generation", String(bindingGeneration), "--json");
+    assert.equal(preflight.status, 0, preflight.stdout);
+    const digest = JSON.parse(preflight.stdout).content_sha256;
+    const confirm = (expectedDigest: string, decision = "reviewed_candidate_source") =>
+      run("host", "confirm-candidate", "--project", project,
+        "--lease-id", leaseId, "--request-id", request.requestId,
+        "--candidate-id", candidateId, "--expected-generation", "0",
+        "--expected-binding-generation", String(bindingGeneration),
+        "--expected-content-sha256", expectedDigest, "--decision", decision, "--json");
+    const wrongDigest = confirm("0".repeat(64));
+    assert.equal(wrongDigest.status, 5);
+    assert.equal(JSON.parse(wrongDigest.stdout).code, "STALE_CANDIDATE");
+    assert.equal(confirm(digest, "automatic_verified").status, 2);
+    assert.equal(fs.existsSync(path.join(host, "confirmations")), false);
+    const first = confirm(digest);
+    assert.equal(first.status, 0, first.stdout);
+    const asserted = JSON.parse(first.stdout);
+    assert.equal(asserted.status, "human_asserted");
+    assert.equal(asserted.source_verification, "unverified");
+    assert.equal(asserted.request_id, request.requestId);
+    assert.equal(asserted.content_sha256, digest);
+    assert.deepEqual(JSON.parse(confirm(digest).stdout), asserted);
+    const afterConfirmation = run("host", "commit-check", "--project", project,
+      "--lease-id", leaseId, "--request-id", request.requestId,
+      "--candidate-id", candidateId, "--expected-generation", "0",
+      "--expected-binding-generation", String(bindingGeneration), "--json");
+    assert.equal(afterConfirmation.status, 0, afterConfirmation.stdout);
+    assert.equal(JSON.parse(afterConfirmation.stdout).status, "human_source_asserted");
+    assert.equal(JSON.parse(afterConfirmation.stdout).human_confirmation, "asserted");
+    assert.equal(JSON.parse(afterConfirmation.stdout).source_verification, "unverified");
+    assert.equal(fs.existsSync(path.join(host, "intents")), false);
+    assert.equal(JSON.parse(receipt(request.requestId).stdout).status, "unknown");
+    assert.equal(run("host", "snapshot", "--project", project, "--json").status, 0);
+    const release = acquireHostLock(state);
+    try {
+      persistHostIntent(request);
+      applySubmissionPlan(request.plan);
+      advanceGenerationAfterIntent(host, request.requestId);
+      persistCommittedReceipt(host, request.requestId,
+        { policy: { result: "pass", warnings: [] }, gate: { result: "not_enabled" } });
+      archiveCommittedIntent(host, request.requestId);
+    } finally { release(); }
+    assert.equal(JSON.parse(receipt(request.requestId).stdout).status, "committed");
+    assert.equal(run("host", "snapshot", "--project", project, "--json").status, 0);
+    const confirmationFile = path.join(host, "confirmations", `${request.requestId}.json`);
+    const confirmationBytes = fs.readFileSync(confirmationFile);
+    fs.unlinkSync(confirmationFile);
+    assert.equal(receipt(request.requestId).status, 7);
+    assert.equal(run("host", "snapshot", "--project", project, "--json").status, 7);
+    fs.writeFileSync(confirmationFile, confirmationBytes);
+    const indexFile = path.join(host, "confirmations", "index.json");
+    fs.writeFileSync(indexFile, "{}\n");
+    assert.equal(receipt(request.requestId).status, 7);
+  });
+
   it("stores a policy rejection without changing business state or generation", () => {
     const blockedContent = "[CODE] Implementation done";
     const blockedCandidate = randomUUID();
@@ -189,6 +249,15 @@ describe("host write-ahead intent", () => {
     assert.equal(preflight.status, 0, preflight.stdout);
     assert.equal(JSON.parse(preflight.stdout).status, "policy_blocked");
     assert.equal(JSON.parse(preflight.stdout).policy.result, "block");
+    const blockedConfirmation = run("host", "confirm-candidate", "--project", project,
+      "--lease-id", leaseId, "--request-id", request.requestId,
+      "--candidate-id", blockedCandidate, "--expected-generation", "0",
+      "--expected-binding-generation", String(bindingGeneration),
+      "--expected-content-sha256", JSON.parse(preflight.stdout).content_sha256,
+      "--decision", "reviewed_candidate_source", "--json");
+    assert.equal(blockedConfirmation.status, 6);
+    assert.equal(JSON.parse(blockedConfirmation.stdout).code, "POLICY_BLOCKED");
+    assert.equal(fs.existsSync(path.join(host, "confirmations")), false);
     assert.equal(fs.existsSync(path.join(host, "rejections")), false);
     const release = acquireHostLock(state);
     let rejected;

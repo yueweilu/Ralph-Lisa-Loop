@@ -6,6 +6,7 @@ import { acquireHostLock, assertAdoptionReady, assertNoManualRuntime, assertNoPe
 import { committedReceiptLedger } from "./receipt-store.js";
 import { candidateInventory } from "./candidate.js";
 import { rejectedReceiptInventory } from "./rejection.js";
+import { humanConfirmationInventory } from "./confirmation.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -121,9 +122,12 @@ export function prepareGeneration(project: string, leaseId: string, expectedDige
     const previous = readGeneration(host, current.project_realpath, current.state_realpath!, current.session_id!);
     const ledger = committedReceiptLedger(host, current.project_realpath,
       current.state_realpath!, current.session_id!, previous);
+    const candidates = candidateInventory(host, current.project_realpath,
+      current.state_realpath!, current.session_id!).candidates;
     rejectedReceiptInventory(host, current.project_realpath, current.state_realpath!,
-      current.session_id!, previous, ledger,
-      candidateInventory(host, current.project_realpath, current.state_realpath!, current.session_id!).candidates);
+      current.session_id!, previous, ledger, candidates);
+    humanConfirmationInventory(host, current.project_realpath, current.state_realpath!,
+      current.session_id!, previous, ledger, candidates);
     if (previous) {
       assertGenerationMatchesBusiness(previous, digest, current.turn!, current.round!, current.step!);
       return previous;

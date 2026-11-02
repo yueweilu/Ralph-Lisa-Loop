@@ -8,6 +8,7 @@ import { checkSubmission, extractLastTag } from "../submission.js";
 import { prepareLisaSubmission, prepareRalphSubmission } from "../submission-write.js";
 import { businessDigest } from "./business.js";
 import { candidateInventory } from "./candidate.js";
+import { readHumanConfirmation } from "./confirmation.js";
 import { canonicalProject, HostContractError, inspectProject } from "./inspect.js";
 import { acquireHostLock } from "./lease.js";
 import { readRejectedReceipt } from "./rejection.js";
@@ -17,7 +18,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 
 export interface HostCommitCheck {
   schema: 1;
-  status: "awaiting_source_confirmation" | "policy_blocked";
+  status: "awaiting_source_confirmation" | "human_source_asserted" | "policy_blocked";
   request_id: string;
   candidate_id: string;
   session_id: string;
@@ -29,19 +30,21 @@ export interface HostCommitCheck {
   turn_after: "ralph" | "lisa";
   round_before: number;
   round_after: number;
+  step_before: string;
   content_sha256: string;
   state_digest_before: string;
   workspace_id: string;
   pane_id: string;
   agent_target: string;
   source_verification: "unverified";
+  human_confirmation: "absent" | "asserted";
   commit_ready: false;
   policy: { result: "pass" | "warn" | "block"; rules: string[] };
   gate: "not_enabled" | "pending" | "skipped_policy";
 }
 
-/** Caller need not own a lock. The result never attests to an Agent's identity. */
-export function checkHostCommit(
+/** Caller holds the host lock. The result never attests to an Agent's identity. */
+export function checkHostCommitLocked(
   project: string, leaseId: string, requestId: string, candidateId: string,
   expectedGeneration: number, expectedBindingGeneration: number
 ): HostCommitCheck {
@@ -56,8 +59,6 @@ export function checkHostCommit(
       initial.contract_state !== "identified") {
     throw new HostContractError("ADOPT_REQUIRED", 3, "An identified session is required for commit-check");
   }
-  const release = acquireHostLock(initial.state_realpath);
-  try {
     const current = inspectProject(root);
     if (current.state_realpath !== initial.state_realpath || current.session_id !== initial.session_id) {
       throw new HostContractError("STALE_SESSION", 5, "Session changed while acquiring the host lock");
@@ -97,24 +98,43 @@ export function checkHostCommit(
     }
     const blocked = check.failure === "policy" || check.failure === "needs_work";
     const gateOptions = gateOptionsFromEnv();
+    const humanConfirmation = readHumanConfirmation(host, intent.request_id);
     return {
-      schema: 1, status: blocked ? "policy_blocked" : "awaiting_source_confirmation",
+      schema: 1, status: blocked ? "policy_blocked" : humanConfirmation
+        ? "human_source_asserted" : "awaiting_source_confirmation",
       request_id: intent.request_id, candidate_id: intent.candidate_id,
       session_id: intent.session_id, lease_id: intent.lease_id, role: intent.role,
       generation_before: intent.generation_before, binding_generation: intent.binding_generation,
       turn_before: intent.turn_before, turn_after: intent.turn_after,
       round_before: intent.round_before, round_after: intent.round_after,
+      step_before: intent.step_before,
       content_sha256: intent.content_sha256,
       state_digest_before: intent.state_digest_before,
       workspace_id: candidate.intended_workspace_id, pane_id: candidate.intended_pane_id,
       agent_target: candidate.intended_agent_target,
-      source_verification: "unverified", commit_ready: false,
+      source_verification: "unverified", human_confirmation: humanConfirmation ? "asserted" : "absent",
+      commit_ready: false,
       policy: { result: blocked ? "block" : check.violations.length ? "warn" : "pass",
         rules: check.violations.map((violation) => violation.rule) },
       gate: blocked ? "skipped_policy" : (check.tag === "CODE" || check.tag === "FIX") && gateOptions.enabled &&
         gateOptions.commands.length > 0 ? "pending" : "not_enabled",
     };
-  } finally {
-    release();
+}
+
+/** Read-only public wrapper around the locked preflight. */
+export function checkHostCommit(
+  project: string, leaseId: string, requestId: string, candidateId: string,
+  expectedGeneration: number, expectedBindingGeneration: number
+): HostCommitCheck {
+  const root = canonicalProject(project);
+  const initial = inspectProject(root);
+  if (!initial.initialized || !initial.state_realpath || !initial.session_id ||
+      initial.contract_state !== "identified") {
+    throw new HostContractError("ADOPT_REQUIRED", 3, "An identified session is required for commit-check");
   }
+  const release = acquireHostLock(initial.state_realpath);
+  try {
+    return checkHostCommitLocked(root, leaseId, requestId, candidateId,
+      expectedGeneration, expectedBindingGeneration);
+  } finally { release(); }
 }

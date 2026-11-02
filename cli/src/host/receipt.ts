@@ -10,6 +10,7 @@ import { assertGenerationMatchesBusiness, readGeneration } from "./generation.js
 import { businessDigest } from "./business.js";
 import { candidateInventory } from "./candidate.js";
 import { rejectedReceiptInventory } from "./rejection.js";
+import { humanConfirmationInventory } from "./confirmation.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -54,6 +55,7 @@ export function receiptStatus(project: string, requestId: string): HostReceiptSt
           entryExists(path.join(host, "archived-intents")) ||
           entryExists(path.join(host, "receipts")) ||
           entryExists(path.join(host, "rejections")) ||
+          entryExists(path.join(host, "confirmations")) ||
           entryExists(path.join(host, "reconcile.json"))) {
         return reconcile(requestId, null, "state_invalid_with_host_intent");
       }
@@ -81,6 +83,16 @@ export function receiptStatus(project: string, requestId: string): HostReceiptSt
       generation = readGeneration(host, root, current.state_realpath, sessionId);
     } catch {
       return reconcile(requestId, sessionId, "invalid_generation_record");
+    }
+    if (entryExists(path.join(host, "confirmations"))) {
+      try {
+        const ledger = committedReceiptLedger(host, root, current.state_realpath, sessionId, generation);
+        const candidates = candidateInventory(host, root, current.state_realpath, sessionId);
+        humanConfirmationInventory(host, root, current.state_realpath, sessionId,
+          generation, ledger, candidates.candidates);
+      } catch {
+        return reconcile(requestId, sessionId, "invalid_source_confirmation");
+      }
     }
     const rejections = path.join(host, "rejections");
     if (entryExists(rejections)) {

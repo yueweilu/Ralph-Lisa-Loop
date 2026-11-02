@@ -9,6 +9,7 @@ import { canonicalProject, HostContractError, inspectProject } from "./inspect.j
 import { acquireHostLock, assertAdoptionReady, assertNoManualRuntime, assertNoPendingIntents, entryExists, readLease } from "./lease.js";
 import { committedReceiptLedger } from "./receipt-store.js";
 import { rejectedReceiptInventory } from "./rejection.js";
+import { humanConfirmationInventory } from "./confirmation.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -210,6 +211,8 @@ export function proposeCandidate(project: string, role: string, file: string, ca
       current.state_realpath!, current.session_id!, generation);
     const inventory = candidateInventory(host, current.project_realpath, current.state_realpath!, current.session_id!);
     rejectedReceiptInventory(host, current.project_realpath, current.state_realpath!,
+      current.session_id!, generation, ledger, inventory.candidates);
+    humanConfirmationInventory(host, current.project_realpath, current.state_realpath!,
       current.session_id!, generation, ledger, inventory.candidates);
     const contentHash = sha256(bytes);
     const previous = inventory.candidates.find((item) => item.candidate_id === candidateId);

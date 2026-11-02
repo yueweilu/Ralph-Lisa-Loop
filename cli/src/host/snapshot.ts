@@ -9,6 +9,7 @@ import { assertGenerationMatchesBusiness, readGeneration } from "./generation.js
 import { candidateInventory } from "./candidate.js";
 import { committedReceiptLedger } from "./receipt-store.js";
 import { rejectedReceiptInventory } from "./rejection.js";
+import { humanConfirmationInventory } from "./confirmation.js";
 
 export interface HostSnapshot {
   schema: 1;
@@ -121,6 +122,9 @@ export function snapshotProject(project: string): HostSnapshot {
     const candidates = candidateInventory(path.join(current.state_realpath, "host"),
       current.project_realpath, current.state_realpath, current.session_id);
     rejectedReceiptInventory(path.join(current.state_realpath, "host"),
+      current.project_realpath, current.state_realpath, current.session_id,
+      generation, ledger, candidates.candidates);
+    humanConfirmationInventory(path.join(current.state_realpath, "host"),
       current.project_realpath, current.state_realpath, current.session_id,
       generation, ledger, candidates.candidates);
     return {
