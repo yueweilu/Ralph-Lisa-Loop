@@ -169,9 +169,44 @@ describe("host write-ahead intent", () => {
         { policy: { result: "warn", warnings: ["changed"] }, gate: checks.gate }),
       /Existing receipt differs/);
     } finally { release(); }
-    const pending = receipt(request.requestId);
-    assert.equal(pending.status, 7);
-    assert.equal(JSON.parse(pending.stdout).status, "needs_reconcile");
+    const committed = receipt(request.requestId);
+    assert.equal(committed.status, 0, committed.stdout);
+    assert.equal(JSON.parse(committed.stdout).status, "committed");
+    assert.equal(JSON.parse(committed.stdout).generation_after, 1);
+    const turnFile = path.join(state, "turn.txt");
+    const turnBytes = fs.readFileSync(turnFile);
+    fs.writeFileSync(turnFile, "ralph\n");
+    assert.equal(receipt(request.requestId).status, 7);
+    fs.writeFileSync(turnFile, turnBytes);
+    const generationFile = path.join(host, "generation.json");
+    const generationBytes = fs.readFileSync(generationFile);
+    const mismatched = JSON.parse(generationBytes.toString("utf8"));
+    mismatched.state_digest = "0".repeat(64);
+    fs.writeFileSync(generationFile, JSON.stringify(mismatched) + "\n");
+    assert.equal(receipt(request.requestId).status, 7);
+    fs.writeFileSync(generationFile, generationBytes);
+    assert.equal(receipt(request.requestId).status, 0);
+    const intentFile = path.join(host, "intents", `${request.requestId}.json`);
+    const intentBytes = fs.readFileSync(intentFile);
+    const wrongIntent = JSON.parse(intentBytes.toString("utf8"));
+    wrongIntent.candidate_id = randomUUID();
+    fs.writeFileSync(intentFile, JSON.stringify(wrongIntent) + "\n");
+    assert.equal(receipt(request.requestId).status, 7);
+    fs.writeFileSync(intentFile, intentBytes);
+    assert.equal(receipt(request.requestId).status, 0);
+    const other = receipt(randomUUID());
+    assert.equal(other.status, 7);
+    const interrupted = path.join(host, "receipts", `${request.requestId}.pending`);
+    fs.writeFileSync(interrupted, "partial");
+    assert.equal(receipt(request.requestId).status, 7);
+    fs.unlinkSync(interrupted);
+    const receiptFile = path.join(host, "receipts", `${request.requestId}.json`);
+    const changed = JSON.parse(fs.readFileSync(receiptFile, "utf8"));
+    changed.candidate_id = randomUUID();
+    fs.writeFileSync(receiptFile, JSON.stringify(changed) + "\n");
+    const invalid = receipt(request.requestId);
+    assert.equal(invalid.status, 7);
+    assert.equal(JSON.parse(invalid.stdout).reason, "invalid_committed_receipt");
     const snapshot = run("host", "snapshot", "--project", project, "--json");
     assert.equal(snapshot.status, 7);
   });
@@ -194,6 +229,9 @@ describe("host write-ahead intent", () => {
     try {
       fs.symlinkSync(outside, path.join(host, "receipts"));
       assert.throws(() => readCommittedReceipt(host, randomUUID()), /Invalid host receipt directory/);
+      const lookup = receipt(randomUUID());
+      assert.equal(lookup.status, 7);
+      assert.equal(JSON.parse(lookup.stdout).reason, "invalid_receipt_directory");
     } finally {
       fs.rmSync(outside, { recursive: true, force: true });
     }

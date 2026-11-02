@@ -139,6 +139,39 @@ export function readCommittedReceipt(host: string, requestId: string): Committed
   return r as unknown as CommittedHostReceipt;
 }
 
+/** Only the latest receipt can be checked against live business state. */
+export function verifyLatestCommittedReceipt(
+  host: string, requestId: string, project: string, state: string, sessionId: string
+): CommittedHostReceipt | null {
+  const receipt = readCommittedReceipt(host, requestId);
+  if (!receipt) return null;
+  const intent = readHostIntent(host, requestId);
+  if (!intent || receipt.project_realpath !== project || receipt.state_realpath !== state ||
+      receipt.session_id !== sessionId || intent.project_realpath !== project ||
+      intent.state_realpath !== state || intent.session_id !== sessionId ||
+      receipt.request_id !== intent.request_id || receipt.candidate_id !== intent.candidate_id ||
+      receipt.lease_id !== intent.lease_id || receipt.role !== intent.role ||
+      receipt.generation_before !== intent.generation_before ||
+      receipt.generation_after !== intent.generation_before + 1 ||
+      receipt.binding_generation !== intent.binding_generation ||
+      receipt.turn_after !== intent.turn_after || receipt.round_after !== intent.round_after ||
+      receipt.step_after !== intent.step_before ||
+      receipt.content_sha256 !== intent.content_sha256 ||
+      receipt.state_digest_after !== intent.state_digest_after) {
+    throw new HostContractError("NEEDS_RECONCILE", 7, "Committed receipt differs from its intent");
+  }
+  const generation = readGeneration(host, project, state, sessionId);
+  if (!generation || generation.generation !== receipt.generation_after ||
+      generation.last_receipt_id !== receipt.request_id ||
+      generation.state_digest !== receipt.state_digest_after ||
+      generation.turn !== receipt.turn_after || generation.round !== receipt.round_after ||
+      generation.step !== receipt.step_after ||
+      auditHostIntent(host, requestId).status !== "applied") {
+    throw new HostContractError("NEEDS_RECONCILE", 7, "Committed receipt differs from live generation or business state");
+  }
+  return receipt;
+}
+
 /** Caller holds the host lock; no public CLI calls this while source attribution is unverified. */
 export function persistCommittedReceipt(
   host: string, requestId: string, checks: ReceiptChecks

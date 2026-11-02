@@ -1,16 +1,17 @@
-/** Read-only request status while formal commit receipts are not yet enabled. */
+/** Read-only request status; only a fully verified latest receipt is committed. */
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { STATE_DIR } from "../state.js";
 import { canonicalProject, HostContractError, inspectProject } from "./inspect.js";
 import { acquireHostLock, entryExists } from "./lease.js";
 import { auditHostIntent, readHostIntent } from "./transaction.js";
+import { verifyLatestCommittedReceipt } from "./receipt-store.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export interface HostReceiptStatus {
   schema: 1;
-  status: "unknown" | "needs_reconcile";
+  status: "unknown" | "needs_reconcile" | "committed";
   request_id: string;
   session_id: string | null;
   code?: "NEEDS_RECONCILE";
@@ -67,9 +68,28 @@ export function receiptStatus(project: string, requestId: string): HostReceiptSt
       "adoption.pending", "generation.pending"]) {
       if (entryExists(path.join(host, marker))) return reconcile(requestId, sessionId, `pending_${marker}`);
     }
-    // The current slice cannot validate committed receipts; their presence is never "unknown".
-    if (entryExists(path.join(host, "receipts"))) {
-      return reconcile(requestId, sessionId, "receipt_store_requires_review");
+    const receipts = path.join(host, "receipts");
+    if (entryExists(receipts)) {
+      let names: string[];
+      try {
+        const stat = fs.lstatSync(receipts);
+        if (!stat.isDirectory() || stat.isSymbolicLink() || fs.realpathSync.native(receipts) !== receipts) {
+          return reconcile(requestId, sessionId, "invalid_receipt_directory");
+        }
+        names = fs.readdirSync(receipts);
+      } catch {
+        return reconcile(requestId, sessionId, "unreadable_receipt_directory");
+      }
+      // The first committed request is the only state this slice can verify end to end.
+      if (names.length !== 1 || names[0] !== `${requestId}.json`) {
+        return reconcile(requestId, sessionId, "receipt_store_requires_review");
+      }
+      try {
+        const committed = verifyLatestCommittedReceipt(host, requestId, root, current.state_realpath, sessionId);
+        return committed ?? reconcile(requestId, sessionId, "missing_committed_receipt");
+      } catch {
+        return reconcile(requestId, sessionId, "invalid_committed_receipt");
+      }
     }
     const intents = path.join(host, "intents");
     if (!entryExists(intents)) {
