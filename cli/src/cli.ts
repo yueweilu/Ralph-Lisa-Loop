@@ -234,6 +234,8 @@ function showHelp(): void {
   console.log("  ralph-lisa host confirm-adoption --project <abs> --backup-id <uuid> --decision no-replay --json");
   console.log("  ralph-lisa host claim --project <abs> --host herdr --owner-id <uuid> --json");
   console.log("  ralph-lisa host heartbeat --project <abs> --lease-id <uuid> --owner-id <uuid> --json");
+  console.log("  ralph-lisa host command-lock-check --project <abs> --json  Inspect a short command lock after a crash");
+  console.log("  ralph-lisa host retire-command-lock --project <abs> --expected-evidence <sha256> --decision verified-stopped-no-replay --json");
   console.log("  ralph-lisa host recovery-check --project <abs> --json  Review a claimed lease before manual recovery");
   console.log("  ralph-lisa host recover-lease --project <abs> --lease-id <uuid> --expected-evidence <sha256> --decision verified-stopped-no-replay --json");
   console.log("  ralph-lisa host bind-seat --project <abs> --lease-id <uuid> --role <ralph|lisa> --workspace-id <id> --pane-id <id> --agent-target <id> --json");

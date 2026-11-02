@@ -84,6 +84,31 @@ export function receiptStatus(project: string, requestId: string): HostReceiptSt
     } catch {
       return reconcile(requestId, sessionId, "invalid_generation_record");
     }
+    // After a process crash, a partial business write can make confirmation
+    // history fail its current-state check. Expose the pending intent audit first
+    // so the operator can see which files match the before/after digests.
+    if (entryExists(path.join(host, "intents", `${requestId}.json`)) &&
+        !entryExists(path.join(host, "receipts", `${requestId}.json`)) &&
+        !entryExists(path.join(host, "receipts", `${requestId}.pending`))) {
+      try {
+        const intent = readHostIntent(host, requestId);
+        if (!intent || intent.project_realpath !== root ||
+            intent.state_realpath !== current.state_realpath || intent.session_id !== sessionId) {
+          return reconcile(requestId, sessionId, "intent_session_mismatch");
+        }
+        const audit = auditHostIntent(host, requestId);
+        return { ...reconcile(requestId, sessionId, "prepared_intent_without_receipt"),
+          intent: {
+            candidate_id: intent.candidate_id, role: intent.role,
+            generation_before: intent.generation_before, content_sha256: intent.content_sha256,
+            state_digest_before: intent.state_digest_before,
+            state_digest_after: intent.state_digest_after,
+            audit_status: audit.status, state_digest_observed: audit.state_digest_observed,
+          } };
+      } catch {
+        return reconcile(requestId, sessionId, "invalid_intent_record");
+      }
+    }
     if (entryExists(path.join(host, "confirmations"))) {
       try {
         const ledger = committedReceiptLedger(host, root, current.state_realpath, sessionId, generation);

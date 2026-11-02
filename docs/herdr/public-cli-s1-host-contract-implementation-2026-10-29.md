@@ -115,6 +115,8 @@ Herdr 官方接口能管理 Pane/Agent 并返回创建时的 ID；插件动作�
 | `ralph-lisa host confirm-adoption --project <abs> --backup-id <uuid> --decision no-replay --json` | 用户确认后的协调器 | 核对备份、原状态、轮次未变化，解除接管冻结 | `status=confirmed`、`replay=not_replayed` |
 | `ralph-lisa host claim --project <abs> --host herdr --owner-id <uuid> --json` | 单个协调器 | 在项目短锁内检查会话和活跃 tmux/watcher；原子建立占用目录；已有占用则冲突 | `session_id`、`lease_id`、租约状态 |
 | `ralph-lisa host heartbeat --project <abs> --lease-id <uuid> --owner-id <uuid> --json` | 当前协调器 | 核对租约、宿主和会话身份及 tmux/watcher 冲突；在短锁内原子更新心跳 | 同一租约的递增 `heartbeat_seq` 和 `heartbeat_at` |
+| `ralph-lisa host command-lock-check --project <abs> --json` | 人工诊断/协调器 | 只读检查短命令锁的 owner PID 是否仍存在，返回锁证据；PID 存在或不可判断时视为活跃 | `absent` / `active` / `stale`，锁存在时含 `evidence_sha256` |
+| `ralph-lisa host retire-command-lock --project <abs> --expected-evidence <sha256> --decision verified-stopped-no-replay --json` | 人工核对后的协调器 | 只在 owner PID 已消失且锁证据未变时原子归档旧短锁，不删除审计目录、不改业务文件、不重放提交 | `status=retired`、原 PID、证据和归档相对路径；之后必须另查 `receipt/snapshot` |
 | `ralph-lisa host recovery-check --project <abs> --json` | 人工诊断/协调器 | 在短锁内读取租约、心跳、席位代次、候选完整性和业务摘要；拒绝在途意图及活跃 tmux/watcher | `status=review_required`、租约 ID、owner ID、候选数量、核对项与 `evidence_sha256` |
 | `ralph-lisa host recover-lease --project <abs> --lease-id <uuid> --expected-evidence <sha256> --decision verified-stopped-no-replay --json` | 人工核对后的协调器 | 重新检查证据未变化，归档旧租约；中断时保留冻结标记；不重放轮次 | `status=recovered`、归档路径、恢复回执 ID |
 | `ralph-lisa host bind-seat --project <abs> --lease-id <id> --role <ralph\|lisa> --workspace-id <id> --pane-id <id> --agent-target <id> --json` | 协调器 | 核对租约、会话和同一 Workspace；写入/更新席位，变化时增加绑定代次 | 完整绑定与 `binding_generation`，两席均标 `unverified` |
@@ -172,6 +174,7 @@ Herdr 官方接口能管理 Pane/Agent 并返回创建时的 ID；插件动作�
 - **外部终端边界：** 当前 `claim` 能识别公开 CLI 命名的 tmux 会话和 watcher；`start` 在 macOS 打开的 iTerm/Terminal Agent 没有可靠的会话标记。接管这类人工会话前，用户必须先停止旧 Agent；后续需补可验证的启动记录或明确人工确认，不能把一次 `claim` 成功当作外部终端已退出的证据。
 - **tmux 冲突：** 领取 Herdr 租约前检查公开版 `watcher.pid`/`watcher_wrapper.pid` 与实际进程、相关 tmux session；`auto` 开始前反查 Herdr 租约。不能仅凭陈旧 PID 文件判断活跃，也不能自动删除未知 watcher 状态。
 - **写入口统一保护：** 在 Herdr 宿主占用期间，传统 `submit-*`、`init`、`auto`、`force-turn`、`step`、`scope-update`、`subtask`、`clean`、`uninit`、`stop` 等涉及业务状态或删除的命令要么转入受控路径，要么明确拒绝并给出操作建议。保护必须在**第一个副作用之前**：`cmdInitProject` 会先改 `CLAUDE.md`/`CODEX.md` 等文件才调用 `cmdInit`，`cmdAuto` 也会先清理旧状态文件，不能只在内部 `cmdInit` 加检查。宿主占用保护、项目级短锁与宿主原子占用已推送并通过 CI；`start`/`auto` 完成启动后在终端附着前释放短锁。异常退出留下的**短锁**仍须单独核查；租约只可按上述显式恢复流程归档，不能盲删或自动抢占。只读命令继续可用。
+- **短锁崩溃核对：** S1.4 的首个进程故障切片加入 `command-lock-check` 和 `retire-command-lock`。被 `SIGKILL` 的进程遗留短锁时，先核实原进程及其子进程已停止，使用检查命令的摘要显式归档锁目录；归档不代表事务成功，也不清除 `host/intents`。随后调用 `receipt/snapshot`，部分写入仍报 `needs_reconcile`，不能重新提交。PID 被复用、owner 不完整、额外文件或 PID 状态不明时拒绝自动归档，需人工核对。此操作无法抵御同权限进程恶意篡改锁目录。
 - **人工使用：** 未绑定会话保留现有命令、默认输出、tag/policy/gate 规则；新 `host` 子命令和 `session.json` 不要求现有用户迁移。用户可通过显式 `release` 停止插件交接后回到人工模式，但先确认无在途意图。
 - **升级边界：** `session.json`/回执带 `schema`；未知未来版本拒绝写入而允许诊断。不要把内部私有 CLI 状态文件或行为直接复制到公开仓。
 
@@ -185,7 +188,7 @@ Herdr 官方接口能管理 Pane/Agent 并返回创建时的 ID；插件动作�
 | S1.1 只读定位 | `cli/src/host/inspect.ts`、`cli/src/cli.ts` | 显式规范路径、只读 JSON 检查；错项目、状态损坏和未初始化状态有确定结果。已推送开发 fork 并通过 CI |
 | S1.2 会话身份、单宿主与席位 | 新 `host/{session,snapshot,lease,binding,adoption,recovery}.ts`，现有可变命令入口 | 新建会话 UUID、占用检查、短锁、`claim/release/heartbeat`、快照、席位绑定、旧会话接管和显式租约恢复均已推送并通过 CI；后续仍须 Herdr 真机归因 |
 | S1.3 受控提交 | `host/{business,generation,candidate,transaction,receipt,receipt-store,rejection,commit-check,confirmation,commit}.ts`；共用人工提交业务核心 | 代次、候选、写前意图、成功与拒绝回执、逐代历史核验、提交预检和人工声明已实现。`host commit` 的人工确认路径可执行 policy/gate、写入业务、推进代次并返回持久回执；同请求重试不重复写入。当前隔离 CLI 测试覆盖 Ralph→Lisa 两席提交、policy/gate 阻断及 gate warning；真实用户确认、Herdr 来源归因、跨进程并发和异常恢复仍待验证 |
-| S1.4 回归与集成 | `cli/src/test/`、样板项目脚本、契约文档 | 原人工流程与 tmux 流程回归；跨进程并发、注入中断、重启、旧会话、错误席位/目录的可重复测试 |
+| S1.4 回归与集成 | `cli/src/test/`、短锁崩溃核对、契约文档 | 首个进程级切片覆盖活锁拒绝、`SIGKILL` 遗留短锁归档、部分提交冻结、两个进程争同代次只成功一次。其余写入点故障注入、旧会话/错误目录矩阵和完整样板流程仍待完成 |
 
 当前 S1.3 已增加 `host confirm-candidate` 人工声明和受控 `host commit`。隔离测试覆盖摘要错误、policy/gate 阻断、gate warning、同请求幂等、成功后的人工声明缺失冻结。这些测试不代表 Herdr 真机来源验证、用户已实际审阅候选或自动交接通过。
 

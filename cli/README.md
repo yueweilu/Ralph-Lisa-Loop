@@ -81,6 +81,10 @@ write an allowed submission. The receipt still marks Herdr source verification a
 `unverified`; this is not automatic Agent attribution. See the
 [S1 host contract implementation](../docs/herdr/public-cli-s1-host-contract-implementation-2026-10-29.md)
 for the command arguments and current verification limits.
+After a process crash leaves `.rll-host-command-lock`, use `host command-lock-check`
+and, only after verifying that the owner and its child processes stopped,
+`host retire-command-lock` with the returned evidence. Then inspect `host receipt`
+and `host snapshot`; retiring the lock never replays a submission.
 
 ## Requirements
 

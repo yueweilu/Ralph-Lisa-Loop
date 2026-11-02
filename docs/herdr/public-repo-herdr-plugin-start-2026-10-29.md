@@ -63,7 +63,8 @@
 | `feat/herdr-s1-generation-baseline` | `feat/herdr-s1-lease-recovery` | 显式建立代次 0 与业务摘要；已推送并通过 CI | 依次纳入集成分支 |
 | `feat/herdr-s1-candidate-inbox` | `feat/herdr-s1-generation-baseline` | 候选正文与摘要持久化，标记来源未验证；已推送并通过 CI | 依次纳入集成分支 |
 | `feat/herdr-s1-rejection-ledger` → `feat/herdr-s1-human-confirmation` | 前一已验证切片 | 内部事务与回执、拒绝历史、只读预检、人工声明；各分支已推送并通过 CI | 依次纳入集成分支 |
-| `feat/herdr-s1-host-commit` | `feat/herdr-s1-human-confirmation` | 人工确认路径的受控正式提交；当前切片 | 独立测试、提交、推送和核验后纳入集成分支 |
+| `feat/herdr-s1-host-commit` | `feat/herdr-s1-human-confirmation` | 人工确认路径的受控正式提交；已推送并通过 CI | 后续纳入集成分支 |
+| `feat/herdr-s1-process-faults` | `feat/herdr-s1-host-commit` | S1.4 首个跨进程故障与并发切片：短锁显式核对/归档、部分事务冻结 | 独立测试、提交、推送和核验后继续剩余 S1.4 |
 | 后续 `feat/herdr-s1-*`、`feat/herdr-s2-*` 等 | 最近已验证的开发切片 | 异常恢复、manifest、双席协调等 | 每个切片独立测试、提交、推送和核验 |
 
 这样先把不改变产品行为的 S0 基线单独合入公开 `main`，随后把尚未完整交付的 Herdr 能力留在集成分支。当前为推进开发，S1 切片暂时逐个叠在前一切片之上；正式 PR 前按合并后的公开 `main` 核对和调整。切片依次合并并复测；集成分支不在别人基于它开发后强制改写历史。最终 PR 合并到公开仓 `main` 前，复核与当前 `main` 的差异、完整历史/依赖/许可及敏感内容，跑干净安装、旧 CLI 回归和真实 Claude/Codex 流程。**已完成切片均推到 fork；原仓 PR 尚未创建。**
@@ -107,4 +108,4 @@ S1 的工程细节、命令/回执样例与验收矩阵见[公开 CLI 宿主契�
 
 建议先安排 **S0 约 3–5 人日的计划额度**（含公开边界审查、依赖/测试基线和契约清单），完成后再逐切片重估总工期；这不是已实测工时或报价。本机依赖安装现已成功，远端 CI 与真实 Herdr 集成尚未验证，不应把未跑过的双席测试写成通过。
 
-**当前已完成：** 公开仓独立检出及基线盘点；S0、S1.1、S1.2、代次、候选、内部事务与回执、拒绝历史、只读预检及人工声明切片已在开发 fork 通过 CI。当前分支接通人工确认路径的 `host commit`，隔离 CLI 测试可完成 Ralph→Lisa 两席提交；远端验证以该分支的 GitHub Actions 结果为准。候选来源依然标记 `unverified`，CLI 无法证明真实 Herdr Agent 的身份或用户实际审阅候选。**尚未完成：** S1.4 的跨进程并发与故障恢复、完整历史/许可审计、隔离 `plugin link`、真实 Herdr Agent 双席交接及原仓发布。
+**当前已完成：** 公开仓独立检出及基线盘点；S0、S1.1、S1.2、代次、候选、内部事务与回执、拒绝历史、只读预检、人工声明及 `host commit` 切片已在开发 fork 通过 CI。当前 S1.4 分支加入跨进程强制终止和同代次并发回归，远端验证以该分支 GitHub Actions 为准。候选来源依然标记 `unverified`，CLI 无法证明真实 Herdr Agent 的身份或用户实际审阅候选。**尚未完成：** S1.4 其余写入点的故障矩阵与完整样板流程、完整历史/许可审计、隔离 `plugin link`、真实 Herdr Agent 双席交接及原仓发布。

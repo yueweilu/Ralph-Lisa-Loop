@@ -10,6 +10,7 @@ import { receiptStatus } from "./receipt.js";
 import { checkHostCommit } from "./commit-check.js";
 import { confirmCandidateSource } from "./confirmation.js";
 import { commitHostCandidate } from "./commit.js";
+import { commandLockCheck, retireCommandLock } from "./command-lock-recovery.js";
 
 function options(args: string[], names: string[]): Record<string, string> {
   if (args.length !== names.length * 2 + 1 || args.at(-1) !== "--json") {
@@ -59,6 +60,16 @@ export function cmdHost(args: string[]): void {
       case "recovery-check": {
         const opts = options(args.slice(1), ["--project"]);
         result = leaseRecoveryCheck(opts["--project"]);
+        break;
+      }
+      case "command-lock-check": {
+        const opts = options(args.slice(1), ["--project"]);
+        result = commandLockCheck(opts["--project"]);
+        break;
+      }
+      case "retire-command-lock": {
+        const opts = options(args.slice(1), ["--project", "--expected-evidence", "--decision"]);
+        result = retireCommandLock(opts["--project"], opts["--expected-evidence"], opts["--decision"]);
         break;
       }
       case "recover-lease": {
@@ -136,7 +147,7 @@ export function cmdHost(args: string[]): void {
         break;
       }
       default:
-        throw new HostContractError("UNKNOWN_HOST_COMMAND", 2, "Usage: ralph-lisa host <inspect|adopt|confirm-adoption|claim|heartbeat|recovery-check|recover-lease|bind-seat|snapshot|prepare-generation|propose|commit-check|confirm-candidate|commit|receipt|release> ... --json");
+        throw new HostContractError("UNKNOWN_HOST_COMMAND", 2, "Usage: ralph-lisa host <inspect|adopt|confirm-adoption|claim|heartbeat|command-lock-check|retire-command-lock|recovery-check|recover-lease|bind-seat|snapshot|prepare-generation|propose|commit-check|confirm-candidate|commit|receipt|release> ... --json");
     }
     console.log(JSON.stringify(result));
   } catch (error) {
