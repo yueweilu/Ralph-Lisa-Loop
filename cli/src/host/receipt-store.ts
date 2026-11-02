@@ -28,6 +28,8 @@ export interface CommittedHostReceipt {
   step_after: string;
   content_sha256: string;
   state_digest_after: string;
+  source_confirmation?: "human_asserted";
+  source_verification?: "unverified";
   policy: { result: "pass" | "warn"; warnings: string[] };
   gate: { result: "not_enabled" | "pass" | "warn" };
   committed_at: string;
@@ -36,6 +38,8 @@ export interface CommittedHostReceipt {
 export interface ReceiptChecks {
   policy: CommittedHostReceipt["policy"];
   gate: CommittedHostReceipt["gate"];
+  source_confirmation?: "human_asserted";
+  source_verification?: "unverified";
 }
 
 export interface CommittedReceiptLedger {
@@ -138,6 +142,8 @@ export function readCommittedReceipt(host: string, requestId: string): Committed
       typeof r.step_after !== "string" || !r.step_after ||
       typeof r.content_sha256 !== "string" || !SHA256.test(r.content_sha256) ||
       typeof r.state_digest_after !== "string" || !SHA256.test(r.state_digest_after) ||
+      ((r.source_confirmation !== undefined || r.source_verification !== undefined) &&
+        (r.source_confirmation !== "human_asserted" || r.source_verification !== "unverified")) ||
       !policy || (policy.result !== "pass" && policy.result !== "warn") ||
       !Array.isArray(policy.warnings) || !policy.warnings.every((warning) => typeof warning === "string") ||
       !gate || !["not_enabled", "pass", "warn"].includes(gate.result as string) ||
@@ -208,6 +214,8 @@ export function committedReceiptLedger(
         receipt.turn_after !== intent.turn_after || receipt.round_after !== intent.round_after ||
         receipt.step_after !== intent.step_before || receipt.content_sha256 !== intent.content_sha256 ||
         receipt.state_digest_after !== intent.state_digest_after ||
+        (receipt.source_confirmation === "human_asserted" &&
+          !entryExists(path.join(host, "confirmations", `${id}.json`))) ||
         intent.turn_after === intent.turn_before ||
         intent.round_after !== intent.round_before + (intent.role === "lisa" ? 1 : 0)) {
       throw new HostContractError("NEEDS_RECONCILE", 7, "Committed receipt differs from archived intent");
@@ -322,6 +330,8 @@ export function persistCommittedReceipt(
   if ((checks.policy.result !== "pass" && checks.policy.result !== "warn") ||
       !Array.isArray(checks.policy.warnings) ||
       !checks.policy.warnings.every((warning) => typeof warning === "string") ||
+      ((checks.source_confirmation !== undefined || checks.source_verification !== undefined) &&
+        (checks.source_confirmation !== "human_asserted" || checks.source_verification !== "unverified")) ||
       !["not_enabled", "pass", "warn"].includes(checks.gate.result)) {
     throw new HostContractError("INVALID_ARGUMENTS", 2, "Blocked or invalid checks cannot create a committed receipt");
   }
@@ -344,6 +354,8 @@ export function persistCommittedReceipt(
         existing.step_after !== intent.step_before ||
         existing.content_sha256 !== intent.content_sha256 ||
         existing.state_digest_after !== intent.state_digest_after ||
+        existing.source_confirmation !== checks.source_confirmation ||
+        existing.source_verification !== checks.source_verification ||
         JSON.stringify(existing.policy) !== JSON.stringify(checks.policy) ||
         JSON.stringify(existing.gate) !== JSON.stringify(checks.gate)) {
       throw new HostContractError("DUPLICATE_CONFLICT", 5, "Existing receipt differs from this request");
@@ -358,6 +370,10 @@ export function persistCommittedReceipt(
     generation_after: generation.generation, binding_generation: intent.binding_generation,
     turn_after: intent.turn_after, round_after: intent.round_after, step_after: intent.step_before,
     content_sha256: intent.content_sha256, state_digest_after: intent.state_digest_after,
+    ...(checks.source_confirmation ? {
+      source_confirmation: checks.source_confirmation,
+      source_verification: checks.source_verification,
+    } : {}),
     policy: checks.policy, gate: checks.gate, committed_at: new Date().toISOString(),
   };
   writeAtomicJson(path.join(receipts, `${requestId.toLowerCase()}.pending`),

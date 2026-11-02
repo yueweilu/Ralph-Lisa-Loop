@@ -99,6 +99,25 @@ export function checkHostCommitLocked(
     const blocked = check.failure === "policy" || check.failure === "needs_work";
     const gateOptions = gateOptionsFromEnv();
     const humanConfirmation = readHumanConfirmation(host, intent.request_id);
+    if (humanConfirmation && (humanConfirmation.candidate_id !== intent.candidate_id ||
+        humanConfirmation.project_realpath !== root ||
+        humanConfirmation.state_realpath !== initial.state_realpath ||
+        humanConfirmation.session_id !== intent.session_id ||
+        humanConfirmation.lease_id !== intent.lease_id ||
+        humanConfirmation.role !== intent.role ||
+        humanConfirmation.generation !== intent.generation_before ||
+        humanConfirmation.binding_generation !== intent.binding_generation ||
+        humanConfirmation.turn !== intent.turn_before ||
+        humanConfirmation.round !== intent.round_before ||
+        humanConfirmation.step !== intent.step_before ||
+        humanConfirmation.state_digest !== intent.state_digest_before ||
+        humanConfirmation.content_sha256 !== intent.content_sha256 ||
+        humanConfirmation.workspace_id !== candidate.intended_workspace_id ||
+        humanConfirmation.pane_id !== candidate.intended_pane_id ||
+        humanConfirmation.agent_target !== candidate.intended_agent_target)) {
+      throw new HostContractError("DUPLICATE_CONFLICT", 5,
+        "Human source assertion belongs to a different candidate or seat");
+    }
     return {
       schema: 1, status: blocked ? "policy_blocked" : humanConfirmation
         ? "human_source_asserted" : "awaiting_source_confirmation",

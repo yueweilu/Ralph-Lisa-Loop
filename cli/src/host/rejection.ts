@@ -8,7 +8,7 @@ import { HostContractError } from "./inspect.js";
 import { assertNoPendingIntents, entryExists } from "./lease.js";
 import { prepareHostIntent, readArchivedHostIntent, type HostIntentInput } from "./transaction.js";
 import { readGeneration, type GenerationRecord } from "./generation.js";
-import { committedReceiptLedger, type CommittedReceiptLedger } from "./receipt-store.js";
+import { committedReceiptLedger, type CommittedReceiptLedger, type ReceiptChecks } from "./receipt-store.js";
 import { candidateInventory, type HostCandidate } from "./candidate.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -195,9 +195,15 @@ export function rejectedReceiptInventory(
 }
 
 /** Caller holds the host lock. Returns null when checks allow the submission. */
-export function persistBlockedSubmission(
+export interface HostSubmissionCheckResult {
+  rejected: RejectedHostReceipt | null;
+  checks: ReceiptChecks | null;
+}
+
+/** Caller holds the lock. Run the gate once and retain its result for a successful receipt. */
+export function checkAndPersistBlockedSubmission(
   input: HostIntentInput, content: string, gateRunner?: GateRunner
-): RejectedHostReceipt | null {
+): HostSubmissionCheckResult {
   const projected = prepareHostIntent(input);
   if (crypto.createHash("sha256").update(content, "utf8").digest("hex") !== projected.content_sha256) {
     throw new HostContractError("STALE_CANDIDATE", 5, "Candidate content differs from the submitted bytes");
@@ -227,7 +233,7 @@ export function persistBlockedSubmission(
         existing.content_sha256 !== projected.content_sha256) {
       throw new HostContractError("DUPLICATE_CONFLICT", 5, "Existing rejection differs from this request");
     }
-    return existing;
+    return { rejected: existing, checks: null };
   }
   const review = fs.readFileSync(path.join(projected.state_realpath, "review.md"), "utf8");
   const submission = checkSubmission(projected.role, content, projected.turn_before, extractLastTag(review));
@@ -239,7 +245,15 @@ export function persistBlockedSubmission(
   options.cwd = projected.project_realpath;
   const gate = policyBlocked ? { result: "not_enabled" as const } :
     evaluateGate(submission.tag, options, gateRunner);
-  if (!policyBlocked && gate.result !== "block") return null;
+  // A gate is an external process and may have changed files while this lock was held.
+  prepareHostIntent(input);
+  if (!policyBlocked && gate.result !== "block") {
+    return { rejected: null, checks: {
+      policy: { result: submission.violations.length ? "warn" : "pass",
+        warnings: submission.violations.map((violation) => violation.rule) },
+      gate: { result: gate.result },
+    } };
+  }
   const record: RejectedHostReceipt = {
     schema: 1, status: "rejected",
     code: policyBlocked ? "POLICY_BLOCKED" : "GATE_BLOCKED",
@@ -268,5 +282,12 @@ export function persistBlockedSubmission(
   fs.renameSync(pending, path.join(dir, `${record.request_id}.json`));
   syncDirectory(dir);
   writeIndex(dir, indexFor([...prior.receipts, record]));
-  return record;
+  return { rejected: record, checks: null };
+}
+
+/** Compatibility wrapper for internal rejection-only callers. */
+export function persistBlockedSubmission(
+  input: HostIntentInput, content: string, gateRunner?: GateRunner
+): RejectedHostReceipt | null {
+  return checkAndPersistBlockedSubmission(input, content, gateRunner).rejected;
 }

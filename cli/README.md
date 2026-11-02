@@ -75,6 +75,13 @@ ralph-lisa test-report                   # View latest test report
 ralph-lisa test-report --list            # List all test reports
 ```
 
+The Herdr host contract is under development. Its `host commit` command requires a
+matching `host confirm-candidate` human assertion before it can run a test gate or
+write an allowed submission. The receipt still marks Herdr source verification as
+`unverified`; this is not automatic Agent attribution. See the
+[S1 host contract implementation](../docs/herdr/public-cli-s1-host-contract-implementation-2026-10-29.md)
+for the command arguments and current verification limits.
+
 ## Requirements
 
 - [Node.js](https://nodejs.org/) >= 18

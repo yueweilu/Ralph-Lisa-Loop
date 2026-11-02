@@ -9,6 +9,7 @@ import { proposeCandidate } from "./candidate.js";
 import { receiptStatus } from "./receipt.js";
 import { checkHostCommit } from "./commit-check.js";
 import { confirmCandidateSource } from "./confirmation.js";
+import { commitHostCandidate } from "./commit.js";
 
 function options(args: string[], names: string[]): Record<string, string> {
   if (args.length !== names.length * 2 + 1 || args.at(-1) !== "--json") {
@@ -114,6 +115,15 @@ export function cmdHost(args: string[]): void {
           opts["--decision"]);
         break;
       }
+      case "commit": {
+        const opts = options(args.slice(1), ["--project", "--lease-id", "--request-id",
+          "--candidate-id", "--expected-generation", "--expected-binding-generation"]);
+        result = commitHostCandidate(opts["--project"], opts["--lease-id"], opts["--request-id"],
+          opts["--candidate-id"], decimal(opts["--expected-generation"]),
+          decimal(opts["--expected-binding-generation"]));
+        if ((result as { status?: string }).status === "rejected") process.exitCode = 6;
+        break;
+      }
       case "bind-seat": {
         const opts = options(args.slice(1), ["--project", "--lease-id", "--role", "--workspace-id", "--pane-id", "--agent-target"]);
         result = bindSeat(opts["--project"], opts["--lease-id"], opts["--role"],
@@ -126,7 +136,7 @@ export function cmdHost(args: string[]): void {
         break;
       }
       default:
-        throw new HostContractError("UNKNOWN_HOST_COMMAND", 2, "Usage: ralph-lisa host <inspect|adopt|confirm-adoption|claim|heartbeat|recovery-check|recover-lease|bind-seat|snapshot|prepare-generation|propose|commit-check|confirm-candidate|receipt|release> ... --json");
+        throw new HostContractError("UNKNOWN_HOST_COMMAND", 2, "Usage: ralph-lisa host <inspect|adopt|confirm-adoption|claim|heartbeat|recovery-check|recover-lease|bind-seat|snapshot|prepare-generation|propose|commit-check|confirm-candidate|commit|receipt|release> ... --json");
     }
     console.log(JSON.stringify(result));
   } catch (error) {

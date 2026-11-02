@@ -155,6 +155,7 @@ export function humanConfirmationInventory(
   const confirmations = recordNames.map((name) => {
     const record = readHumanConfirmation(host, name.slice(0, -5));
     const candidate = candidates.find((item) => item.candidate_id === record?.candidate_id);
+    const committed = ledger.receipts.find((item) => item.request_id === record?.request_id);
     const previous = record && record.generation > 0 ? ledger.receipts[record.generation - 1] : null;
     const expected = previous
       ? { digest: previous.state_digest_after, turn: previous.turn_after,
@@ -180,7 +181,12 @@ export function humanConfirmationInventory(
         candidate.content_sha256 !== record.content_sha256 ||
         candidate.intended_workspace_id !== record.workspace_id ||
         candidate.intended_pane_id !== record.pane_id ||
-        candidate.intended_agent_target !== record.agent_target) {
+        candidate.intended_agent_target !== record.agent_target ||
+        (committed && (committed.candidate_id !== record.candidate_id ||
+          committed.lease_id !== record.lease_id || committed.role !== record.role ||
+          committed.generation_before !== record.generation ||
+          committed.binding_generation !== record.binding_generation ||
+          committed.content_sha256 !== record.content_sha256))) {
       throw new HostContractError("NEEDS_RECONCILE", 7, "Confirmation differs from candidate or generation");
     }
     return record;
