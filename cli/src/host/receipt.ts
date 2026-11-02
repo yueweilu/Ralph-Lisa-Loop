@@ -84,6 +84,20 @@ export function receiptStatus(project: string, requestId: string): HostReceiptSt
     } catch {
       return reconcile(requestId, sessionId, "invalid_generation_record");
     }
+    const intentDir = path.join(host, "intents");
+    if (entryExists(intentDir)) {
+      try {
+        const stat = fs.lstatSync(intentDir);
+        if (!stat.isDirectory() || stat.isSymbolicLink() || fs.realpathSync.native(intentDir) !== intentDir) {
+          return reconcile(requestId, sessionId, "invalid_intent_directory");
+        }
+        if (fs.readdirSync(intentDir).some((name) => name.endsWith(".pending"))) {
+          return reconcile(requestId, sessionId, "interrupted_intent_write");
+        }
+      } catch {
+        return reconcile(requestId, sessionId, "invalid_intent_directory");
+      }
+    }
     // After a process crash, a partial business write can make confirmation
     // history fail its current-state check. Expose the pending intent audit first
     // so the operator can see which files match the before/after digests.

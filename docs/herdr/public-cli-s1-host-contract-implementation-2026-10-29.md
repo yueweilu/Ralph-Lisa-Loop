@@ -187,8 +187,10 @@ Herdr 官方接口能管理 Pane/Agent 并返回创建时的 ID；插件动作�
 | 前置 S0 基线 | `cli/package.json`、锁文件、CI/测试说明 | 干净安装、build 与原有回归已在开发 fork 通过；公开能力差异和 Node 版本已固定。原仓合并仍待评审 |
 | S1.1 只读定位 | `cli/src/host/inspect.ts`、`cli/src/cli.ts` | 显式规范路径、只读 JSON 检查；错项目、状态损坏和未初始化状态有确定结果。已推送开发 fork 并通过 CI |
 | S1.2 会话身份、单宿主与席位 | 新 `host/{session,snapshot,lease,binding,adoption,recovery}.ts`，现有可变命令入口 | 新建会话 UUID、占用检查、短锁、`claim/release/heartbeat`、快照、席位绑定、旧会话接管和显式租约恢复均已推送并通过 CI；后续仍须 Herdr 真机归因 |
-| S1.3 受控提交 | `host/{business,generation,candidate,transaction,receipt,receipt-store,rejection,commit-check,confirmation,commit}.ts`；共用人工提交业务核心 | 代次、候选、写前意图、成功与拒绝回执、逐代历史核验、提交预检和人工声明已实现。`host commit` 的人工确认路径可执行 policy/gate、写入业务、推进代次并返回持久回执；同请求重试不重复写入。当前隔离 CLI 测试覆盖 Ralph→Lisa 两席提交、policy/gate 阻断及 gate warning；真实用户确认、Herdr 来源归因、跨进程并发和异常恢复仍待验证 |
-| S1.4 回归与集成 | `cli/src/test/`、短锁崩溃核对、契约文档 | 首个进程级切片覆盖活锁拒绝、`SIGKILL` 遗留短锁归档、部分提交冻结、两个进程争同代次只成功一次。其余写入点故障注入、旧会话/错误目录矩阵和完整样板流程仍待完成 |
+| S1.3 受控提交 | `host/{business,generation,candidate,transaction,receipt,receipt-store,rejection,commit-check,confirmation,commit}.ts`；共用人工提交业务核心 | 代次、候选、写前意图、成功与拒绝回执、逐代历史核验、提交预检和人工声明已实现。`host commit` 的人工确认路径可执行 policy/gate、写入业务、推进代次并返回持久回执；同请求重试不重复写入。隔离 CLI 测试覆盖 Ralph→Lisa 两席提交、policy/gate 阻断及 gate warning；跨进程并发和部分异常恢复已由 S1.4 验证。真实用户确认与 Herdr 来源归因仍待验证 |
+| S1.4 回归与集成 | `cli/src/test/`、短锁崩溃核对、契约文档 | 已覆盖活锁拒绝、`SIGKILL` 遗留短锁归档、两个进程争同代次只成功一次；新增 Ralph `[PLAN]` 与 Lisa `[PASS]` 正式提交的进程级故障矩阵。旧会话/错误目录矩阵和完整样板流程仍待完成 |
+
+S1.4 写入故障矩阵在真实 `commitHostCandidate` 路径的子进程中注入 `SIGKILL`，分别截断意图临时文件、意图归档前的业务文件写入（含半写文件）、代次临时文件/替换、回执临时文件/替换及意图归档。重启后先凭证据归档遗留短锁，再由另一个 CLI 进程读取 `receipt/snapshot` 和重试原请求。回执尚未持久落盘时保持 `needs_reconcile`，业务文件不因重试再改动；回执已落盘但意图未归档时，原请求重试只核验并完成归档。该矩阵验证本地 macOS 与 CI Linux 的上述切点，不代表任意文件系统的断电持久性已验证。
 
 当前 S1.3 已增加 `host confirm-candidate` 人工声明和受控 `host commit`。隔离测试覆盖摘要错误、policy/gate 阻断、gate warning、同请求幂等、成功后的人工声明缺失冻结。这些测试不代表 Herdr 真机来源验证、用户已实际审阅候选或自动交接通过。
 
