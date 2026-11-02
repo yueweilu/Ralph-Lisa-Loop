@@ -53,3 +53,5 @@ cd .. && node --test integrations/herdr/actions.test.mjs
 ```
 
 The tests exercise the real public CLI's host contract and snapshot against temporary projects; fake Herdr and agent binaries make readiness cases reproducible. A green test run is not a successful `plugin link` or a real two-Agent handoff.
+
+For the remaining running-Herdr checks, follow the [S2 live acceptance checklist](../../docs/herdr/s2-live-acceptance-2026-11-03.md) from a Herdr-managed pane.
