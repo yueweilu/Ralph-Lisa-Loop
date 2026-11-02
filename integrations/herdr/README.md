@@ -33,7 +33,17 @@ Without `project`, a Herdr workspace action uses `HERDR_WORKSPACE_ID`. Without `
 
 Then run `herdr plugin action invoke ralph-lisa.loop.doctor`, inspect `herdr plugin log list --plugin ralph-lisa.loop`, and open the read-only pane with `herdr plugin pane open --plugin ralph-lisa.loop --entrypoint control --placement split` from a Herdr workspace. Action invocation is asynchronous; the command log carries the result. `herdr plugin unlink ralph-lisa.loop` unregisters the local link.
 
-Herdr plugin installation and enabled state are global for the current user across Herdr sessions. `HERDR_CONFIG_PATH` only changes the config file path; it does **not** isolate this plugin registry. Use a disposable OS user when an isolated registration test is required.
+Herdr plugin installation and enabled state are global for the current user across Herdr sessions that use the same Herdr user directories. `HERDR_CONFIG_PATH` only changes the config file path; it does **not** isolate the plugin registry. For a disposable registration check on macOS with Herdr 0.9.4, setting **both** `XDG_CONFIG_HOME` and `XDG_STATE_HOME` to a temporary directory was verified to isolate the linked plugin from the normal Herdr plugin list:
+
+```sh
+HERDR_TEST_ROOT="$(mktemp -d)"
+XDG_CONFIG_HOME="$HERDR_TEST_ROOT" XDG_STATE_HOME="$HERDR_TEST_ROOT" \
+  herdr plugin link /absolute/path/to/Ralph-Lisa-Loop-herdr/integrations/herdr
+XDG_CONFIG_HOME="$HERDR_TEST_ROOT" XDG_STATE_HOME="$HERDR_TEST_ROOT" \
+  herdr plugin list --json
+```
+
+Keep the same two variables on the Herdr test server and subsequent CLI calls. `plugin link` validates the manifest without a running server; listing/invoking actions and opening panes need a running server. Do not infer that linking alone executed `doctor` or started Agents.
 
 ## Development check
 
