@@ -12,6 +12,15 @@ export interface SubmissionCheck {
   needsWorkWarnings: PolicyViolation[];
 }
 
+/** Read the most recent canonical work/review header, ignoring tags in body text. */
+export function extractLastTag(fileContent: string): string {
+  const re = /^## \[(\w+)\] Round \d+ \| Step: /gm;
+  let lastTag = "";
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(fileContent)) !== null) lastTag = match[1];
+  return lastTag;
+}
+
 /** Preserve the existing order: turn, tag, policy, then Ralph's NEEDS_WORK rule. */
 export function checkSubmission(
   role: SubmissionRole,

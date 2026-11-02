@@ -60,7 +60,7 @@ function collect(project: string): Evidence {
   if (!entryExists(host)) throw new HostContractError("HOST_NOT_CLAIMED", 4, "No host lease to recover");
   regularDirectory(host);
   assertAdoptionReady(host, current.project_realpath, current.state_realpath, current.session_id);
-  for (const name of ["reconcile.json", "claim.lock", "lease.json", "binding.pending", "adoption.pending", "generation.pending"]) {
+  for (const name of ["reconcile.json", "claim.lock", "lease.json", "binding.pending", "adoption.pending", "generation.pending", "rejections"]) {
     if (entryExists(path.join(host, name))) {
       throw new HostContractError("NEEDS_RECONCILE", 7, `Host marker ${name} requires reconciliation`);
     }

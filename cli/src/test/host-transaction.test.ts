@@ -9,6 +9,7 @@ import { applySubmissionPlan, prepareLisaSubmission, prepareRalphSubmission } fr
 import { businessDigest } from "../host/business.js";
 import { acquireHostLock, assertNoPendingIntents } from "../host/lease.js";
 import { advanceGenerationAfterIntent, archiveCommittedIntent, persistCommittedReceipt, readCommittedReceipt } from "../host/receipt-store.js";
+import { persistBlockedSubmission, readRejectedReceipt } from "../host/rejection.js";
 import { auditHostIntent, persistHostIntent, readArchivedHostIntent, readHostIntent } from "../host/transaction.js";
 
 describe("host write-ahead intent", () => {
@@ -76,6 +77,99 @@ describe("host write-ahead intent", () => {
     const malformed = receipt("not-a-uuid");
     assert.equal(malformed.status, 2);
     assert.equal(JSON.parse(malformed.stdout).code, "INVALID_ARGUMENTS");
+  });
+
+  it("leaves an allowed candidate untouched during the rejection precheck", () => {
+    const request = input();
+    const release = acquireHostLock(state);
+    try {
+      assert.equal(persistBlockedSubmission(request, content), null);
+      assert.throws(() => persistBlockedSubmission(request, "[PLAN] Changed"), /Candidate content differs/);
+    } finally { release(); }
+    assert.equal(fs.existsSync(path.join(host, "rejections")), false);
+    assert.equal(fs.existsSync(path.join(host, "intents")), false);
+  });
+
+  it("stores a policy rejection without changing business state or generation", () => {
+    const blockedContent = "[CODE] Implementation done";
+    const blockedCandidate = randomUUID();
+    fs.writeFileSync(path.join(project, "blocked.md"), blockedContent);
+    const propose = run("host", "propose", "--project", project, "--role", "ralph",
+      "--file", "blocked.md", "--candidate-id", blockedCandidate, "--json");
+    assert.equal(propose.status, 0, propose.stdout);
+    const request = { ...input(blockedContent), candidateId: blockedCandidate,
+      plan: prepareRalphSubmission({ projectDir: project, tag: "CODE", external: true, content: blockedContent }) };
+    const before = ["work.md", "history.md", "turn.txt"].map((name) => fs.readFileSync(path.join(state, name)));
+    const generation = fs.readFileSync(path.join(host, "generation.json"));
+    const previousMode = process.env.RL_POLICY_MODE;
+    process.env.RL_POLICY_MODE = "block";
+    const release = acquireHostLock(state);
+    let rejected;
+    try {
+      rejected = persistBlockedSubmission(request, blockedContent);
+      assert.equal(rejected?.status, "rejected");
+      assert.equal(rejected?.code, "POLICY_BLOCKED");
+      assert.deepEqual(persistBlockedSubmission(request, blockedContent), rejected);
+      assert.throws(() => persistHostIntent(request), /Review rejected receipts/);
+    } finally {
+      release();
+      if (previousMode === undefined) delete process.env.RL_POLICY_MODE;
+      else process.env.RL_POLICY_MODE = previousMode;
+    }
+    assert.deepEqual(readRejectedReceipt(host, request.requestId), rejected);
+    assert.deepEqual(["work.md", "history.md", "turn.txt"].map((name) => fs.readFileSync(path.join(state, name))), before);
+    assert.deepEqual(fs.readFileSync(path.join(host, "generation.json")), generation);
+    const lookup = receipt(request.requestId);
+    assert.equal(lookup.status, 0, lookup.stdout);
+    assert.equal(JSON.parse(lookup.stdout).status, "rejected");
+    assert.equal(run("host", "snapshot", "--project", project, "--json").status, 7);
+    const intentsDir = path.join(host, "intents");
+    fs.mkdirSync(intentsDir);
+    const unexpectedIntent = path.join(intentsDir, `${randomUUID()}.json`);
+    fs.writeFileSync(unexpectedIntent, "{}\n");
+    assert.equal(receipt(request.requestId).status, 7);
+    fs.unlinkSync(unexpectedIntent);
+    const pending = path.join(host, "rejections", `${request.requestId}.pending`);
+    fs.writeFileSync(pending, "partial");
+    assert.equal(receipt(request.requestId).status, 7);
+    fs.unlinkSync(pending);
+    const rejectedFile = path.join(host, "rejections", `${request.requestId}.json`);
+    fs.writeFileSync(rejectedFile, "{}\n");
+    assert.equal(receipt(request.requestId).status, 7);
+  });
+
+  it("records a blocked test gate once and skips it on the same request retry", () => {
+    const codeContent = "[CODE] Implementation with test evidence";
+    const codeCandidate = randomUUID();
+    fs.writeFileSync(path.join(project, "gate.md"), codeContent);
+    assert.equal(run("host", "propose", "--project", project, "--role", "ralph",
+      "--file", "gate.md", "--candidate-id", codeCandidate, "--json").status, 0);
+    const request = { ...input(codeContent), candidateId: codeCandidate,
+      plan: prepareRalphSubmission({ projectDir: project, tag: "CODE", external: true, content: codeContent }) };
+    const previous = [process.env.RL_POLICY_MODE, process.env.RL_RALPH_GATE,
+      process.env.RL_GATE_COMMANDS, process.env.RL_GATE_MODE];
+    process.env.RL_POLICY_MODE = "off";
+    process.env.RL_RALPH_GATE = "true";
+    process.env.RL_GATE_COMMANDS = "test-command";
+    process.env.RL_GATE_MODE = "block";
+    const release = acquireHostLock(state);
+    try {
+      const rejected = persistBlockedSubmission(request, codeContent, (_command, cwd) => {
+        assert.equal(cwd, project);
+        throw new Error("test gate failed");
+      });
+      assert.equal(rejected?.code, "GATE_BLOCKED");
+      assert.equal(rejected?.gate.result, "block");
+      assert.deepEqual(persistBlockedSubmission(request, codeContent, () => assert.fail("gate ran again")), rejected);
+    } finally {
+      release();
+      for (const [index, name] of ["RL_POLICY_MODE", "RL_RALPH_GATE", "RL_GATE_COMMANDS", "RL_GATE_MODE"].entries()) {
+        if (previous[index] === undefined) delete process.env[name];
+        else process.env[name] = previous[index];
+      }
+    }
+    assert.equal(JSON.parse(receipt(request.requestId).stdout).code, "GATE_BLOCKED");
+    assert.equal(fs.readFileSync(path.join(state, "turn.txt"), "utf8"), "ralph");
   });
 
   it("treats interrupted intent writes and unsupported receipt metadata as uncertain", () => {

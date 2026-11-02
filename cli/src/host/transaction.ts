@@ -103,8 +103,8 @@ export function projectedBusinessDigest(state: string, plan: SubmissionWritePlan
   return hash.digest("hex");
 }
 
-/** Caller must already hold acquireHostLock and have completed policy/gate checks. */
-export function persistHostIntent(input: HostIntentInput): HostIntent {
+/** Caller holds the host lock; validate a candidate and project a write without side effects. */
+export function prepareHostIntent(input: HostIntentInput): HostIntent {
   if (!UUID.test(input.requestId) || !UUID.test(input.candidateId) || !UUID.test(input.leaseId) ||
       !Number.isSafeInteger(input.expectedGeneration) || input.expectedGeneration < 0 ||
       !Number.isSafeInteger(input.expectedBindingGeneration) || input.expectedBindingGeneration < 1) {
@@ -141,7 +141,11 @@ export function persistHostIntent(input: HostIntentInput): HostIntent {
   }
   const digestBefore = businessDigest(state, current.turn!, current.round!, current.step!);
   assertGenerationMatchesBusiness(generation, digestBefore, current.turn!, current.round!, current.step!);
-  committedReceiptLedger(host, root, state, current.session_id, generation);
+  const ledger = committedReceiptLedger(host, root, state, current.session_id, generation);
+  if (ledger.receipts.some((receipt) => receipt.request_id === input.requestId.toLowerCase()) ||
+      entryExists(path.join(host, "archived-intents", `${input.requestId.toLowerCase()}.json`))) {
+    throw new HostContractError("DUPLICATE_CONFLICT", 5, "Request ID already belongs to a committed submission");
+  }
   const candidate = candidateInventory(host, root, state, current.session_id).candidates
     .find((value) => value.candidate_id === input.candidateId.toLowerCase());
   if (!candidate || candidate.lease_id !== lease.lease_id ||
@@ -182,7 +186,16 @@ export function persistHostIntent(input: HostIntentInput): HostIntent {
       ({ name, action, before_sha256, after_sha256 })),
     created_at: new Date().toISOString(),
   };
+  return record;
+}
 
+/** Caller must already hold acquireHostLock and have completed policy/gate checks. */
+export function persistHostIntent(input: HostIntentInput): HostIntent {
+  const record = prepareHostIntent(input);
+  const host = path.join(record.state_realpath, "host");
+  if (entryExists(path.join(host, "rejections"))) {
+    throw new HostContractError("NEEDS_RECONCILE", 7, "Review rejected receipts before a new intent");
+  }
   const intents = path.join(host, "intents");
   if (!entryExists(intents)) {
     fs.mkdirSync(intents, { mode: 0o700 });

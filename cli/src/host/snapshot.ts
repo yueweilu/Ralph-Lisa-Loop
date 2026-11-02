@@ -61,6 +61,9 @@ function hostBindingSummary(state: string, project: string, sessionId: string): 
       throw new HostContractError("NEEDS_RECONCILE", 7, "Pending host intents require reconciliation");
     }
   }
+  if (entryExists(path.join(host, "rejections"))) {
+    throw new HostContractError("NEEDS_RECONCILE", 7, "Rejected receipts require review");
+  }
   const binding = readBinding(host);
   if (binding && (binding.project_realpath !== project || binding.state_realpath !== state ||
       binding.session_id !== sessionId)) {

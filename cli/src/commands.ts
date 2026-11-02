@@ -31,7 +31,7 @@ import {
   updateLastAction,
 } from "./state.js";
 import { checkRalph, checkLisa } from "./policy.js";
-import { checkSubmission } from "./submission.js";
+import { checkSubmission, extractLastTag } from "./submission.js";
 import { evaluateGate } from "./gate.js";
 import { applyRalphSubmission, applyLisaSubmission } from "./submission-write.js";
 import { writeSessionIdentity } from "./host/session.js";
@@ -626,21 +626,6 @@ export function cmdRecap(): void {
   }
 
   console.log(line());
-}
-
-/**
- * Extract the last tag from a work.md or review.md file content.
- * Only matches the canonical metadata header format: ## [TAG] Round N | Step: ...
- * Does NOT match arbitrary ## [TAG] headings in body text.
- */
-function extractLastTag(fileContent: string): string {
-  const re = /^## \[(\w+)\] Round \d+ \| Step: /gm;
-  let lastTag = "";
-  let match;
-  while ((match = re.exec(fileContent)) !== null) {
-    lastTag = match[1];
-  }
-  return lastTag;
 }
 
 // ─── step ────────────────────────────────────────

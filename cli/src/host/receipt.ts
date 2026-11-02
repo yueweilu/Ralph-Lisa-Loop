@@ -3,20 +3,22 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { STATE_DIR } from "../state.js";
 import { canonicalProject, HostContractError, inspectProject } from "./inspect.js";
-import { acquireHostLock, entryExists } from "./lease.js";
+import { acquireHostLock, assertNoPendingIntents, entryExists } from "./lease.js";
 import { auditHostIntent, readHostIntent } from "./transaction.js";
 import { committedReceiptLedger, verifyLatestCommittedReceipt } from "./receipt-store.js";
 import { assertGenerationMatchesBusiness, readGeneration } from "./generation.js";
 import { businessDigest } from "./business.js";
+import { candidateInventory } from "./candidate.js";
+import { readRejectedReceipt } from "./rejection.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export interface HostReceiptStatus {
   schema: 1;
-  status: "unknown" | "needs_reconcile" | "committed";
+  status: "unknown" | "needs_reconcile" | "committed" | "rejected";
   request_id: string;
   session_id: string | null;
-  code?: "NEEDS_RECONCILE";
+  code?: "NEEDS_RECONCILE" | "POLICY_BLOCKED" | "GATE_BLOCKED";
   reason?: string;
   intent?: {
     candidate_id: string;
@@ -51,6 +53,7 @@ export function receiptStatus(project: string, requestId: string): HostReceiptSt
       if (entryExists(path.join(host, "intents")) ||
           entryExists(path.join(host, "archived-intents")) ||
           entryExists(path.join(host, "receipts")) ||
+          entryExists(path.join(host, "rejections")) ||
           entryExists(path.join(host, "reconcile.json"))) {
         return reconcile(requestId, null, "state_invalid_with_host_intent");
       }
@@ -78,6 +81,39 @@ export function receiptStatus(project: string, requestId: string): HostReceiptSt
       generation = readGeneration(host, root, current.state_realpath, sessionId);
     } catch {
       return reconcile(requestId, sessionId, "invalid_generation_record");
+    }
+    const rejections = path.join(host, "rejections");
+    if (entryExists(rejections)) {
+      try {
+        assertNoPendingIntents(host);
+        const stat = fs.lstatSync(rejections);
+        if (!stat.isDirectory() || stat.isSymbolicLink() || fs.realpathSync.native(rejections) !== rejections ||
+            JSON.stringify(fs.readdirSync(rejections)) !== JSON.stringify([`${requestId}.json`])) {
+          return reconcile(requestId, sessionId, "rejected_receipt_requires_review");
+        }
+        const rejected = readRejectedReceipt(host, requestId);
+        const digest = businessDigest(current.state_realpath, current.turn!, current.round!, current.step!);
+        if (!rejected || !generation || generation.generation !== rejected.generation ||
+            generation.state_digest !== digest || rejected.state_digest !== digest ||
+            rejected.project_realpath !== root || rejected.state_realpath !== current.state_realpath ||
+            rejected.session_id !== sessionId || rejected.turn !== current.turn ||
+            rejected.round !== current.round || rejected.step !== current.step) {
+          return reconcile(requestId, sessionId, "invalid_rejected_receipt");
+        }
+        committedReceiptLedger(host, root, current.state_realpath, sessionId, generation);
+        const candidate = candidateInventory(host, root, current.state_realpath, sessionId).candidates
+          .find((item) => item.candidate_id === rejected.candidate_id);
+        if (!candidate || candidate.lease_id !== rejected.lease_id ||
+            candidate.role !== rejected.role || candidate.generation !== rejected.generation ||
+            candidate.binding_generation !== rejected.binding_generation ||
+            candidate.state_digest !== rejected.state_digest ||
+            candidate.content_sha256 !== rejected.content_sha256) {
+          return reconcile(requestId, sessionId, "invalid_rejected_candidate");
+        }
+        return rejected;
+      } catch {
+        return reconcile(requestId, sessionId, "invalid_rejected_receipt");
+      }
     }
     const receipts = path.join(host, "receipts");
     if (entryExists(receipts)) {
