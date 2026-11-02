@@ -7,9 +7,9 @@ import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { applySubmissionPlan, prepareRalphSubmission } from "../submission-write.js";
 import { businessDigest } from "../host/business.js";
-import { acquireHostLock } from "../host/lease.js";
-import { advanceGenerationAfterIntent, persistCommittedReceipt, readCommittedReceipt } from "../host/receipt-store.js";
-import { auditHostIntent, persistHostIntent, readHostIntent } from "../host/transaction.js";
+import { acquireHostLock, assertNoPendingIntents } from "../host/lease.js";
+import { advanceGenerationAfterIntent, archiveCommittedIntent, persistCommittedReceipt, readCommittedReceipt } from "../host/receipt-store.js";
+import { auditHostIntent, persistHostIntent, readArchivedHostIntent, readHostIntent } from "../host/transaction.js";
 
 describe("host write-ahead intent", () => {
   let project: string;
@@ -159,6 +159,7 @@ describe("host write-ahead intent", () => {
       assert.equal(generation.last_receipt_id, request.requestId);
       assert.equal(generation.state_digest, intent.state_digest_after);
       assert.deepEqual(advanceGenerationAfterIntent(host, request.requestId), generation);
+      assert.throws(() => archiveCommittedIntent(host, request.requestId), /No committed receipt/);
       const committed = persistCommittedReceipt(host, request.requestId, checks);
       assert.equal(committed.status, "committed");
       assert.equal(committed.generation_after, 1);
@@ -168,11 +169,27 @@ describe("host write-ahead intent", () => {
       assert.throws(() => persistCommittedReceipt(host, request.requestId,
         { policy: { result: "warn", warnings: ["changed"] }, gate: checks.gate }),
       /Existing receipt differs/);
+      assert.deepEqual(archiveCommittedIntent(host, request.requestId), committed);
+      assert.deepEqual(archiveCommittedIntent(host, request.requestId), committed);
+      assert.equal(readHostIntent(host, request.requestId), null);
+      assert.deepEqual(readArchivedHostIntent(host, request.requestId), intent);
+      assertNoPendingIntents(host);
     } finally { release(); }
     const committed = receipt(request.requestId);
     assert.equal(committed.status, 0, committed.stdout);
     assert.equal(JSON.parse(committed.stdout).status, "committed");
     assert.equal(JSON.parse(committed.stdout).generation_after, 1);
+    const archivedFile = path.join(host, "archived-intents", `${request.requestId}.json`);
+    const activeCopy = path.join(host, "intents", `${request.requestId}.json`);
+    fs.copyFileSync(archivedFile, activeCopy);
+    assert.equal(receipt(request.requestId).status, 7);
+    fs.unlinkSync(activeCopy);
+    assert.equal(receipt(request.requestId).status, 0);
+    const unexpectedArchive = path.join(host, "archived-intents", "unexpected.txt");
+    fs.writeFileSync(unexpectedArchive, "unexpected");
+    assert.equal(receipt(request.requestId).status, 7);
+    fs.unlinkSync(unexpectedArchive);
+    assert.equal(receipt(request.requestId).status, 0);
     const turnFile = path.join(state, "turn.txt");
     const turnBytes = fs.readFileSync(turnFile);
     fs.writeFileSync(turnFile, "ralph\n");
@@ -186,7 +203,7 @@ describe("host write-ahead intent", () => {
     assert.equal(receipt(request.requestId).status, 7);
     fs.writeFileSync(generationFile, generationBytes);
     assert.equal(receipt(request.requestId).status, 0);
-    const intentFile = path.join(host, "intents", `${request.requestId}.json`);
+    const intentFile = path.join(host, "archived-intents", `${request.requestId}.json`);
     const intentBytes = fs.readFileSync(intentFile);
     const wrongIntent = JSON.parse(intentBytes.toString("utf8"));
     wrongIntent.candidate_id = randomUUID();

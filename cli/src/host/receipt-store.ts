@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { readGeneration, type GenerationRecord } from "./generation.js";
 import { HostContractError } from "./inspect.js";
 import { entryExists } from "./lease.js";
-import { auditHostIntent, readHostIntent, type HostIntent } from "./transaction.js";
+import { auditHostIntent, auditHostIntentRecord, readArchivedHostIntent, readHostIntent, type HostIntent } from "./transaction.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -145,8 +145,23 @@ export function verifyLatestCommittedReceipt(
 ): CommittedHostReceipt | null {
   const receipt = readCommittedReceipt(host, requestId);
   if (!receipt) return null;
-  const intent = readHostIntent(host, requestId);
-  if (!intent || receipt.project_realpath !== project || receipt.state_realpath !== state ||
+  const active = readHostIntent(host, requestId);
+  const archived = readArchivedHostIntent(host, requestId);
+  if (active && archived) {
+    throw new HostContractError("NEEDS_RECONCILE", 7, "Intent appears in both active and archived stores");
+  }
+  const archive = path.join(host, "archived-intents");
+  if (entryExists(archive)) {
+    regularDirectory(archive);
+    const names = fs.readdirSync(archive);
+    const expected = archived ? [`${requestId.toLowerCase()}.json`] : [];
+    if (JSON.stringify(names) !== JSON.stringify(expected)) {
+      throw new HostContractError("NEEDS_RECONCILE", 7, "Unexpected archived intent entry");
+    }
+  }
+  const intent = active ?? archived;
+  if (!intent || path.join(state, "host") !== host ||
+      receipt.project_realpath !== project || receipt.state_realpath !== state ||
       receipt.session_id !== sessionId || intent.project_realpath !== project ||
       intent.state_realpath !== state || intent.session_id !== sessionId ||
       receipt.request_id !== intent.request_id || receipt.candidate_id !== intent.candidate_id ||
@@ -166,9 +181,36 @@ export function verifyLatestCommittedReceipt(
       generation.state_digest !== receipt.state_digest_after ||
       generation.turn !== receipt.turn_after || generation.round !== receipt.round_after ||
       generation.step !== receipt.step_after ||
-      auditHostIntent(host, requestId).status !== "applied") {
+      auditHostIntentRecord(intent).status !== "applied") {
     throw new HostContractError("NEEDS_RECONCILE", 7, "Committed receipt differs from live generation or business state");
   }
+  return receipt;
+}
+
+/** Caller holds the host lock; move only a fully verified intent out of the pending set. */
+export function archiveCommittedIntent(host: string, requestId: string): CommittedHostReceipt {
+  const active = readHostIntent(host, requestId);
+  const archived = readArchivedHostIntent(host, requestId);
+  if (active && archived) {
+    throw new HostContractError("NEEDS_RECONCILE", 7, "Intent appears in both active and archived stores");
+  }
+  const intent = active ?? archived;
+  if (!intent) throw new HostContractError("REQUEST_UNKNOWN", 5, "No intent for this request");
+  const receipt = verifyLatestCommittedReceipt(host, requestId,
+    intent.project_realpath, intent.state_realpath, intent.session_id);
+  if (!receipt) throw new HostContractError("NEEDS_RECONCILE", 7, "No committed receipt for this intent");
+  if (archived) return receipt;
+  const archive = path.join(host, "archived-intents");
+  if (!entryExists(archive)) {
+    fs.mkdirSync(archive, { mode: 0o700 });
+    syncDirectory(host);
+  }
+  regularDirectory(archive);
+  const final = path.join(archive, `${requestId.toLowerCase()}.json`);
+  if (entryExists(final)) throw new HostContractError("NEEDS_RECONCILE", 7, "Archived intent already exists");
+  fs.renameSync(path.join(host, "intents", `${requestId.toLowerCase()}.json`), final);
+  syncDirectory(path.join(host, "intents"));
+  syncDirectory(archive);
   return receipt;
 }
 

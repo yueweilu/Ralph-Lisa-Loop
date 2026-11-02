@@ -201,10 +201,12 @@ export function persistHostIntent(input: HostIntentInput): HostIntent {
   return record;
 }
 
-/** Read an immutable intent for diagnosis; it never replays a submission. */
-export function readHostIntent(host: string, requestId: string): HostIntent | null {
+function readIntentIn(host: string, folder: "intents" | "archived-intents", requestId: string): HostIntent | null {
   if (!UUID.test(requestId)) throw new HostContractError("INVALID_ARGUMENTS", 2, "Invalid request ID");
-  const file = path.join(host, "intents", `${requestId.toLowerCase()}.json`);
+  const dir = path.join(host, folder);
+  if (!entryExists(dir)) return null;
+  regularDirectory(dir);
+  const file = path.join(dir, `${requestId.toLowerCase()}.json`);
   if (!entryExists(file)) return null;
   let value: unknown;
   try {
@@ -250,13 +252,18 @@ export function readHostIntent(host: string, requestId: string): HostIntent | nu
   return record as unknown as HostIntent;
 }
 
+/** Read an active write-ahead intent; this never replays a submission. */
+export function readHostIntent(host: string, requestId: string): HostIntent | null {
+  return readIntentIn(host, "intents", requestId);
+}
+
+/** Read an intent archived after a verified committed receipt. */
+export function readArchivedHostIntent(host: string, requestId: string): HostIntent | null {
+  return readIntentIn(host, "archived-intents", requestId);
+}
+
 /** Evidence only: an exact after-state still needs a durable receipt and generation update. */
-export function auditHostIntent(host: string, requestId: string): HostIntentAudit {
-  const intent = readHostIntent(host, requestId);
-  if (!intent) throw new HostContractError("REQUEST_UNKNOWN", 5, "No intent for this request");
-  if (path.join(intent.state_realpath, "host") !== host) {
-    throw new HostContractError("NEEDS_RECONCILE", 7, "Intent belongs to another host directory");
-  }
+export function auditHostIntentRecord(intent: HostIntent): HostIntentAudit {
   const files = intent.changes.map((change) => {
     let observed: string | null = null;
     let readable = true;
@@ -285,4 +292,13 @@ export function auditHostIntent(host: string, requestId: string): HostIntentAudi
       stateDigest === intent.state_digest_before ? "before" : "partial";
   return { schema: 1, status, request_id: intent.request_id,
     state_digest_observed: stateDigest, files };
+}
+
+export function auditHostIntent(host: string, requestId: string): HostIntentAudit {
+  const intent = readHostIntent(host, requestId);
+  if (!intent) throw new HostContractError("REQUEST_UNKNOWN", 5, "No intent for this request");
+  if (path.join(intent.state_realpath, "host") !== host) {
+    throw new HostContractError("NEEDS_RECONCILE", 7, "Intent belongs to another host directory");
+  }
+  return auditHostIntentRecord(intent);
 }

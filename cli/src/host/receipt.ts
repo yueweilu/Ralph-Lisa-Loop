@@ -46,7 +46,10 @@ export function receiptStatus(project: string, requestId: string): HostReceiptSt
     } catch (error) {
       // A torn business file can make ordinary inspection fail after an intent was written.
       const host = path.join(root, STATE_DIR, "host");
-      if (entryExists(path.join(host, "intents")) || entryExists(path.join(host, "reconcile.json"))) {
+      if (entryExists(path.join(host, "intents")) ||
+          entryExists(path.join(host, "archived-intents")) ||
+          entryExists(path.join(host, "receipts")) ||
+          entryExists(path.join(host, "reconcile.json"))) {
         return reconcile(requestId, null, "state_invalid_with_host_intent");
       }
       throw error;
