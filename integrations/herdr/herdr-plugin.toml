@@ -1,0 +1,47 @@
+id = "ralph-lisa.loop"
+name = "Ralph-Lisa Loop"
+version = "0.1.0"
+min_herdr_version = "0.9.4"
+description = "Inspect Ralph-Lisa host readiness inside Herdr"
+platforms = ["macos", "linux"]
+
+[[actions]]
+id = "doctor"
+title = "Check Ralph-Lisa setup"
+command = ["node", "actions.mjs", "doctor"]
+
+[[actions]]
+id = "status"
+title = "Show Ralph-Lisa status"
+contexts = ["workspace"]
+command = ["node", "actions.mjs", "status"]
+
+[[actions]]
+id = "start"
+title = "Start Ralph-Lisa workflow"
+contexts = ["workspace"]
+command = ["node", "actions.mjs", "start"]
+
+[[actions]]
+id = "pause"
+title = "Pause Ralph-Lisa workflow"
+contexts = ["workspace"]
+command = ["node", "actions.mjs", "pause"]
+
+[[actions]]
+id = "resume"
+title = "Resume Ralph-Lisa workflow"
+contexts = ["workspace"]
+command = ["node", "actions.mjs", "resume"]
+
+[[actions]]
+id = "stop"
+title = "Stop Ralph-Lisa workflow"
+contexts = ["workspace"]
+command = ["node", "actions.mjs", "stop"]
+
+[[panes]]
+id = "control"
+title = "Ralph-Lisa control"
+placement = "split"
+command = ["node", "control.mjs"]

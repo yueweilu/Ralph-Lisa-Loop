@@ -1,0 +1,40 @@
+import { spawnSync } from "node:child_process";
+import { createInterface } from "node:readline/promises";
+import { fileURLToPath } from "node:url";
+
+const actionFile = fileURLToPath(new URL("./actions.mjs", import.meta.url));
+
+function show(action) {
+  const result = spawnSync(process.execPath, [actionFile, action], {
+    encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30000,
+  });
+  try {
+    const response = JSON.parse(result.stdout.trim());
+    console.log(`${action}: ${response.status}${response.code ? ` (${response.code})` : ""}`);
+    if (action === "doctor") console.log(JSON.stringify(response.checks, null, 2));
+    if (action === "status" && response.snapshot?.status === "error")
+      console.log(response.snapshot.message ?? response.snapshot.code);
+    else if (action === "status" && response.snapshot) {
+      const { host_state, turn, round, step, session_id } = response.snapshot;
+      console.log(JSON.stringify({ host_state, turn, round, step, session_id }, null, 2));
+    }
+  } catch {
+    console.log(`${action}: probe failed (${result.error?.code ?? result.status ?? "unknown"})`);
+  }
+}
+
+console.log("Ralph-Lisa / Herdr control");
+console.log("Read-only S2 preview. Start, pause, resume and stop await the S3 coordinator.");
+show("doctor");
+show("status");
+
+if (process.stdin.isTTY) {
+  const input = createInterface({ input: process.stdin, output: process.stdout });
+  for (;;) {
+    const answer = (await input.question("[Enter] refresh  [q] quit > ")).trim().toLowerCase();
+    if (answer === "q") break;
+    show("doctor");
+    show("status");
+  }
+  input.close();
+}
