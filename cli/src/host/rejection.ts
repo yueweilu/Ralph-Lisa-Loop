@@ -5,11 +5,20 @@ import * as path from "node:path";
 import { checkSubmission, extractLastTag } from "../submission.js";
 import { evaluateGate, gateOptionsFromEnv, type GateRunner } from "../gate.js";
 import { HostContractError } from "./inspect.js";
-import { entryExists } from "./lease.js";
-import { prepareHostIntent, type HostIntentInput } from "./transaction.js";
+import { assertNoPendingIntents, entryExists } from "./lease.js";
+import { prepareHostIntent, readArchivedHostIntent, type HostIntentInput } from "./transaction.js";
+import { readGeneration, type GenerationRecord } from "./generation.js";
+import { committedReceiptLedger, type CommittedReceiptLedger } from "./receipt-store.js";
+import { candidateInventory, type HostCandidate } from "./candidate.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/;
+
+interface RejectionIndex {
+  schema: 1;
+  request_ids: string[];
+  receipts_digest: string;
+}
 
 export interface RejectedHostReceipt {
   schema: 1;
@@ -45,6 +54,45 @@ function regularDirectory(dir: string): void {
 function syncDirectory(dir: string): void {
   const fd = fs.openSync(dir, "r");
   try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+}
+
+function indexFor(receipts: RejectedHostReceipt[]): RejectionIndex {
+  const sorted = [...receipts].sort((a, b) => a.request_id < b.request_id ? -1 : a.request_id > b.request_id ? 1 : 0);
+  const hash = crypto.createHash("sha256");
+  for (const receipt of sorted) hash.update(JSON.stringify(receipt)).update("\n");
+  return { schema: 1, request_ids: sorted.map((receipt) => receipt.request_id),
+    receipts_digest: hash.digest("hex") };
+}
+
+function readIndex(dir: string): RejectionIndex {
+  const file = path.join(dir, "index.json");
+  let value: unknown;
+  try {
+    const stat = fs.lstatSync(file);
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("invalid index file");
+    value = JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    throw new HostContractError("NEEDS_RECONCILE", 7, "Rejected receipt index is missing or unreadable");
+  }
+  const index = value as Partial<RejectionIndex> | null;
+  if (!index || index.schema !== 1 || !Array.isArray(index.request_ids) ||
+      index.request_ids.length === 0 || !index.request_ids.every((id) => typeof id === "string" && UUID.test(id)) ||
+      JSON.stringify(index.request_ids) !== JSON.stringify([...index.request_ids].sort()) ||
+      !SHA256.test(index.receipts_digest ?? "")) {
+    throw new HostContractError("NEEDS_RECONCILE", 7, "Invalid rejected receipt index");
+  }
+  return index as RejectionIndex;
+}
+
+function writeIndex(dir: string, index: RejectionIndex): void {
+  const pending = path.join(dir, "index.pending");
+  const fd = fs.openSync(pending, "wx", 0o600);
+  try {
+    fs.writeFileSync(fd, JSON.stringify(index) + "\n", "utf8");
+    fs.fsyncSync(fd);
+  } finally { fs.closeSync(fd); }
+  fs.renameSync(pending, path.join(dir, "index.json"));
+  syncDirectory(dir);
 }
 
 export function readRejectedReceipt(host: string, requestId: string): RejectedHostReceipt | null {
@@ -86,6 +134,66 @@ export function readRejectedReceipt(host: string, requestId: string): RejectedHo
   return r as RejectedHostReceipt;
 }
 
+/** Validate all rejected requests against their candidate and the state at that generation. */
+export function rejectedReceiptInventory(
+  host: string, project: string, state: string, sessionId: string,
+  generation: GenerationRecord | null, ledger: CommittedReceiptLedger, candidates: HostCandidate[]
+): { receipts: RejectedHostReceipt[]; digest: string | null } {
+  const dir = path.join(host, "rejections");
+  if (!entryExists(dir)) return { receipts: [], digest: null };
+  regularDirectory(dir);
+  assertNoPendingIntents(host);
+  const names = fs.readdirSync(dir).sort();
+  const index = readIndex(dir);
+  const receiptNames = names.filter((name) => name !== "index.json");
+  if (!generation || receiptNames.length === 0 || receiptNames.some((name) =>
+      !name.endsWith(".json") || !UUID.test(name.slice(0, -5)) || name !== name.toLowerCase())) {
+    throw new HostContractError("NEEDS_RECONCILE", 7, "Rejected receipt inventory is incomplete");
+  }
+  const baseline = ledger.receipts.length > 0
+    ? readArchivedHostIntent(host, ledger.receipts[0].request_id) : null;
+  if (ledger.receipts.length > 0 && !baseline) {
+    throw new HostContractError("NEEDS_RECONCILE", 7, "Rejected receipt baseline is missing");
+  }
+  const receipts = receiptNames.map((name) => {
+    const id = name.slice(0, -5);
+    const receipt = readRejectedReceipt(host, id);
+    const candidate = candidates.find((item) => item.candidate_id === receipt?.candidate_id);
+    const previous = receipt && receipt.generation > 0 ? ledger.receipts[receipt.generation - 1] : null;
+    const expected = previous
+      ? { digest: previous.state_digest_after, turn: previous.turn_after,
+          round: previous.round_after, step: previous.step_after }
+      : baseline
+        ? { digest: baseline.state_digest_before, turn: baseline.turn_before,
+            round: baseline.round_before, step: baseline.step_before }
+        : { digest: generation.state_digest, turn: generation.turn,
+            round: generation.round, step: generation.step };
+    if (!receipt || receipt.generation > generation.generation ||
+        (receipt.generation > 0 && !previous) ||
+        ledger.receipts.some((item) => item.request_id === id) ||
+        receipt.project_realpath !== project || receipt.state_realpath !== state ||
+        receipt.session_id !== sessionId || path.join(state, "host") !== host ||
+        receipt.state_digest !== expected.digest || receipt.turn !== expected.turn ||
+        receipt.round !== expected.round || receipt.step !== expected.step ||
+        !candidate || candidate.project_realpath !== project ||
+        candidate.state_realpath !== state || candidate.session_id !== sessionId ||
+        candidate.lease_id !== receipt.lease_id || candidate.role !== receipt.role ||
+        candidate.generation !== receipt.generation ||
+        candidate.binding_generation !== receipt.binding_generation ||
+        candidate.state_digest !== receipt.state_digest || candidate.turn !== receipt.turn ||
+        candidate.round !== receipt.round || candidate.step !== receipt.step ||
+        candidate.content_sha256 !== receipt.content_sha256) {
+      throw new HostContractError("NEEDS_RECONCILE", 7, "Rejected receipt differs from candidate or generation");
+    }
+    return receipt;
+  });
+  const calculated = indexFor(receipts);
+  if (JSON.stringify(index) !== JSON.stringify(calculated)) {
+    throw new HostContractError("NEEDS_RECONCILE", 7, "Rejected receipt index differs from history");
+  }
+  return { receipts, digest: calculated.receipts_digest };
+}
+
 /** Caller holds the host lock. Returns null when checks allow the submission. */
 export function persistBlockedSubmission(
   input: HostIntentInput, content: string, gateRunner?: GateRunner
@@ -96,12 +204,13 @@ export function persistBlockedSubmission(
   }
   const host = path.join(projected.state_realpath, "host");
   const dir = path.join(host, "rejections");
-  if (entryExists(dir)) {
-    regularDirectory(dir);
-    if (fs.readdirSync(dir).some((name) => name !== `${projected.request_id}.json`)) {
-      throw new HostContractError("NEEDS_RECONCILE", 7, "Other rejected receipt requires review");
-    }
-  }
+  const generation = readGeneration(host, projected.project_realpath, projected.state_realpath, projected.session_id);
+  const ledger = committedReceiptLedger(host, projected.project_realpath, projected.state_realpath,
+    projected.session_id, generation);
+  const candidates = candidateInventory(host, projected.project_realpath,
+    projected.state_realpath, projected.session_id).candidates;
+  const prior = rejectedReceiptInventory(host, projected.project_realpath, projected.state_realpath,
+    projected.session_id, generation, ledger, candidates);
   if (entryExists(path.join(dir, `${projected.request_id}.pending`))) {
     throw new HostContractError("NEEDS_RECONCILE", 7, "Interrupted rejected receipt write");
   }
@@ -158,5 +267,6 @@ export function persistBlockedSubmission(
   } finally { fs.closeSync(fd); }
   fs.renameSync(pending, path.join(dir, `${record.request_id}.json`));
   syncDirectory(dir);
+  writeIndex(dir, indexFor([...prior.receipts, record]));
   return record;
 }

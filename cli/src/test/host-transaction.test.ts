@@ -99,6 +99,7 @@ describe("host write-ahead intent", () => {
     assert.equal(propose.status, 0, propose.stdout);
     const request = { ...input(blockedContent), candidateId: blockedCandidate,
       plan: prepareRalphSubmission({ projectDir: project, tag: "CODE", external: true, content: blockedContent }) };
+    const secondRejection = { ...request, requestId: randomUUID() };
     const before = ["work.md", "history.md", "turn.txt"].map((name) => fs.readFileSync(path.join(state, name)));
     const generation = fs.readFileSync(path.join(host, "generation.json"));
     const previousMode = process.env.RL_POLICY_MODE;
@@ -110,7 +111,8 @@ describe("host write-ahead intent", () => {
       assert.equal(rejected?.status, "rejected");
       assert.equal(rejected?.code, "POLICY_BLOCKED");
       assert.deepEqual(persistBlockedSubmission(request, blockedContent), rejected);
-      assert.throws(() => persistHostIntent(request), /Review rejected receipts/);
+      assert.equal(persistBlockedSubmission(secondRejection, blockedContent)?.status, "rejected");
+      assert.throws(() => persistHostIntent(request), /already belongs to a rejected submission/);
     } finally {
       release();
       if (previousMode === undefined) delete process.env.RL_POLICY_MODE;
@@ -122,9 +124,32 @@ describe("host write-ahead intent", () => {
     const lookup = receipt(request.requestId);
     assert.equal(lookup.status, 0, lookup.stdout);
     assert.equal(JSON.parse(lookup.stdout).status, "rejected");
-    assert.equal(run("host", "snapshot", "--project", project, "--json").status, 7);
+    assert.equal(JSON.parse(receipt(secondRejection.requestId).stdout).status, "rejected");
+    assert.equal(run("host", "snapshot", "--project", project, "--json").status, 0);
+    const continuedCandidate = randomUUID();
+    const continuedFile = path.join(project, "continued.md");
+    fs.writeFileSync(continuedFile, content);
+    const continuedProposal = run("host", "propose", "--project", project, "--role", "ralph",
+      "--file", "continued.md", "--candidate-id", continuedCandidate, "--json");
+    assert.equal(continuedProposal.status, 0, continuedProposal.stdout);
+    const continued = { ...input(), candidateId: continuedCandidate };
+    const continueRelease = acquireHostLock(state);
+    try {
+      persistHostIntent(continued);
+      applySubmissionPlan(continued.plan);
+      advanceGenerationAfterIntent(host, continued.requestId);
+      persistCommittedReceipt(host, continued.requestId,
+        { policy: { result: "pass", warnings: [] }, gate: { result: "not_enabled" } });
+      archiveCommittedIntent(host, continued.requestId);
+    } finally { continueRelease(); }
+    const resumed = run("host", "snapshot", "--project", project, "--json");
+    assert.equal(resumed.status, 0, resumed.stdout);
+    assert.equal(JSON.parse(resumed.stdout).generation, 1);
+    assert.equal(JSON.parse(receipt(request.requestId).stdout).status, "rejected");
+    assert.equal(JSON.parse(receipt(secondRejection.requestId).stdout).status, "rejected");
+    assert.equal(JSON.parse(receipt(continued.requestId).stdout).status, "committed");
+    assert.equal(run("host", "recovery-check", "--project", project, "--json").status, 0);
     const intentsDir = path.join(host, "intents");
-    fs.mkdirSync(intentsDir);
     const unexpectedIntent = path.join(intentsDir, `${randomUUID()}.json`);
     fs.writeFileSync(unexpectedIntent, "{}\n");
     assert.equal(receipt(request.requestId).status, 7);
@@ -134,8 +159,21 @@ describe("host write-ahead intent", () => {
     assert.equal(receipt(request.requestId).status, 7);
     fs.unlinkSync(pending);
     const rejectedFile = path.join(host, "rejections", `${request.requestId}.json`);
+    const rejectedBytes = fs.readFileSync(rejectedFile);
+    fs.unlinkSync(rejectedFile);
+    assert.equal(receipt(secondRejection.requestId).status, 7);
+    assert.equal(run("host", "snapshot", "--project", project, "--json").status, 7);
+    fs.writeFileSync(rejectedFile, rejectedBytes);
+    const rejectionIndex = path.join(host, "rejections", "index.json");
+    const indexBytes = fs.readFileSync(rejectionIndex);
+    fs.writeFileSync(rejectionIndex, "{}\n");
+    assert.equal(receipt(request.requestId).status, 7);
+    fs.writeFileSync(rejectionIndex, indexBytes);
+    assert.equal(receipt(request.requestId).status, 0);
     fs.writeFileSync(rejectedFile, "{}\n");
     assert.equal(receipt(request.requestId).status, 7);
+    assert.equal(receipt(continued.requestId).status, 7);
+    assert.equal(run("host", "snapshot", "--project", project, "--json").status, 7);
   });
 
   it("records a blocked test gate once and skips it on the same request retry", () => {
@@ -357,6 +395,28 @@ describe("host write-ahead intent", () => {
       "--pane-id", "pane-l", "--agent-target", "agent-l", "--json");
     assert.equal(bind.status, 0, bind.stdout);
     const lisaBindingGeneration = JSON.parse(bind.stdout).binding_generation;
+    const blockedLisaContent = "[PASS] Looks fine";
+    const blockedLisaCandidate = randomUUID();
+    fs.writeFileSync(path.join(project, "blocked-lisa.md"), blockedLisaContent);
+    const blockedProposal = run("host", "propose", "--project", project, "--role", "lisa",
+      "--file", "blocked-lisa.md", "--candidate-id", blockedLisaCandidate, "--json");
+    assert.equal(blockedProposal.status, 0, blockedProposal.stdout);
+    const blockedLisaRequest = {
+      project, leaseId, candidateId: blockedLisaCandidate, requestId: randomUUID(),
+      expectedGeneration: 1, expectedBindingGeneration: lisaBindingGeneration,
+      plan: prepareLisaSubmission({ projectDir: project, tag: "PASS", external: true,
+        content: blockedLisaContent }),
+    };
+    const previousPolicyMode = process.env.RL_POLICY_MODE;
+    process.env.RL_POLICY_MODE = "block";
+    release = acquireHostLock(state);
+    try {
+      assert.equal(persistBlockedSubmission(blockedLisaRequest, blockedLisaContent)?.code, "POLICY_BLOCKED");
+    } finally {
+      release();
+      if (previousPolicyMode === undefined) delete process.env.RL_POLICY_MODE;
+      else process.env.RL_POLICY_MODE = previousPolicyMode;
+    }
     const lisaContent = "[APPROVE] Reviewed the plan and approved it.\n";
     const lisaCandidateId = randomUUID();
     fs.writeFileSync(path.join(project, "proposal-lisa.md"), lisaContent);
@@ -399,6 +459,7 @@ describe("host write-ahead intent", () => {
     assert.equal(recovery.status, 0, recovery.stdout);
     assert.equal(JSON.parse(receipt(first.requestId).stdout).status, "committed");
     assert.equal(JSON.parse(receipt(second.requestId).stdout).status, "committed");
+    assert.equal(JSON.parse(receipt(blockedLisaRequest.requestId).stdout).status, "rejected");
     const firstReceiptFile = path.join(host, "receipts", `${first.requestId}.json`);
     const firstReceiptBytes = fs.readFileSync(firstReceiptFile);
     fs.unlinkSync(firstReceiptFile);

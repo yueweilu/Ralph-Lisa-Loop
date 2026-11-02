@@ -8,6 +8,7 @@ import { assertGenerationMatchesBusiness, readGeneration } from "./generation.js
 import { canonicalProject, HostContractError, inspectProject } from "./inspect.js";
 import { acquireHostLock, assertAdoptionReady, assertNoManualRuntime, assertNoPendingIntents, entryExists, readLease } from "./lease.js";
 import { committedReceiptLedger } from "./receipt-store.js";
+import { rejectedReceiptInventory } from "./rejection.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -177,7 +178,7 @@ export function proposeCandidate(project: string, role: string, file: string, ca
     if (!entryExists(host)) throw new HostContractError("HOST_NOT_CLAIMED", 4, "Claim the host before proposing");
     regularDirectory(host);
     assertAdoptionReady(host, current.project_realpath, current.state_realpath!, current.session_id!);
-    for (const name of ["reconcile.json", "claim.lock", "lease.json", "binding.pending", "adoption.pending", "generation.pending", "rejections"]) {
+    for (const name of ["reconcile.json", "claim.lock", "lease.json", "binding.pending", "adoption.pending", "generation.pending"]) {
       if (entryExists(path.join(host, name))) {
         throw new HostContractError("NEEDS_RECONCILE", 7, `Host metadata ${name} requires reconciliation`);
       }
@@ -205,8 +206,11 @@ export function proposeCandidate(project: string, role: string, file: string, ca
     const generation = readGeneration(host, current.project_realpath, current.state_realpath!, current.session_id!);
     if (!generation) throw new HostContractError("GENERATION_REQUIRED", 5, "Prepare a generation before proposing");
     assertGenerationMatchesBusiness(generation, digest, current.turn!, current.round!, current.step!);
-    committedReceiptLedger(host, current.project_realpath, current.state_realpath!, current.session_id!, generation);
+    const ledger = committedReceiptLedger(host, current.project_realpath,
+      current.state_realpath!, current.session_id!, generation);
     const inventory = candidateInventory(host, current.project_realpath, current.state_realpath!, current.session_id!);
+    rejectedReceiptInventory(host, current.project_realpath, current.state_realpath!,
+      current.session_id!, generation, ledger, inventory.candidates);
     const contentHash = sha256(bytes);
     const previous = inventory.candidates.find((item) => item.candidate_id === candidateId);
     const seat = binding.seats[role]!;

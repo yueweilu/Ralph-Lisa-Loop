@@ -3,13 +3,13 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { STATE_DIR } from "../state.js";
 import { canonicalProject, HostContractError, inspectProject } from "./inspect.js";
-import { acquireHostLock, assertNoPendingIntents, entryExists } from "./lease.js";
+import { acquireHostLock, entryExists } from "./lease.js";
 import { auditHostIntent, readHostIntent } from "./transaction.js";
 import { committedReceiptLedger, verifyLatestCommittedReceipt } from "./receipt-store.js";
 import { assertGenerationMatchesBusiness, readGeneration } from "./generation.js";
 import { businessDigest } from "./business.js";
 import { candidateInventory } from "./candidate.js";
-import { readRejectedReceipt } from "./rejection.js";
+import { rejectedReceiptInventory } from "./rejection.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -85,32 +85,17 @@ export function receiptStatus(project: string, requestId: string): HostReceiptSt
     const rejections = path.join(host, "rejections");
     if (entryExists(rejections)) {
       try {
-        assertNoPendingIntents(host);
-        const stat = fs.lstatSync(rejections);
-        if (!stat.isDirectory() || stat.isSymbolicLink() || fs.realpathSync.native(rejections) !== rejections ||
-            JSON.stringify(fs.readdirSync(rejections)) !== JSON.stringify([`${requestId}.json`])) {
-          return reconcile(requestId, sessionId, "rejected_receipt_requires_review");
+        const ledger = committedReceiptLedger(host, root, current.state_realpath, sessionId, generation);
+        const candidates = candidateInventory(host, root, current.state_realpath, sessionId);
+        const inventory = rejectedReceiptInventory(host, root, current.state_realpath, sessionId,
+          generation, ledger, candidates.candidates);
+        if (generation) {
+          assertGenerationMatchesBusiness(generation,
+            businessDigest(current.state_realpath, current.turn!, current.round!, current.step!),
+            current.turn!, current.round!, current.step!);
         }
-        const rejected = readRejectedReceipt(host, requestId);
-        const digest = businessDigest(current.state_realpath, current.turn!, current.round!, current.step!);
-        if (!rejected || !generation || generation.generation !== rejected.generation ||
-            generation.state_digest !== digest || rejected.state_digest !== digest ||
-            rejected.project_realpath !== root || rejected.state_realpath !== current.state_realpath ||
-            rejected.session_id !== sessionId || rejected.turn !== current.turn ||
-            rejected.round !== current.round || rejected.step !== current.step) {
-          return reconcile(requestId, sessionId, "invalid_rejected_receipt");
-        }
-        committedReceiptLedger(host, root, current.state_realpath, sessionId, generation);
-        const candidate = candidateInventory(host, root, current.state_realpath, sessionId).candidates
-          .find((item) => item.candidate_id === rejected.candidate_id);
-        if (!candidate || candidate.lease_id !== rejected.lease_id ||
-            candidate.role !== rejected.role || candidate.generation !== rejected.generation ||
-            candidate.binding_generation !== rejected.binding_generation ||
-            candidate.state_digest !== rejected.state_digest ||
-            candidate.content_sha256 !== rejected.content_sha256) {
-          return reconcile(requestId, sessionId, "invalid_rejected_candidate");
-        }
-        return rejected;
+        const rejected = inventory.receipts.find((record) => record.request_id === requestId);
+        if (rejected) return rejected;
       } catch {
         return reconcile(requestId, sessionId, "invalid_rejected_receipt");
       }

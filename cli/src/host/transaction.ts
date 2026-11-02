@@ -10,6 +10,7 @@ import { assertGenerationMatchesBusiness, readGeneration } from "./generation.js
 import { canonicalProject, HostContractError, inspectProject } from "./inspect.js";
 import { assertAdoptionReady, assertNoManualRuntime, assertNoPendingIntents, entryExists, readLease } from "./lease.js";
 import { committedReceiptLedger } from "./receipt-store.js";
+import { readRejectedReceipt, rejectedReceiptInventory } from "./rejection.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -146,7 +147,9 @@ export function prepareHostIntent(input: HostIntentInput): HostIntent {
       entryExists(path.join(host, "archived-intents", `${input.requestId.toLowerCase()}.json`))) {
     throw new HostContractError("DUPLICATE_CONFLICT", 5, "Request ID already belongs to a committed submission");
   }
-  const candidate = candidateInventory(host, root, state, current.session_id).candidates
+  const candidates = candidateInventory(host, root, state, current.session_id).candidates;
+  rejectedReceiptInventory(host, root, state, current.session_id, generation, ledger, candidates);
+  const candidate = candidates
     .find((value) => value.candidate_id === input.candidateId.toLowerCase());
   if (!candidate || candidate.lease_id !== lease.lease_id ||
       candidate.generation !== generation.generation ||
@@ -193,8 +196,8 @@ export function prepareHostIntent(input: HostIntentInput): HostIntent {
 export function persistHostIntent(input: HostIntentInput): HostIntent {
   const record = prepareHostIntent(input);
   const host = path.join(record.state_realpath, "host");
-  if (entryExists(path.join(host, "rejections"))) {
-    throw new HostContractError("NEEDS_RECONCILE", 7, "Review rejected receipts before a new intent");
+  if (readRejectedReceipt(host, record.request_id)) {
+    throw new HostContractError("DUPLICATE_CONFLICT", 5, "Request ID already belongs to a rejected submission");
   }
   const intents = path.join(host, "intents");
   if (!entryExists(intents)) {

@@ -8,6 +8,7 @@ import { businessDigest } from "./business.js";
 import { assertGenerationMatchesBusiness, readGeneration } from "./generation.js";
 import { candidateInventory } from "./candidate.js";
 import { committedReceiptLedger } from "./receipt-store.js";
+import { rejectedReceiptInventory } from "./rejection.js";
 
 export interface HostSnapshot {
   schema: 1;
@@ -60,9 +61,6 @@ function hostBindingSummary(state: string, project: string, sessionId: string): 
     if (!intentsStat.isDirectory() || intentsStat.isSymbolicLink() || fs.readdirSync(intents).length > 0) {
       throw new HostContractError("NEEDS_RECONCILE", 7, "Pending host intents require reconciliation");
     }
-  }
-  if (entryExists(path.join(host, "rejections"))) {
-    throw new HostContractError("NEEDS_RECONCILE", 7, "Rejected receipts require review");
   }
   const binding = readBinding(host);
   if (binding && (binding.project_realpath !== project || binding.state_realpath !== state ||
@@ -118,10 +116,13 @@ export function snapshotProject(project: string): HostSnapshot {
     if (generation) {
       assertGenerationMatchesBusiness(generation, digest, current.turn!, current.round!, current.step!);
     }
-    committedReceiptLedger(path.join(current.state_realpath, "host"),
+    const ledger = committedReceiptLedger(path.join(current.state_realpath, "host"),
       current.project_realpath, current.state_realpath, current.session_id, generation);
     const candidates = candidateInventory(path.join(current.state_realpath, "host"),
       current.project_realpath, current.state_realpath, current.session_id);
+    rejectedReceiptInventory(path.join(current.state_realpath, "host"),
+      current.project_realpath, current.state_realpath, current.session_id,
+      generation, ledger, candidates.candidates);
     return {
       schema: 1,
       status: "ok",

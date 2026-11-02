@@ -4,6 +4,8 @@ import { businessDigest } from "./business.js";
 import { canonicalProject, HostContractError, inspectProject } from "./inspect.js";
 import { acquireHostLock, assertAdoptionReady, assertNoManualRuntime, assertNoPendingCandidates, assertNoPendingIntents, entryExists, readLease } from "./lease.js";
 import { committedReceiptLedger } from "./receipt-store.js";
+import { candidateInventory } from "./candidate.js";
+import { rejectedReceiptInventory } from "./rejection.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -90,7 +92,7 @@ export function prepareGeneration(project: string, leaseId: string, expectedDige
       throw new HostContractError("NEEDS_RECONCILE", 7, "Invalid host directory");
     }
     assertAdoptionReady(host, current.project_realpath, current.state_realpath!, current.session_id!);
-    for (const name of ["claim.lock", "reconcile.json", "lease.json", "binding.pending", "adoption.pending", "generation.pending", "rejections"]) {
+    for (const name of ["claim.lock", "reconcile.json", "lease.json", "binding.pending", "adoption.pending", "generation.pending"]) {
       if (entryExists(path.join(host, name))) {
         throw new HostContractError("NEEDS_RECONCILE", 7, `Host metadata ${name} requires reconciliation`);
       }
@@ -117,7 +119,11 @@ export function prepareGeneration(project: string, leaseId: string, expectedDige
       throw new HostContractError("STALE_STATE", 5, "Business state changed since the coordinator snapshot");
     }
     const previous = readGeneration(host, current.project_realpath, current.state_realpath!, current.session_id!);
-    committedReceiptLedger(host, current.project_realpath, current.state_realpath!, current.session_id!, previous);
+    const ledger = committedReceiptLedger(host, current.project_realpath,
+      current.state_realpath!, current.session_id!, previous);
+    rejectedReceiptInventory(host, current.project_realpath, current.state_realpath!,
+      current.session_id!, previous, ledger,
+      candidateInventory(host, current.project_realpath, current.state_realpath!, current.session_id!).candidates);
     if (previous) {
       assertGenerationMatchesBusiness(previous, digest, current.turn!, current.round!, current.step!);
       return previous;

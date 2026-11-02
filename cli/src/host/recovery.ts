@@ -9,6 +9,7 @@ import { businessDigest } from "./business.js";
 import { assertGenerationMatchesBusiness, GenerationRecord, readGeneration } from "./generation.js";
 import { candidateInventory } from "./candidate.js";
 import { committedReceiptLedger } from "./receipt-store.js";
+import { rejectedReceiptInventory } from "./rejection.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -23,6 +24,7 @@ interface Evidence {
   binding_lease_id: string | null;
   generation: GenerationRecord | null;
   receipts_digest: string | null;
+  rejections_digest: string | null;
   candidate_count: number;
   candidates_digest: string | null;
   evidence_sha256: string;
@@ -60,7 +62,7 @@ function collect(project: string): Evidence {
   if (!entryExists(host)) throw new HostContractError("HOST_NOT_CLAIMED", 4, "No host lease to recover");
   regularDirectory(host);
   assertAdoptionReady(host, current.project_realpath, current.state_realpath, current.session_id);
-  for (const name of ["reconcile.json", "claim.lock", "lease.json", "binding.pending", "adoption.pending", "generation.pending", "rejections"]) {
+  for (const name of ["reconcile.json", "claim.lock", "lease.json", "binding.pending", "adoption.pending", "generation.pending"]) {
     if (entryExists(path.join(host, name))) {
       throw new HostContractError("NEEDS_RECONCILE", 7, `Host marker ${name} requires reconciliation`);
     }
@@ -91,6 +93,8 @@ function collect(project: string): Evidence {
   const receipts = committedReceiptLedger(host, current.project_realpath, current.state_realpath,
     current.session_id, generation);
   const candidates = candidateInventory(host, current.project_realpath, current.state_realpath, current.session_id);
+  const rejections = rejectedReceiptInventory(host, current.project_realpath,
+    current.state_realpath, current.session_id, generation, receipts, candidates.candidates);
   const body = {
     project_realpath: current.project_realpath,
     state_realpath: current.state_realpath,
@@ -101,6 +105,7 @@ function collect(project: string): Evidence {
     binding_lease_id: binding?.lease_id ?? null,
     generation,
     receipts_digest: receipts.digest,
+    rejections_digest: rejections.digest,
     candidate_count: candidates.count,
     candidates_digest: candidates.digest,
   };
