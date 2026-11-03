@@ -97,7 +97,14 @@ function diagnostics(config) {
 }
 
 function workspaceProject(herdr) {
-  const id = process.env.HERDR_WORKSPACE_ID;
+  let context = null;
+  try { context = JSON.parse(process.env.HERDR_PLUGIN_CONTEXT_JSON || "null"); }
+  catch { /* Malformed context cannot select a project. */ }
+  if (process.env.HERDR_WORKSPACE_ID && context?.workspace_id &&
+      process.env.HERDR_WORKSPACE_ID !== context.workspace_id) return null;
+  if (typeof context?.workspace_cwd === "string" && path.isAbsolute(context.workspace_cwd))
+    return context.workspace_cwd;
+  const id = process.env.HERDR_WORKSPACE_ID || context?.workspace_id || context?.workspace?.workspace_id;
   if (!id) return null;
   const result = invoke(herdr, ["workspace", "get", id]);
   const response = readJson(result);
@@ -139,7 +146,7 @@ function main() {
   }
   const project = config.value.project || workspaceProject(diagnosis.herdr);
   if (!project) {
-    emit({ status: "needs_setup", code: "PROJECT_REQUIRED", checks: diagnosis.checks });
+    emit({ status: "needs_setup", code: "PROJECT_REQUIRED", checks: diagnosis.checks }, 3);
     return;
   }
   if (!diagnosis.checks.rll_cli.ok) {

@@ -1,6 +1,6 @@
 # S2 Herdr 插件运行中验收清单
 
-状态：**待执行**。2026-11-03 已在 Herdr 0.9.4 上完成隔离 `plugin link`，但尚未在运行中的 Herdr 服务内调用动作或打开控制 Pane。此清单用于补齐该验收；不能把动作启动回执当作动作执行成功，也不能把 S2 验收当作 S3 双 Agent 交接验收。
+状态：**运行中 API 验收已通过，TUI 目视展示未单独验收**。2026-11-03 已在隔离的 Herdr 0.9.4 服务中调用动作、检查完成日志，并打开和读取控制 Pane。不能把动作启动回执当作动作执行成功，也不能把 S2 验收当作 S3 双 Agent 交接验收。
 
 ## 1. 隔离会话与前置条件
 
@@ -47,7 +47,7 @@ herdr plugin config-dir ralph-lisa.loop
 herdr plugin action invoke ralph-lisa.loop.doctor
 herdr plugin action invoke ralph-lisa.loop.status
 herdr plugin log list --plugin ralph-lisa.loop --limit 10
-herdr plugin pane open --plugin ralph-lisa.loop --entrypoint control --placement split --workspace "$HERDR_WORKSPACE_ID" --no-focus
+herdr plugin pane open --plugin ralph-lisa.loop --entrypoint control --placement tab --workspace "$HERDR_WORKSPACE_ID" --no-focus
 ```
 
 `action invoke` 的 JSON 只证明 Herdr 接受并启动了命令。继续查看插件日志中的退出状态与完整 JSON 输出；`doctor/status` 各应输出一个 `schema: 1` 对象。如果 Claude/Codex 的 Herdr 集成仍是 `not installed`，`doctor` 应返回 `needs_setup`、`AGENT_INTEGRATIONS_REQUIRED`，而非 `ready`。已初始化样板项目的 `status` 应包含真实 `snapshot`，同时保留该集成缺失提示。控制 Pane 应能显示相同诊断和 RLL 轮次摘要。关闭测试 Pane 后，样板项目的 RLL 状态摘要应保持一致。
@@ -64,3 +64,13 @@ herdr plugin pane open --plugin ralph-lisa.loop --entrypoint control --placement
 | 界面 | `control` Pane 在 Herdr 中实际打开，显示诊断与样板项目状态，刷新后仍指向同一项目 |
 
 满足以上条件才可标记 S2 运行中验收通过。`start/pause/resume/stop` 当前仍应返回 `S2_COORDINATOR_PENDING`；S3 才实现真实 Claude/Codex 双席启动、ID 绑定和自动交接。
+
+## 5. 2026-11-03 实测结果
+
+使用临时 XDG 配置/状态目录、独立 `rll-s2` Herdr 服务，以及一次性 `init --minimal` 样板项目。默认 Herdr 插件列表为空，隔离服务的插件动作列表有六项。真实 `plugin action invoke` 的启动回执与之后的完成日志分开核对：`doctor` 日志 `plugin-log-1` 返回退出码 3、`AGENT_INTEGRATIONS_REQUIRED`；`status` 日志 `plugin-log-2` 返回同一缺集成原因，并含样板项目的 `turn=ralph`、`round=1`、`host_state=unclaimed` 快照。`start` 日志 `plugin-log-3` 返回退出码 4、`S2_COORDINATOR_PENDING`，没有启动 Agent。
+
+首次去掉 `settings.json.project` 后，真实 `status` 暴露两处缺陷：插件只查 `HERDR_WORKSPACE_ID`，而 Herdr 的 `workspace get` 回执不含项目 `cwd`；`PROJECT_REQUIRED` 还以退出码 0 被记为成功。现已改为优先读取 `HERDR_PLUGIN_CONTEXT_JSON.workspace_cwd`、核对 Workspace ID，并让缺项目返回退出码 3。复测日志 `plugin-log-6` 包含正确项目快照与缺集成原因；控制 Pane 刷新后仍显示同一会话。
+
+Herdr 0.9.4 的 `split` 插件 Pane 调用在该隔离服务中返回 `invalid_params`，即使 CLI 提供了 `--target-pane`；使用 `tab` 成功打开 `control`（Pane ID `w1:p3`），并能通过 Herdr `pane read` 读取诊断与轮次输出。manifest 的默认布局已改为 `tab`，再次链接并以默认参数打开成功。样板项目操作前后的 `state_digest` 均为 `57b5bc7ee5ca16c279e78074179a6405c3ca4d86de3ec7543414b0543fe75633`，宿主状态保持 `unclaimed`。
+
+以上证明插件在运行中的 Herdr 服务上完成了只读诊断、状态读取和终端 Pane 输出。Claude/Codex 的 Herdr 集成仍未安装，`ready` 正向路径、真实 Agent 启动和双席交接留给 S3；此处没有声称已在 TUI 客户端中目视展示。

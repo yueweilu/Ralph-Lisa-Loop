@@ -22,6 +22,7 @@ function run(action, options = {}) {
     CODEX_BIN_PATH: codex,
     HERDR_PLUGIN_CONFIG_DIR: temp,
     HERDR_WORKSPACE_ID: options.workspaceId ?? "",
+    HERDR_PLUGIN_CONTEXT_JSON: options.context ?? "",
     FAKE_HERDR_VERSION: options.version ?? "herdr 0.9.4",
     FAKE_HERDR_INTEGRATIONS: options.integrations ?? "installed",
     FAKE_HERDR_WORKSPACE: project,
@@ -111,10 +112,20 @@ test("status reads one initialized project without creating host state", () => {
   config({});
   const workspaceStatus = run("status", { workspaceId: "workspace-test" });
   assert.equal(workspaceStatus.value.snapshot.state_digest, status.value.snapshot.state_digest);
+  const contextStatus = run("status", { context: JSON.stringify({
+    workspace_id: "workspace-test", workspace_cwd: project,
+  }) });
+  assert.equal(contextStatus.value.snapshot.state_digest, status.value.snapshot.state_digest);
+  const mismatch = run("status", { workspaceId: "other-workspace", context: JSON.stringify({
+    workspace_id: "workspace-test", workspace_cwd: project,
+  }) });
+  assert.equal(mismatch.value.code, "PROJECT_REQUIRED");
 });
 
 test("status rejects ambiguous project and malformed settings", () => {
-  assert.equal(run("status").value.code, "PROJECT_REQUIRED");
+  const ambiguous = run("status");
+  assert.equal(ambiguous.code, 3);
+  assert.equal(ambiguous.value.code, "PROJECT_REQUIRED");
   fs.writeFileSync(path.join(temp, "settings.json"), '{"project":"relative"}');
   const malformed = run("doctor");
   assert.equal(malformed.code, 3);

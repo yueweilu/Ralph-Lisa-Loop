@@ -43,5 +43,5 @@ command = ["node", "actions.mjs", "stop"]
 [[panes]]
 id = "control"
 title = "Ralph-Lisa control"
-placement = "split"
+placement = "tab"
 command = ["node", "control.mjs"]

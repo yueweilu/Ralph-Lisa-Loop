@@ -29,9 +29,9 @@ The second command prints the per-plugin config directory. An optional `settings
 }
 ```
 
-Without `project`, a Herdr workspace action uses `HERDR_WORKSPACE_ID`. Without `rll_cli_argv`, the plugin resolves `ralph-lisa` on `PATH`. The project must already be initialized for `status` to return a snapshot. `settings.json` must be a regular file; malformed values return `INVALID_SETTINGS`.
+Without `project`, a Herdr workspace action uses the absolute `workspace_cwd` from `HERDR_PLUGIN_CONTEXT_JSON`, checking it against `HERDR_WORKSPACE_ID` when both are provided. Without `rll_cli_argv`, the plugin resolves `ralph-lisa` on `PATH`. The project must already be initialized for `status` to return a snapshot. `settings.json` must be a regular file; malformed values return `INVALID_SETTINGS`.
 
-Then run `herdr plugin action invoke ralph-lisa.loop.doctor`, inspect `herdr plugin log list --plugin ralph-lisa.loop`, and open the read-only pane with `herdr plugin pane open --plugin ralph-lisa.loop --entrypoint control --placement split` from a Herdr workspace. Action invocation is asynchronous; the command log carries the result. `herdr plugin unlink ralph-lisa.loop` unregisters the local link.
+Then run `herdr plugin action invoke ralph-lisa.loop.doctor`, inspect `herdr plugin log list --plugin ralph-lisa.loop`, and open the read-only pane with `herdr plugin pane open --plugin ralph-lisa.loop --entrypoint control --placement tab` from a Herdr workspace. Action invocation is asynchronous; the command log carries the result. `herdr plugin unlink ralph-lisa.loop` unregisters the local link.
 
 Herdr plugin installation and enabled state are global for the current user across Herdr sessions that use the same Herdr user directories. `HERDR_CONFIG_PATH` only changes the config file path; it does **not** isolate the plugin registry. For a disposable registration check on macOS with Herdr 0.9.4, setting **both** `XDG_CONFIG_HOME` and `XDG_STATE_HOME` to a temporary directory was verified to isolate the linked plugin from the normal Herdr plugin list:
 
