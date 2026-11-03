@@ -28,7 +28,7 @@ function show(action) {
 }
 
 console.log("Ralph-Lisa / Herdr control");
-console.log("Read-only diagnostics. Start attaches a lease coordinator to existing seats; stop releases it. Pause, resume and turn handoff are pending.");
+console.log("Read-only diagnostics. Start creates or attaches two seats and claims a lease; stop releases it. Pause, resume and turn handoff are pending.");
 show("doctor");
 show("status");
 show("seat-preflight");

@@ -2,7 +2,7 @@ id = "ralph-lisa.loop"
 name = "Ralph-Lisa Loop"
 version = "0.1.0"
 min_herdr_version = "0.9.4"
-description = "Inspect Ralph-Lisa host readiness inside Herdr"
+description = "Run Ralph-Lisa seats and host coordination inside Herdr"
 platforms = ["macos", "linux"]
 
 [[actions]]

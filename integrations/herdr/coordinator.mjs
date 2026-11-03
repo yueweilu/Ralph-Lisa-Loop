@@ -13,16 +13,18 @@ function emit(value, code = 0) {
   process.exitCode = code;
 }
 
-function call(argv, args) {
-  const env = { ...process.env };
+function call(argv, args, options = {}) {
+  const env = { ...process.env, ...options.env };
   delete env.TMUX;
   delete env.TMUX_PANE;
   delete env.RL_STATE_DIR;
   const result = spawnSync(argv[0], [...argv.slice(1), ...args], {
-    cwd: root, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 10000,
+    cwd: root, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+    timeout: options.timeoutMs ?? 10000,
   });
   let value = null;
-  try { value = JSON.parse(result.stdout.trim()); } catch { /* Fail closed below. */ }
+  try { value = JSON.parse((result.stdout || result.stderr || "").trim()); }
+  catch { /* Fail closed below. */ }
   return { code: result.status, value, error: result.error?.code ?? null };
 }
 
@@ -90,18 +92,117 @@ function verifySeat(herdr, plan, role, kind) {
       !["idle", "done"].includes(agent.agent_status)) throw new Error("AGENT_CHANGED");
 }
 
+function requireSnapshot(result) {
+  const snapshot = result.value?.snapshot;
+  if (result.code !== 0 || result.value?.status !== "ready" ||
+      snapshot?.status !== "ok" ||
+      !UUID.test(snapshot.session_id ?? "") ||
+      typeof snapshot.project_realpath !== "string" ||
+      !path.isAbsolute(snapshot.project_realpath) ||
+      typeof snapshot.state_digest !== "string") {
+    throw new Error(result.value?.code || "PROJECT_NOT_READY");
+  }
+  if (snapshot.host_state !== "unclaimed") throw new Error("HOST_ALREADY_CLAIMED");
+  return snapshot;
+}
+
+function requireHerdrResult(result, field, code) {
+  if (result.code !== 0 || !result.value?.result?.[field])
+    throw new Error(result.value?.error?.code || result.error || code);
+  return result.value.result[field];
+}
+
+function missingAgent(herdr, role) {
+  const result = call(herdr, ["agent", "get", role]);
+  return result.code !== 0 && result.value?.error?.code === "agent_not_found";
+}
+
+async function waitForAgent(herdr, role, kind, workspaceId, paneId, project) {
+  let announced = false;
+  for (let attempt = 0; attempt < 120; attempt++) {
+    const result = call(herdr, ["agent", "get", role]);
+    const agent = result.value?.result?.agent;
+    let cwd = null;
+    try { cwd = fs.realpathSync.native(agent.cwd); } catch { /* Fail closed. */ }
+    if (result.code !== 0 || agent?.name !== role || agent?.agent !== kind ||
+        agent?.workspace_id !== workspaceId || agent?.pane_id !== paneId || cwd !== project)
+      throw new Error("AGENT_START_MISMATCH");
+    if (agent.interactive_ready && ["idle", "done"].includes(agent.agent_status)) return;
+    if (!announced && agent.agent_status === "blocked") {
+      emit({ status: "needs_input", code: "AGENT_BLOCKED", role,
+        workspace_id: workspaceId, pane_id: paneId });
+      announced = true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  throw new Error("AGENT_READY_TIMEOUT");
+}
+
+async function launchAgent(herdr, role, kind, workspaceId, paneId, project) {
+  const launched = call(herdr, ["agent", "start", role, "--kind", kind,
+    "--pane", paneId, "--timeout", "60000"], { timeoutMs: 70000 });
+  if (launched.code !== 0 && launched.value?.error?.code !== "agent_not_ready")
+    throw new Error(launched.value?.error?.code || launched.error || "AGENT_START_FAILED");
+  await waitForAgent(herdr, role, kind, workspaceId, paneId, project);
+}
+
+async function bootstrapSeats(paths, record, herdr) {
+  if (!missingAgent(herdr, "ralph") || !missingAgent(herdr, "lisa"))
+    throw new Error("EXISTING_AGENT_REQUIRES_REVIEW");
+  const created = call(herdr, ["workspace", "create", "--cwd", paths.real,
+    "--label", `Ralph-Lisa ${path.basename(paths.real)}`, "--focus"]);
+  const workspaceId = created.value?.result?.workspace?.workspace_id;
+  const rootPaneId = created.value?.result?.root_pane?.pane_id;
+  if (created.code !== 0 || !workspaceId || !rootPaneId ||
+      created.value?.result?.root_pane?.workspace_id !== workspaceId)
+    throw new Error("WORKSPACE_CREATE_UNCERTAIN");
+  record = { ...record, phase: "workspace_created", workspace_id: workspaceId,
+    ralph_pane_id: rootPaneId };
+  durableWrite(paths.record, record);
+  await launchAgent(herdr, "ralph", "claude", workspaceId, rootPaneId, paths.real);
+  record = { ...record, phase: "ralph_ready" };
+  durableWrite(paths.record, record);
+  const split = requireHerdrResult(call(herdr, ["pane", "split", rootPaneId,
+    "--direction", "right", "--cwd", paths.real, "--focus"]),
+  "pane", "PANE_SPLIT_UNCERTAIN");
+  if (!split.pane_id || split.workspace_id !== workspaceId || split.pane_id === rootPaneId)
+    throw new Error("PANE_SPLIT_UNCERTAIN");
+  record = { ...record, phase: "pane_created", lisa_pane_id: split.pane_id };
+  durableWrite(paths.record, record);
+  await launchAgent(herdr, "lisa", "codex", workspaceId, split.pane_id, paths.real);
+  record = { ...record, phase: "lisa_ready" };
+  durableWrite(paths.record, record);
+  const context = { workspace_id: workspaceId, workspace_cwd: paths.real };
+  const preflight = call([process.execPath, path.join(root, "actions.mjs")],
+    ["seat-preflight"], { env: { HERDR_WORKSPACE_ID: workspaceId,
+      HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify(context) } });
+  if (preflight.code !== 0 || preflight.value?.status !== "ready" ||
+      preflight.value?.binding_plan?.workspace_id !== workspaceId)
+    throw new Error(preflight.value?.code || "BOOTSTRAP_PREFLIGHT_FAILED");
+  return { plan: preflight.value.binding_plan, record };
+}
+
 async function start() {
+  const status = call([process.execPath, path.join(root, "actions.mjs")], ["status"]);
+  let initial;
+  try { initial = requireSnapshot(status); }
+  catch (error) {
+    emit({ status: "not_ready", code: error.message || "PROJECT_NOT_READY" }, 3);
+    return;
+  }
   const preflight = call([process.execPath, path.join(root, "actions.mjs")], ["seat-preflight"]);
-  const plan = preflight.value?.binding_plan;
-  if (preflight.code !== 0 || preflight.value?.status !== "ready" || !plan) {
+  const bootNeeded = preflight.value?.code === "AGENT_MISSING";
+  let plan = preflight.value?.status === "ready" ? preflight.value?.binding_plan : null;
+  if (!plan && !bootNeeded) {
     emit({ status: "not_ready", code: preflight.value?.code || "SEAT_PREFLIGHT_FAILED" }, 3);
     return;
   }
-  const paths = files(plan.project_realpath);
+  const paths = files(initial.project_realpath);
   fs.mkdirSync(paths.dir, { recursive: true, mode: 0o700 });
   const ownerId = crypto.randomUUID();
   let record = { schema: 1, phase: "intent", owner_id: ownerId, pid: process.pid,
-    project_realpath: paths.real, session_id: plan.session_id, plan };
+    project_realpath: paths.real, session_id: initial.session_id,
+    expected_digest: initial.state_digest, plan };
   try { durableWrite(paths.record, record, true); }
   catch (error) {
     emit({ status: "not_ready", code: error.code === "EEXIST" ? "COORDINATOR_EXISTS" : "STATE_WRITE_FAILED" }, 4);
@@ -110,6 +211,19 @@ async function start() {
   const cli = config().cli;
   const herdr = [process.env.HERDR_BIN_PATH || "herdr"];
   try {
+    if (bootNeeded) {
+      const boot = await bootstrapSeats(paths, record, herdr);
+      plan = boot.plan;
+      record = { ...boot.record, phase: "seats_ready", plan };
+      durableWrite(paths.record, record);
+    }
+    if (plan.project_realpath !== paths.real || plan.session_id !== initial.session_id ||
+        plan.expected_digest !== initial.state_digest) throw new Error("PREFLIGHT_STATE_MISMATCH");
+    const beforeClaim = call(cli, ["host", "snapshot", "--project", paths.real, "--json"]);
+    if (beforeClaim.code !== 0 || beforeClaim.value?.host_state !== "unclaimed" ||
+        beforeClaim.value?.session_id !== initial.session_id ||
+        beforeClaim.value?.state_digest !== initial.state_digest)
+      throw new Error("STATE_CHANGED_BEFORE_CLAIM");
     const claimed = call(cli, ["host", "claim", "--project", paths.real,
       "--host", "herdr", "--owner-id", ownerId, "--json"]);
     const lease = claimed.value;
@@ -167,7 +281,11 @@ async function start() {
           throw new Error(heartbeat.value?.code || "HEARTBEAT_UNCERTAIN");
       }
     }
-  } catch (error) { failRecord(paths, record, error.message || "COORDINATOR_ERROR"); }
+  } catch (error) {
+    let latest = record;
+    try { latest = readRecord(paths.record); } catch { /* Keep the last in-memory intent. */ }
+    failRecord(paths, latest, error.message || "COORDINATOR_ERROR");
+  }
 }
 
 async function stop() {

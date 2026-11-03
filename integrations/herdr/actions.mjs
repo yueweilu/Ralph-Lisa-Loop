@@ -77,8 +77,8 @@ function diagnostics(config) {
   const cliContract = cliProbe?.code === 0 && inspected?.status === "ok" &&
     inspected?.schema === 1 && typeof inspected?.project_realpath === "string";
   const integration = parsedHerdr ? invoke(herdr, ["integration", "status"]) : null;
-  const claude = integration?.code === 0 && /^claude: installed\b/m.test(integration.stdout);
-  const codex = integration?.code === 0 && /^codex: installed\b/m.test(integration.stdout);
+  const claude = integration?.code === 0 && /^claude: (?:installed|current)\b/m.test(integration.stdout);
+  const codex = integration?.code === 0 && /^codex: (?:installed|current)\b/m.test(integration.stdout);
   const claudeAuth = invoke([process.env.CLAUDE_BIN_PATH || "claude"], ["auth", "status"]);
   const codexAuth = invoke([process.env.CODEX_BIN_PATH || "codex"], ["login", "status"]);
   const claudeLogin = claudeAuth.code === 0 && readJson(claudeAuth)?.loggedIn === true;

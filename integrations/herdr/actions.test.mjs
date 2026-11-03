@@ -53,7 +53,7 @@ beforeEach(() => {
   fs.writeFileSync(herdr, `#!${process.execPath}\n` +
     `const args = process.argv.slice(2);\n` +
     `if (args[0] === '--version') console.log(process.env.FAKE_HERDR_VERSION);\n` +
-    `else if (args[0] === 'integration') console.log(process.env.FAKE_HERDR_INTEGRATIONS === 'installed' ? 'claude: installed\\ncodex: installed' : 'claude: not installed\\ncodex: not installed');\n` +
+    `else if (args[0] === 'integration') console.log(process.env.FAKE_HERDR_INTEGRATIONS === 'installed' ? 'claude: installed\\ncodex: installed' : process.env.FAKE_HERDR_INTEGRATIONS === 'current' ? 'claude: current (v10)\\ncodex: current (v9)' : 'claude: not installed\\ncodex: not installed');\n` +
     `else if (args[0] === 'workspace') console.log(JSON.stringify({result:{workspace:{cwd:process.env.FAKE_HERDR_WORKSPACE}}}));\n` +
     `else if (args[0] === 'agent' && args[1] === 'get') {\n` +
     `  const role = args[2], scenario = process.env.FAKE_HERDR_AGENT_SCENARIO;\n` +
@@ -80,6 +80,9 @@ test("doctor probes the real host contract and distinguishes missing integration
   assert.equal(healthy.value.status, "ready", JSON.stringify(healthy.value));
   assert.equal(healthy.value.checks.rll_cli.host_contract, true);
   assert.equal(healthy.value.checks.login.claude, "logged_in");
+  const current = run("doctor", { integrations: "current" });
+  assert.equal(current.value.checks.integrations.claude, true);
+  assert.equal(current.value.checks.integrations.codex, true);
   const absent = run("doctor", { integrations: "absent" });
   assert.equal(absent.code, 0);
   assert.equal(absent.value.status, "ready");

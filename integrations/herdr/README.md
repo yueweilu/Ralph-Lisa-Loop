@@ -1,4 +1,4 @@
-# Ralph-Lisa Herdr plugin (S3.2 preview)
+# Ralph-Lisa Herdr plugin (S3.3 preview)
 
 This is the public-repository Herdr plugin, separate from the Claude Code plugin in `plugin/`. It needs Herdr 0.9.4 or later, Node.js 18 or later, and a Ralph-Lisa CLI with the S1 host commands.
 
@@ -8,7 +8,8 @@ This is the public-repository Herdr plugin, separate from the Claude Code plugin
 - `status` reads one project's RLL snapshot. It takes the project from `settings.json` or the invoking Herdr workspace. It does not claim a host lease or change RLL state.
 - `seat-preflight` verifies two existing Herdr agents named `ralph` (Claude) and `lisa` (Codex), their live Pane/Workspace IDs, readiness, and project path, then returns a proposed RLL binding without claiming a lease or writing a binding.
 - The `control` pane shows these read-only views and can refresh them.
-- `start` attaches a long-running coordinator to the two **already running** Herdr agents. It writes an exclusive local intent, claims the RLL host lease, rechecks the project/session and Herdr seats, binds both seats, and heartbeats every five seconds. A second start for the same project is rejected.
+- `start` writes an exclusive local intent. If both `ralph` (Claude) and `lisa` (Codex) are already ready in the invoking workspace, it attaches to them. If neither exists, it creates a dedicated Herdr workspace, splits two panes, starts both agents, waits for interactive readiness, and rechecks their returned IDs. It then claims the RLL host lease, binds the seats, and heartbeats every five seconds. A second start for the same project is rejected.
+- A blocked Agent startup emits `needs_input` with its workspace and pane ID while the coordinator waits up to two minutes for a person to handle the prompt. It does not accept trust, permission, login, or update prompts on the user's behalf. A partially existing or mismatched named seat fails closed. `stop` currently applies only after the lease becomes active. If startup times out or becomes uncertain, inspect the retained plugin record and Herdr panes before retrying; automatic cleanup and resume of a partial bootstrap are not implemented.
 - `stop` sends a durable request to that coordinator and waits for the RLL lease release. It leaves Claude and Codex running. The released binding becomes stale. The Herdr action log, rather than the initial invocation response, confirms completion.
 - `pause` and `resume` still return `S2_COORDINATOR_PENDING`; message delivery, candidate submission, turn handoff, and restart recovery are not yet implemented.
 
@@ -36,7 +37,7 @@ Without `project`, a Herdr workspace action uses the absolute `workspace_cwd` fr
 
 Then run `herdr plugin action invoke ralph-lisa.loop.doctor`, inspect `herdr plugin log list --plugin ralph-lisa.loop`, and open the read-only pane with `herdr plugin pane open --plugin ralph-lisa.loop --entrypoint control --placement tab` from a Herdr workspace. Action invocation is asynchronous; the command log carries the result. `herdr plugin unlink ralph-lisa.loop` unregisters the local link.
 
-For the S3.2 lease trial, initialize a disposable RLL project, open it as a Herdr workspace, start agents named `ralph` (Claude) and `lisa` (Codex) in separate panes, and run `seat-preflight`. When it reports `ready`, invoke `ralph-lisa.loop.start`; check its log for `started` and use `ralph-lisa host snapshot --project <abs> --json` to confirm the claimed lease and two bound seats. Invoke `ralph-lisa.loop.stop`; confirm both action logs succeeded and the snapshot reports `host_state=unclaimed` and `binding_state=stale`. Do not run this trial against a live tmux or manually managed session.
+For the S3.3 trial, initialize a disposable RLL project, open it as a Herdr workspace, and invoke `ralph-lisa.loop.start`. When it creates a dedicated workspace, handle any Agent startup prompts in the reported panes. Check the action log for `started` and use `ralph-lisa host snapshot --project <abs> --json` to confirm the claimed lease and two bound seats. Invoke `ralph-lisa.loop.stop` from the project workspace; confirm both action logs succeeded and the snapshot reports `host_state=unclaimed` and `binding_state=stale`. The two Agents remain running. Do not run this trial against a live tmux or manually managed session.
 
 If the coordinator or Herdr server crashes, the RLL lease remains claimed. Do not delete the lease or rerun `start` blindly. Inspect the plugin state directory and `ralph-lisa host recovery-check --project <abs> --json`; recover only after checking that the old coordinator and agents are stopped and no submission is in flight. The plugin has no automatic lease takeover.
 
