@@ -6,10 +6,11 @@ This is the public-repository Herdr plugin, separate from the Claude Code plugin
 
 - `doctor` checks Herdr version, the Ralph-Lisa host contract, Claude/Codex Herdr integrations, and both agent CLI login states. It reports one JSON object with a setup code and individual checks.
 - `status` reads one project's RLL snapshot. It takes the project from `settings.json` or the invoking Herdr workspace. It does not claim a host lease or change RLL state.
-- The `control` pane shows these two read-only views and can refresh them.
+- `seat-preflight` verifies two existing Herdr agents named `ralph` (Claude) and `lisa` (Codex), their live Pane/Workspace IDs, readiness, and project path, then returns a proposed RLL binding without claiming a lease or writing a binding.
+- The `control` pane shows these read-only views and can refresh them.
 - `start`, `pause`, `resume`, and `stop` are declared for a stable action surface, but currently return `S2_COORDINATOR_PENDING` with exit code 4. They do not start an Agent or mutate a project. The S3 coordinator must implement those actions and bind the real Herdr workspace, pane and Agent IDs to RLL's host contract.
 
-`ready` means the read-only preflight passed at that moment. It does not mean a dual-Agent workflow has started or that real task delivery has been verified.
+`ready` means the read-only preflight passed at that moment. Claude/Codex can be detected from their terminal screens without Herdr integrations. The `integrations` checks remain visible because they are needed to resume the same Agent sessions after a Herdr server restart. `ready` does not mean RLL has claimed the project, automatic handoff has started, or restart recovery has been verified.
 
 ## Local setup
 

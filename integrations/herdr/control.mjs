@@ -18,15 +18,20 @@ function show(action) {
       const { host_state, turn, round, step, session_id } = response.snapshot;
       console.log(JSON.stringify({ host_state, turn, round, step, session_id }, null, 2));
     }
+    if (action === "seat-preflight" && response.binding_plan) {
+      const { workspace_id, seats } = response.binding_plan;
+      console.log(JSON.stringify({ workspace_id, seats }, null, 2));
+    }
   } catch {
     console.log(`${action}: probe failed (${result.error?.code ?? result.status ?? "unknown"})`);
   }
 }
 
 console.log("Ralph-Lisa / Herdr control");
-console.log("Read-only S2 preview. Start, pause, resume and stop await the S3 coordinator.");
+console.log("Read-only seat preflight. Start, pause, resume and stop await the S3 coordinator.");
 show("doctor");
 show("status");
+show("seat-preflight");
 
 if (process.stdin.isTTY) {
   const input = createInterface({ input: process.stdin, output: process.stdout });
@@ -35,6 +40,7 @@ if (process.stdin.isTTY) {
     if (answer === "q") break;
     show("doctor");
     show("status");
+    show("seat-preflight");
   }
   input.close();
 }

@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 const pluginRoot = path.dirname(fileURLToPath(import.meta.url));
 const MIN_HERDR = [0, 9, 4];
-const ACTIONS = new Set(["doctor", "status", "start", "pause", "resume", "stop"]);
+const ACTIONS = new Set(["doctor", "status", "seat-preflight", "start", "pause", "resume", "stop"]);
 
 function emit(value, exitCode = 0) {
   process.stdout.write(`${JSON.stringify({ schema: 1, ...value })}\n`);
@@ -93,13 +93,18 @@ function diagnostics(config) {
       codex: codexLogin ? "logged_in" : codexAuth.error ? "unavailable" : "not_logged_in" },
   };
   return { herdr, cli, checks,
-    ready: checks.herdr.ok && checks.rll_cli.ok && claude && codex && claudeLogin && codexLogin };
+    ready: checks.herdr.ok && checks.rll_cli.ok && claudeLogin && codexLogin };
 }
 
-function workspaceProject(herdr) {
+function pluginContext() {
   let context = null;
   try { context = JSON.parse(process.env.HERDR_PLUGIN_CONTEXT_JSON || "null"); }
   catch { /* Malformed context cannot select a project. */ }
+  return context;
+}
+
+function workspaceProject(herdr) {
+  const context = pluginContext();
   if (process.env.HERDR_WORKSPACE_ID && context?.workspace_id &&
       process.env.HERDR_WORKSPACE_ID !== context.workspace_id) return null;
   if (typeof context?.workspace_cwd === "string" && path.isAbsolute(context.workspace_cwd))
@@ -116,10 +121,41 @@ function workspaceProject(herdr) {
 function setupCode(checks) {
   if (!checks.herdr.ok) return "HERDR_VERSION_REQUIRED";
   if (!checks.rll_cli.ok) return "RLL_HOST_CONTRACT_REQUIRED";
-  if (!checks.integrations.claude || !checks.integrations.codex) return "AGENT_INTEGRATIONS_REQUIRED";
   if (checks.login.claude !== "logged_in" || checks.login.codex !== "logged_in")
     return "AGENT_LOGIN_REQUIRED";
   return null;
+}
+
+function seatPreflight(diagnosis, snapshot) {
+  if (!diagnosis.ready) return { status: "needs_setup", code: setupCode(diagnosis.checks) };
+  if (snapshot.host_state !== "unclaimed") return { status: "not_ready", code: "HOST_ALREADY_CLAIMED" };
+  const context = pluginContext();
+  const workspaceId = process.env.HERDR_WORKSPACE_ID || context?.workspace_id;
+  if (!workspaceId || (context?.workspace_id && context.workspace_id !== workspaceId))
+    return { status: "not_ready", code: "WORKSPACE_REQUIRED" };
+  const seats = {};
+  for (const [role, kind] of [["ralph", "claude"], ["lisa", "codex"]]) {
+    const observed = invoke(diagnosis.herdr, ["agent", "get", role]);
+    const agent = readJson(observed)?.result?.agent;
+    if (observed.code !== 0 || !agent) return { status: "not_ready", code: "AGENT_MISSING", role };
+    if (agent.name !== role || agent.agent !== kind || agent.workspace_id !== workspaceId ||
+        typeof agent.pane_id !== "string" || !agent.pane_id) {
+      return { status: "not_ready", code: "AGENT_IDENTITY_MISMATCH", role };
+    }
+    let agentCwd = null;
+    try { agentCwd = fs.realpathSync.native(agent.cwd); } catch { /* Treat as mismatch. */ }
+    if (agentCwd !== snapshot.project_realpath)
+      return { status: "not_ready", code: "AGENT_PROJECT_MISMATCH", role };
+    if (!agent.interactive_ready || !["idle", "done"].includes(agent.agent_status))
+      return { status: "not_ready", code: "AGENT_NOT_READY", role };
+    seats[role] = { pane_id: agent.pane_id, agent_target: role, agent_kind: kind };
+  }
+  if (seats.ralph.pane_id === seats.lisa.pane_id)
+    return { status: "not_ready", code: "SEATS_SHARE_PANE" };
+  return { status: "ready", code: null, binding_plan: {
+    project_realpath: snapshot.project_realpath, session_id: snapshot.session_id,
+    expected_digest: snapshot.state_digest, workspace_id: workspaceId, seats,
+  } };
 }
 
 function main() {
@@ -156,6 +192,16 @@ function main() {
   }
   const observed = invoke(diagnosis.cli, ["host", "snapshot", "--project", project, "--json"]);
   const snapshot = readJson(observed);
+  if (action === "seat-preflight") {
+    if (observed.code !== 0 || snapshot?.status !== "ok") {
+      emit({ status: "not_ready", code: snapshot?.code || "RLL_SNAPSHOT_FAILED",
+        project, checks: diagnosis.checks }, 3);
+      return;
+    }
+    const result = seatPreflight(diagnosis, snapshot);
+    emit({ ...result, checks: diagnosis.checks }, result.status === "ready" ? 0 : 3);
+    return;
+  }
   emit({ status: observed.code === 0 && diagnosis.ready ? "ready" : "needs_setup",
     code: observed.code === 0 ? setupCode(diagnosis.checks)
       : snapshot?.code || "RLL_SNAPSHOT_FAILED",

@@ -26,6 +26,7 @@ function run(action, options = {}) {
     FAKE_HERDR_VERSION: options.version ?? "herdr 0.9.4",
     FAKE_HERDR_INTEGRATIONS: options.integrations ?? "installed",
     FAKE_HERDR_WORKSPACE: project,
+    FAKE_HERDR_AGENT_SCENARIO: options.agentScenario ?? "ok",
     FAKE_LOGIN: options.login ?? "logged_in",
   };
   const result = spawnSync(process.execPath, [path.join(root, "actions.mjs"), action], {
@@ -54,6 +55,14 @@ beforeEach(() => {
     `if (args[0] === '--version') console.log(process.env.FAKE_HERDR_VERSION);\n` +
     `else if (args[0] === 'integration') console.log(process.env.FAKE_HERDR_INTEGRATIONS === 'installed' ? 'claude: installed\\ncodex: installed' : 'claude: not installed\\ncodex: not installed');\n` +
     `else if (args[0] === 'workspace') console.log(JSON.stringify({result:{workspace:{cwd:process.env.FAKE_HERDR_WORKSPACE}}}));\n` +
+    `else if (args[0] === 'agent' && args[1] === 'get') {\n` +
+    `  const role = args[2], scenario = process.env.FAKE_HERDR_AGENT_SCENARIO;\n` +
+    `  const agent = {name:role,agent:role === 'ralph' ? 'claude' : 'codex',workspace_id:'w1',pane_id:role === 'ralph' ? 'w1:p1' : 'w1:p2',cwd:process.env.FAKE_HERDR_WORKSPACE,interactive_ready:true,agent_status:'idle'};\n` +
+    `  if (scenario === 'wrong-kind' && role === 'lisa') agent.agent = 'claude';\n` +
+    `  if (scenario === 'same-pane' && role === 'lisa') agent.pane_id = 'w1:p1';\n` +
+    `  if (scenario === 'blocked' && role === 'lisa') agent.agent_status = 'blocked';\n` +
+    `  console.log(JSON.stringify({result:{agent}}));\n` +
+    `}\n` +
     `else process.exit(2);\n`);
   fs.chmodSync(herdr, 0o700);
   fs.writeFileSync(claude, `#!${process.execPath}\nconsole.log(JSON.stringify({loggedIn:process.env.FAKE_LOGIN === 'logged_in'}));\n`);
@@ -72,8 +81,8 @@ test("doctor probes the real host contract and distinguishes missing integration
   assert.equal(healthy.value.checks.rll_cli.host_contract, true);
   assert.equal(healthy.value.checks.login.claude, "logged_in");
   const absent = run("doctor", { integrations: "absent" });
-  assert.equal(absent.code, 3);
-  assert.equal(absent.value.status, "needs_setup");
+  assert.equal(absent.code, 0);
+  assert.equal(absent.value.status, "ready");
   assert.equal(absent.value.checks.integrations.claude, false);
   assert.equal(absent.value.checks.integrations.codex, false);
 });
@@ -130,6 +139,32 @@ test("status rejects ambiguous project and malformed settings", () => {
   const malformed = run("doctor");
   assert.equal(malformed.code, 3);
   assert.equal(malformed.value.code, "INVALID_SETTINGS");
+});
+
+test("seat preflight verifies real CLI state and two distinct Herdr agent identities", () => {
+  fs.mkdirSync(project);
+  const init = spawnSync(process.execPath, [cli, "init", "--minimal", project], { encoding: "utf8" });
+  assert.equal(init.status, 0, init.stderr);
+  config({ project });
+  const context = JSON.stringify({ workspace_id: "w1", workspace_cwd: project });
+  const ready = run("seat-preflight", { context, integrations: "absent" });
+  assert.equal(ready.code, 0);
+  assert.equal(ready.value.status, "ready");
+  assert.equal(ready.value.binding_plan.workspace_id, "w1");
+  assert.equal(ready.value.binding_plan.seats.ralph.pane_id, "w1:p1");
+  assert.equal(ready.value.binding_plan.seats.lisa.agent_kind, "codex");
+  assert.equal(ready.value.checks.integrations.codex, false);
+  assert.equal(ready.value.binding_plan.expected_digest,
+    JSON.parse(spawnSync(process.execPath, [cli, "host", "snapshot", "--project", project, "--json"], {
+      encoding: "utf8",
+    }).stdout).state_digest);
+  assert.equal(run("seat-preflight", { context, agentScenario: "wrong-kind" }).value.code,
+    "AGENT_IDENTITY_MISMATCH");
+  assert.equal(run("seat-preflight", { context, agentScenario: "same-pane" }).value.code,
+    "SEATS_SHARE_PANE");
+  assert.equal(run("seat-preflight", { context, agentScenario: "blocked" }).value.code,
+    "AGENT_NOT_READY");
+  assert.equal(fs.existsSync(path.join(project, ".dual-agent", "host", "lease")), false);
 });
 
 test("mutating actions refuse to start agents before coordinator exists", () => {

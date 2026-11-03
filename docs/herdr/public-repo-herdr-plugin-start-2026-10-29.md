@@ -110,4 +110,4 @@ S1 的工程细节、命令/回执样例与验收矩阵见[公开 CLI 宿主契�
 
 建议先安排 **S0 约 3–5 人日的计划额度**（含公开边界审查、依赖/测试基线和契约清单），完成后再逐切片重估总工期；这不是已实测工时或报价。本机依赖安装、远端 CI 和 S2 的 Herdr 插件只读运行中 API 已验证；真实 Claude/Codex 双席集成尚未验证，不应把未跑过的双席测试写成通过。
 
-**截至 2026-11-03 的进展：** 公开仓独立检出及基线盘点、S0 和 S1 宿主契约切片已在开发 fork 通过 CI；隔离样板项目的 Ralph → Lisa `NEEDS_WORK` → Ralph 与错项目/旧会话/旧绑定回归也已完成。S2 插件 manifest、只读 `doctor/status`、控制 Pane 和自动化测试已在隔离 Herdr 0.9.4 服务中完成运行中 API 验收，详情见 [S2 实测记录](s2-live-acceptance-2026-11-03.md)。同时设置临时 `XDG_CONFIG_HOME`、`XDG_STATE_HOME` 后，`plugin link`、动作调用与 Pane 打开均成功；默认环境没有注册此插件。候选来源仍标记 `unverified`，CLI 无法证明真实 Herdr Agent 的身份或用户实际审阅候选。**尚未完成：** 完整历史/许可审计、TUI 客户端目视展示、Claude/Codex 的 Herdr 集成安装与真实双席交接、原仓发布。
+**截至 2026-11-03 的进展：** 公开仓独立检出及基线盘点、S0 和 S1 宿主契约切片已在开发 fork 通过 CI；隔离样板项目的 Ralph → Lisa `NEEDS_WORK` → Ralph 与错项目/旧会话/旧绑定回归也已完成。S2 插件 manifest、只读 `doctor/status`、控制 Pane 和自动化测试已在隔离 Herdr 0.9.4 服务中完成运行中 API 验收，详情见 [S2 实测记录](s2-live-acceptance-2026-11-03.md)。S3.1 已在未装 Claude/Codex 集成的隔离服务中验证真实两席可启动、识别和只读预检，见 [S3.1 席位预检](s3-seat-preflight-2026-11-03.md)。候选来源仍标记 `unverified`，CLI 无法证明真实 Herdr Agent 的身份或用户实际审阅候选。**尚未完成：** 完整历史/许可审计、TUI 客户端目视展示、RLL 宿主租约与席位写入、提交回执驱动的真实双席交接、S4 集成安装与重启恢复、原仓发布。

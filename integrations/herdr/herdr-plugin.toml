@@ -17,6 +17,12 @@ contexts = ["workspace"]
 command = ["node", "actions.mjs", "status"]
 
 [[actions]]
+id = "seat-preflight"
+title = "Check Ralph and Lisa seats"
+contexts = ["workspace"]
+command = ["node", "actions.mjs", "seat-preflight"]
+
+[[actions]]
 id = "start"
 title = "Start Ralph-Lisa workflow"
 contexts = ["workspace"]
