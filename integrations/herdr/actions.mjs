@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 const pluginRoot = path.dirname(fileURLToPath(import.meta.url));
 const MIN_HERDR = [0, 9, 4];
-const ACTIONS = new Set(["doctor", "status", "seat-preflight", "start", "pause", "resume", "stop"]);
+const ACTIONS = new Set(["doctor", "status", "seat-preflight", "pause", "resume"]);
 
 function emit(value, exitCode = 0) {
   process.stdout.write(`${JSON.stringify({ schema: 1, ...value })}\n`);
@@ -164,9 +164,9 @@ function main() {
     emit({ status: "error", code: "UNKNOWN_ACTION" }, 2);
     return;
   }
-  if (["start", "pause", "resume", "stop"].includes(action)) {
+  if (["pause", "resume"].includes(action)) {
     emit({ status: "not_ready", action, code: "S2_COORDINATOR_PENDING",
-      message: "Agent seats and durable coordination are not connected yet" }, 4);
+      message: "Pause and resume await turn handoff coordination" }, 4);
     return;
   }
   const config = settings();

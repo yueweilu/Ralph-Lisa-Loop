@@ -26,7 +26,7 @@ command = ["node", "actions.mjs", "seat-preflight"]
 id = "start"
 title = "Start Ralph-Lisa workflow"
 contexts = ["workspace"]
-command = ["node", "actions.mjs", "start"]
+command = ["node", "coordinator.mjs", "start"]
 
 [[actions]]
 id = "pause"
@@ -44,7 +44,7 @@ command = ["node", "actions.mjs", "resume"]
 id = "stop"
 title = "Stop Ralph-Lisa workflow"
 contexts = ["workspace"]
-command = ["node", "actions.mjs", "stop"]
+command = ["node", "coordinator.mjs", "stop"]
 
 [[panes]]
 id = "control"
