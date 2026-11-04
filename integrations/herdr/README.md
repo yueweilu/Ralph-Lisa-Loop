@@ -70,6 +70,6 @@ cd cli && npm run build
 cd .. && node --test integrations/herdr/actions.test.mjs integrations/herdr/coordinator.test.mjs
 ```
 
-The tests exercise the real public CLI's committed receipt flow against temporary projects; fake Herdr and agent binaries make prompt delivery and readiness reproducible. A green test run is not a real two-Agent handoff in Herdr.
+The tests exercise the real public CLI's committed receipt flow against temporary projects; fake Herdr and agent binaries make prompt delivery and readiness reproducible. A separate [live Herdr trial](../../docs/herdr/s3-real-handoff-trial-2026-11-04.md) verified Ralph → Lisa `NEEDS_WORK` → Ralph with real Claude/Codex panes and one accepted delivery per receipt. Both candidate commits required the existing human source confirmation gate; the plugin cannot yet run the loop unattended.
 
 For the remaining running-Herdr checks, follow the [S2 live acceptance checklist](../../docs/herdr/s2-live-acceptance-2026-11-03.md) from a Herdr-managed pane.

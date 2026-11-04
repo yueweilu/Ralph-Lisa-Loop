@@ -11,7 +11,9 @@
 - 首份候选通过人工来源审阅声明后，`host commit` 返回 `committed`，generation 从 `0` 变为 `1`，轮次转给 Lisa。插件为该回执只保存一份目标为 Lisa `w2:p2` 的 `accepted` 投递；真实 Codex Pane 显示相同回执 ID 并开始处理。RLL 业务快照也显示 `turn=lisa`、generation `1`。
 - Lisa 在真实 Codex Pane 中写出 `lisa-candidate.md`，内容为 `[NEEDS_WORK] Please add a second sentence to the README after "Herdr handoff trial".`，并自行调用 `host propose`。首次尝试遇到瞬时 `HOST_BUSY`，核对短锁后重试成功。Lisa 的 `host commit-check` 返回 `awaiting_source_confirmation`，没有擅自确认来源或正式提交。该候选策略检查有“原因必填”和“文件行号”警告；测试门禁未启用。
 - 再次调用插件 `pause` 并收到 `paused`；generation 仍为 `1`，仅有上述一份 Lisa 投递记录。
+- 人工来源审阅确认后，`resume` 返回 `active`；Lisa 的 `host commit` 返回 `committed`，带有上述两条策略警告。generation 从 `1` 变为 `2`，业务状态变为第 2 轮 Ralph。插件仅保存一份目标为 Ralph `w2:p1` 的 `accepted` 投递，真实 Claude Pane 显示匹配的回执 ID 并开始读取新一轮状态。
+- 两次正式回执均可由 CLI 查询；各自只有一份目标席位正确的投递记录。插件 `stop` 返回 `stopped`，协调器 PID 退出；最终 CLI 快照为 `host_state=unclaimed`、`binding_state=stale`、generation `2`。命名 Herdr 测试会话已停止。
 
-## 后续验收条件
+## 结果与边界
 
-`host confirm-candidate` 会持久记录 `human_asserted` 与 `reviewed_candidate_source`。只有人实际审阅候选及来源并明确确认后，才可调用此命令；Agent 或协调器不能代签。Lisa 的 `[NEEDS_WORK]` 候选仍需该确认，随后先恢复协调器，再正式提交并核对真实 Ralph 仅收到一次回执驱动提示。此试验已经验证 Ralph → Lisa，**尚未**验证 Lisa → Ralph 的完整闭环。
+这次在真实 Herdr 0.9.4 中验证了 Ralph → Lisa `NEEDS_WORK` → Ralph 的回执驱动双席交接，以及暂停/恢复、重复抑制与显式停止。`host confirm-candidate` 持久记录 `human_asserted` 与 `reviewed_candidate_source`，两次候选都经过此人工门禁；`source_verification` 仍为 `unverified`，CLI 不能独立证明文件由对应 Agent 写入。因此当前结果是**人工确认下的真实交接**，不等于无人逐轮操作。样板未启用测试门禁，也没有验收 `PASS`、测试失败或发布路径。后续需设计可核验的候选来源与受控提交，不能由插件代签人工声明。
