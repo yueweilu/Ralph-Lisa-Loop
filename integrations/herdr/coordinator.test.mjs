@@ -159,11 +159,19 @@ test("coordinator claims and binds observed seats, heartbeats, then releases on 
     await new Promise((resolve) => setTimeout(resolve, 5500));
     const lease = JSON.parse(fs.readFileSync(path.join(project, ".dual-agent", "host", "lease", "record.json")));
     assert.ok(lease.heartbeat_seq >= 1);
-    const host = (action, args = []) => {
-      const result = spawnSync(process.execPath, [cli, "host", action, "--project", project,
-        ...args, "--json"], { env, encoding: "utf8" });
-      assert.equal(result.status, 0, result.stdout + result.stderr);
-      return JSON.parse(result.stdout);
+    const host = async (action, args = []) => {
+      for (let attempt = 0; attempt < 20; attempt++) {
+        const result = spawnSync(process.execPath, [cli, "host", action, "--project", project,
+          ...args, "--json"], { env, encoding: "utf8" });
+        if (result.status === 0) return JSON.parse(result.stdout);
+        let value;
+        try { value = JSON.parse(result.stdout); } catch { /* Keep the original failure. */ }
+        if (value?.code !== "HOST_BUSY") {
+          assert.equal(result.status, 0, result.stdout + result.stderr);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      assert.fail(`host ${action} stayed busy after bounded retries`);
     };
     const promptRows = () => fs.existsSync(prompts)
       ? fs.readFileSync(prompts, "utf8").trim().split("\n").map((line) => JSON.parse(line)) : [];
@@ -177,29 +185,29 @@ test("coordinator claims and binds observed seats, heartbeats, then releases on 
       const record = sessionDir ? fs.readFileSync(path.join(sessionDir, "record.json"), "utf8") : "missing";
       assert.fail(`expected ${count} Herdr prompts, got ${promptRows().length}; record=${record}; output=${laterOutput}`);
     }
-    function submit(role, generation, content) {
+    async function submit(role, generation, content) {
       const candidateId = randomUUID();
       const requestId = randomUUID();
       const filename = `candidate-${generation}.md`;
       fs.writeFileSync(path.join(project, filename), content);
-      host("propose", ["--role", role, "--file", filename, "--candidate-id", candidateId]);
+      await host("propose", ["--role", role, "--file", filename, "--candidate-id", candidateId]);
       const args = ["--lease-id", started.lease_id, "--request-id", requestId,
         "--candidate-id", candidateId, "--expected-generation", String(generation),
         "--expected-binding-generation", String(started.binding_generation)];
-      const checked = host("commit-check", args);
+      const checked = await host("commit-check", args);
       assert.equal(checked.status, "awaiting_source_confirmation");
-      host("confirm-candidate", [...args, "--expected-content-sha256", checked.content_sha256,
+      await host("confirm-candidate", [...args, "--expected-content-sha256", checked.content_sha256,
         "--decision", "reviewed_candidate_source"]);
-      const receipt = host("commit", args);
+      const receipt = await host("commit", args);
       assert.equal(receipt.status, "committed");
       return receipt;
     }
-    const first = submit("ralph", 0, "[PLAN] Define the change.\n\nTest Plan: npm test\n");
+    const first = await submit("ralph", 0, "[PLAN] Define the change.\n\nTest Plan: npm test\n");
     assert.equal((await waitForPrompts(2))[1].role, "lisa");
-    assert.equal(host("receipt", ["--request-id", first.request_id]).request_id, first.request_id);
+    assert.equal((await host("receipt", ["--request-id", first.request_id])).request_id, first.request_id);
     await new Promise((resolve) => setTimeout(resolve, 1500));
     assert.equal(promptRows().length, 2, "polling must not replay a committed receipt");
-    const second = submit("lisa", 1,
+    const second = await submit("lisa", 1,
       "[NEEDS_WORK] Cover the missing case.\n\n- Issue at commands.ts:42 needs another check.\n");
     const rows = await waitForPrompts(3);
     assert.deepEqual(rows.map((row) => row.role), ["ralph", "lisa", "ralph"]);
