@@ -116,20 +116,29 @@ test("coordinator claims and binds observed seats, heartbeats, then releases on 
     assert.equal(JSON.parse(paused.stdout).status, "paused");
     const actionStatus = () => JSON.parse(spawnSync(process.execPath,
       [path.join(root, "actions.mjs"), "status"], { env, encoding: "utf8" }).stdout);
-    assert.equal(actionStatus().coordination.phase, "paused");
-    assert.equal(actionStatus().coordination.initial_status, "accepted");
+    async function stableActionStatus() {
+      for (let attempt = 0; attempt < 20; attempt++) {
+        const value = actionStatus();
+        if (value.coordination) return value;
+        assert.equal(value.code, "HOST_BUSY", JSON.stringify(value));
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      assert.fail("status stayed busy after bounded retries");
+    }
+    assert.equal((await stableActionStatus()).coordination.phase, "paused");
+    assert.equal((await stableActionStatus()).coordination.initial_status, "accepted");
     fs.writeFileSync(busyFile, "busy");
     const tooEarly = spawnSync(process.execPath, [coordinator, "resume"],
       { env, encoding: "utf8", timeout: 15000 });
     assert.equal(tooEarly.status, 4, tooEarly.stdout + tooEarly.stderr);
     assert.equal(JSON.parse(tooEarly.stdout).code, "AGENT_NOT_READY");
-    assert.equal(actionStatus().coordination.phase, "paused");
+    assert.equal((await stableActionStatus()).coordination.phase, "paused");
     fs.unlinkSync(busyFile);
     const resumed = spawnSync(process.execPath, [coordinator, "resume"],
       { env, encoding: "utf8", timeout: 15000 });
     assert.equal(resumed.status, 0, resumed.stdout + resumed.stderr);
     assert.equal(JSON.parse(resumed.stdout).status, "active");
-    assert.equal(actionStatus().coordination.phase, "active");
+    assert.equal((await stableActionStatus()).coordination.phase, "active");
     await new Promise((resolve) => setTimeout(resolve, 5500));
     const lease = JSON.parse(fs.readFileSync(path.join(project, ".dual-agent", "host", "lease", "record.json")));
     assert.ok(lease.heartbeat_seq >= 1);
