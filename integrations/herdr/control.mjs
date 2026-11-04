@@ -23,6 +23,11 @@ function show(action) {
       const { workspace_id, seats } = response.binding_plan;
       console.log(JSON.stringify({ workspace_id, seats }, null, 2));
     }
+    if (action === "recovery-check" && response.status === "review_required") {
+      console.log(JSON.stringify({ lease_id: response.cli?.lease_id,
+        plugin: response.plugin, plugin_warning: response.plugin_warning,
+        deliveries: response.deliveries, seats: response.seats }, null, 2));
+    }
   } catch {
     console.log(`${action}: probe failed (${result.error?.code ?? result.status ?? "unknown"})`);
   }
@@ -42,6 +47,7 @@ if (process.stdin.isTTY) {
     show("doctor");
     show("status");
     show("seat-preflight");
+    show("recovery-check");
   }
   input.close();
 }

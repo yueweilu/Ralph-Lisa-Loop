@@ -83,6 +83,17 @@ test("coordinator claims and binds observed seats, heartbeats, then releases on 
     assert.equal(started.status, "started", JSON.stringify(started));
     assert.equal(fs.readFileSync(prompts, "utf8").trim().split("\n").length, 1);
     assert.match(JSON.parse(fs.readFileSync(prompts, "utf8").trim()).message, /task\.md/);
+    const recovery = spawnSync(process.execPath,
+      [path.join(root, "actions.mjs"), "recovery-check"], { env, encoding: "utf8" });
+    assert.equal(recovery.status, 0, recovery.stdout + recovery.stderr);
+    const audited = JSON.parse(recovery.stdout);
+    assert.equal(audited.status, "review_required");
+    assert.equal(audited.cli.lease_id, started.lease_id);
+    assert.equal(audited.plugin.phase, "active");
+    assert.equal(audited.plugin.initial_status, "accepted");
+    assert.deepEqual(audited.deliveries.map((row) => [row.kind, row.status]),
+      [["initial", "accepted"]]);
+    assert.equal(audited.seats.ralph.observation, "matches_binding");
     const claimed = JSON.parse(spawnSync(process.execPath, [cli, "host", "snapshot", "--project", project, "--json"], {
       encoding: "utf8",
     }).stdout);
@@ -326,6 +337,19 @@ for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commi
       assert.equal(initial.status, "intent");
       assert.equal(initial.role, "ralph");
       assert.equal(fs.readFileSync(prompts, "utf8"), "ralph\n");
+      const recovery = spawnSync(process.execPath,
+        [path.join(root, "actions.mjs"), "recovery-check"], { env, encoding: "utf8" });
+      assert.equal(recovery.status, 0, recovery.stdout + recovery.stderr);
+      const audited = JSON.parse(recovery.stdout);
+      assert.equal(audited.plugin_warning, "DELIVERY_OUTCOME_UNCERTAIN");
+      assert.equal(audited.plugin.phase, "needs_reconcile");
+      assert.deepEqual(audited.deliveries.map((row) => [row.kind, row.status]),
+        [["initial", "intent"]]);
+      fs.writeFileSync(path.join(sessionDir, `initial-${record.session_id}.json`), "{broken");
+      const invalid = spawnSync(process.execPath,
+        [path.join(root, "actions.mjs"), "recovery-check"], { env, encoding: "utf8" });
+      assert.equal(invalid.status, 7);
+      assert.equal(JSON.parse(invalid.stdout).code, "PLUGIN_DELIVERY_INVALID");
       const duplicate = spawnSync(process.execPath, [coordinator, "start"],
         { env, encoding: "utf8" });
       assert.equal(duplicate.status, 3);

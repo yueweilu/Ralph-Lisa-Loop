@@ -6,7 +6,8 @@ import { fileURLToPath } from "node:url";
 
 const pluginRoot = path.dirname(fileURLToPath(import.meta.url));
 const MIN_HERDR = [0, 9, 4];
-const ACTIONS = new Set(["doctor", "status", "seat-preflight"]);
+const ACTIONS = new Set(["doctor", "status", "seat-preflight", "recovery-check"]);
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function emit(value, exitCode = 0) {
   process.stdout.write(`${JSON.stringify({ schema: 1, ...value })}\n`);
@@ -82,6 +83,110 @@ function coordinatorState(snapshot) {
       initial_status: record.initial_status ?? null,
       paused_at: record.paused_at ?? null, control_error: record.control_error ?? null };
   } catch { return { phase: "needs_reconcile", code: "PLUGIN_RECORD_INVALID" }; }
+}
+
+function regularJson(file, code = "PLUGIN_RECORD_INVALID") {
+  try {
+    const stat = fs.lstatSync(file);
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("invalid file");
+    const value = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (!value || typeof value !== "object" || Array.isArray(value))
+      throw new Error("invalid JSON object");
+    return value;
+  } catch { throw new Error(code); }
+}
+
+function recoveryPluginState(projectRealpath, cliEvidence) {
+  const root = process.env.HERDR_PLUGIN_STATE_DIR;
+  if (!root || !path.isAbsolute(root)) throw new Error("PLUGIN_STATE_DIR_REQUIRED");
+  const key = crypto.createHash("sha256").update(projectRealpath).digest("hex");
+  const dir = path.join(root, "sessions", key);
+  if (!fs.existsSync(dir)) return { record: null, deliveries: [], warning: "PLUGIN_RECORD_MISSING" };
+  const stat = fs.lstatSync(dir);
+  if (!stat.isDirectory() || stat.isSymbolicLink())
+    throw new Error("PLUGIN_RECORD_INVALID");
+  const recordPath = path.join(dir, "record.json");
+  if (!fs.existsSync(recordPath))
+    return { record: null, deliveries: [], warning: "PLUGIN_RECORD_MISSING" };
+  const record = regularJson(recordPath);
+  if (record.project_realpath !== projectRealpath ||
+      record.session_id !== cliEvidence.session_id ||
+      record.lease_id !== cliEvidence.lease_id ||
+      record.owner_id !== cliEvidence.owner_id ||
+      !UUID.test(record.owner_id ?? "")) throw new Error("PLUGIN_LEASE_MISMATCH");
+  if (!Number.isSafeInteger(record.pid) || record.pid < 1 ||
+      typeof record.phase !== "string") throw new Error("PLUGIN_RECORD_INVALID");
+  const names = fs.readdirSync(dir).filter((name) =>
+    name.startsWith("initial-") || name.startsWith("delivery-"));
+  const deliveries = names.map((name) => {
+    if (!/^(?:initial|delivery)-[0-9a-f-]{36}\.json$/i.test(name))
+      throw new Error("PLUGIN_DELIVERY_INVALID");
+    const value = regularJson(path.join(dir, name), "PLUGIN_DELIVERY_INVALID");
+    if (!UUID.test(name.slice(name.indexOf("-") + 1, -5)) ||
+        !["intent", "accepted"].includes(value.status) ||
+        value.owner_id !== record.owner_id || value.lease_id !== record.lease_id ||
+        !["ralph", "lisa"].includes(value.role) ||
+        !Number.isSafeInteger(value.generation) || value.generation < 0 ||
+        (name.startsWith("initial-") ? value.session_id !== record.session_id ||
+          name.slice(8, -5) !== record.session_id || value.generation !== 0 :
+          value.request_id !== name.slice(9, -5)))
+      throw new Error("PLUGIN_DELIVERY_INVALID");
+    return { kind: name.startsWith("initial-") ? "initial" : "handoff",
+      status: value.status, role: value.role, generation: value.generation ?? null,
+      id: name.slice(name.indexOf("-") + 1, -5) };
+  }).sort((a, b) => a.generation - b.generation || a.id.localeCompare(b.id));
+  return { record: { phase: record.phase, pid: record.pid,
+    session_id: record.session_id, owner_id: record.owner_id,
+    lease_id: record.lease_id, binding_generation: record.binding_generation ?? null,
+    cursor_generation: record.cursor_generation ?? null,
+    cursor_receipt_id: record.cursor_receipt_id ?? null,
+    initial_status: record.initial_status ?? null,
+    error: record.error ?? null }, deliveries,
+    warning: deliveries.some((item) => item.status === "intent") ?
+      "DELIVERY_OUTCOME_UNCERTAIN" : null };
+}
+
+function recoverySeats(herdr, projectRealpath, recordPlan) {
+  if (!recordPlan?.seats || !recordPlan.workspace_id) return null;
+  const seats = {};
+  for (const [role, kind] of [["ralph", "claude"], ["lisa", "codex"]]) {
+    const result = invoke(herdr, ["agent", "get", role]);
+    const agent = readJson(result)?.result?.agent;
+    let cwd = null;
+    try { cwd = fs.realpathSync.native(agent.cwd); } catch { /* Unavailable is not proof of exit. */ }
+    seats[role] = { observation: result.code !== 0 || !agent ? "unavailable" :
+      agent.name === role && agent.agent === kind &&
+      agent.workspace_id === recordPlan.workspace_id &&
+      agent.pane_id === recordPlan.seats[role]?.pane_id && cwd === projectRealpath ?
+        "matches_binding" : "identity_changed",
+      status: agent?.agent_status ?? null,
+      pane_id: agent?.pane_id ?? null };
+  }
+  return seats;
+}
+
+function recoveryAudit(diagnosis, project) {
+  const checked = invoke(diagnosis.cli, ["host", "recovery-check", "--project", project, "--json"]);
+  const evidence = readJson(checked);
+  if (checked.code !== 0 || evidence?.status !== "review_required") {
+    emit({ status: "not_ready", code: evidence?.code || "RLL_RECOVERY_CHECK_FAILED",
+      project }, checked.code === 7 ? 7 : 4);
+    return;
+  }
+  try {
+    const plugin = recoveryPluginState(evidence.project_realpath, evidence);
+    const key = crypto.createHash("sha256").update(evidence.project_realpath).digest("hex");
+    const recordPath = path.join(process.env.HERDR_PLUGIN_STATE_DIR, "sessions", key, "record.json");
+    const plan = plugin.record ? regularJson(recordPath).plan : null;
+    emit({ status: "review_required", project: evidence.project_realpath,
+      cli: evidence, plugin: plugin.record, deliveries: plugin.deliveries,
+      plugin_warning: plugin.warning,
+      seats: recoverySeats(diagnosis.herdr, evidence.project_realpath, plan),
+      note: "Read-only observations do not prove coordinator or Agents stopped; inspect before recover-lease." });
+  } catch (error) {
+    emit({ status: "needs_reconcile", code: error.message || "PLUGIN_RECOVERY_INVALID",
+      project: evidence.project_realpath, cli: evidence }, 7);
+  }
 }
 
 function diagnostics(config) {
@@ -202,6 +307,10 @@ function main() {
   if (!diagnosis.checks.rll_cli.ok) {
     emit({ status: "needs_setup", code: "RLL_HOST_CONTRACT_REQUIRED",
       project, checks: diagnosis.checks });
+    return;
+  }
+  if (action === "recovery-check") {
+    recoveryAudit(diagnosis, project);
     return;
   }
   const observed = invoke(diagnosis.cli, ["host", "snapshot", "--project", project, "--json"]);

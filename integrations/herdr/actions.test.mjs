@@ -134,6 +134,17 @@ test("status reads one initialized project without creating host state", () => {
   assert.equal(mismatch.value.code, "PROJECT_REQUIRED");
 });
 
+test("recovery-check reports an unclaimed session without changing it", () => {
+  fs.mkdirSync(project);
+  const init = spawnSync(process.execPath, [cli, "init", "--minimal", project], { encoding: "utf8" });
+  assert.equal(init.status, 0, init.stderr);
+  config({ project });
+  const result = run("recovery-check");
+  assert.equal(result.code, 4);
+  assert.equal(result.value.code, "HOST_NOT_CLAIMED");
+  assert.equal(fs.existsSync(path.join(project, ".dual-agent", "host", "lease")), false);
+});
+
 test("status rejects ambiguous project and malformed settings", () => {
   const ambiguous = run("status");
   assert.equal(ambiguous.code, 3);
