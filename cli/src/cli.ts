@@ -242,6 +242,8 @@ function showHelp(): void {
   console.log("  ralph-lisa host snapshot --project <abs> --json  Consistent host and RLL state digest");
   console.log("  ralph-lisa host prepare-generation --project <abs> --lease-id <uuid> --expected-digest <sha256> --json");
   console.log("  ralph-lisa host propose --project <abs> --role <ralph|lisa> --file <project-path> --candidate-id <uuid> --json");
+  console.log("  ralph-lisa host candidates --project <abs> --json  List immutable candidate metadata");
+  console.log("  ralph-lisa host candidate-show --project <abs> --candidate-id <uuid> --json  Read candidate content for review");
   console.log("  ralph-lisa host receipt --project <abs> --request-id <uuid> --json  Read one request without replay");
   console.log("  ralph-lisa host release --project <abs> --lease-id <uuid> --json");
   console.log("  ralph-lisa status                   Show current status");

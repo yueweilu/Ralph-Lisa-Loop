@@ -5,7 +5,7 @@ import { bindSeat } from "./binding.js";
 import { adoptLegacy, confirmAdoption } from "./adoption.js";
 import { leaseRecoveryCheck, recoverLease } from "./recovery.js";
 import { prepareGeneration } from "./generation.js";
-import { proposeCandidate } from "./candidate.js";
+import { proposeCandidate, reviewCandidates } from "./candidate.js";
 import { receiptStatus } from "./receipt.js";
 import { checkHostCommit } from "./commit-check.js";
 import { confirmCandidateSource } from "./confirmation.js";
@@ -102,6 +102,16 @@ export function cmdHost(args: string[]): void {
         result = proposeCandidate(opts["--project"], opts["--role"], opts["--file"], opts["--candidate-id"]);
         break;
       }
+      case "candidates": {
+        const opts = options(args.slice(1), ["--project"]);
+        result = reviewCandidates(opts["--project"]);
+        break;
+      }
+      case "candidate-show": {
+        const opts = options(args.slice(1), ["--project", "--candidate-id"]);
+        result = reviewCandidates(opts["--project"], opts["--candidate-id"]);
+        break;
+      }
       case "receipt": {
         const opts = options(args.slice(1), ["--project", "--request-id"]);
         result = receiptStatus(opts["--project"], opts["--request-id"]);
@@ -147,7 +157,7 @@ export function cmdHost(args: string[]): void {
         break;
       }
       default:
-        throw new HostContractError("UNKNOWN_HOST_COMMAND", 2, "Usage: ralph-lisa host <inspect|adopt|confirm-adoption|claim|heartbeat|command-lock-check|retire-command-lock|recovery-check|recover-lease|bind-seat|snapshot|prepare-generation|propose|commit-check|confirm-candidate|commit|receipt|release> ... --json");
+        throw new HostContractError("UNKNOWN_HOST_COMMAND", 2, "Usage: ralph-lisa host <inspect|adopt|confirm-adoption|claim|heartbeat|command-lock-check|retire-command-lock|recovery-check|recover-lease|bind-seat|snapshot|prepare-generation|propose|candidates|candidate-show|commit-check|confirm-candidate|commit|receipt|release> ... --json");
     }
     console.log(JSON.stringify(result));
   } catch (error) {

@@ -84,6 +84,48 @@ describe("host candidate inbox", () => {
     prepare(lease.lease_id);
   });
 
+  it("lists review evidence and reads the exact stored body without changing the turn", () => {
+    const lease = claim();
+    bind(lease.lease_id);
+    prepare(lease.lease_id);
+    const candidate = JSON.parse(propose(randomUUID()).stdout);
+    const state = path.join(project, ".dual-agent");
+    const before = ["work.md", "review.md", "turn.txt", "round.txt"].map((name) =>
+      fs.readFileSync(path.join(state, name)));
+    fs.writeFileSync(path.join(project, "proposal.md"), "[PLAN] Changed after proposal\n");
+    const listed = run("host", "candidates", "--project", project, "--json");
+    assert.equal(listed.status, 0, listed.stdout);
+    const summary = JSON.parse(listed.stdout);
+    assert.equal(summary.session_id, candidate.session_id);
+    assert.equal(summary.candidates.length, 1);
+    assert.equal(summary.candidates[0].content_sha256, candidate.content_sha256);
+    assert.equal("content" in summary.candidates[0], false);
+    const shown = run("host", "candidate-show", "--project", project,
+      "--candidate-id", candidate.candidate_id.toUpperCase(), "--json");
+    assert.equal(shown.status, 0, shown.stdout);
+    assert.equal(JSON.parse(shown.stdout).content, "[PLAN] Review the task\n");
+    assert.equal(JSON.parse(shown.stdout).candidate.source_verification, "unverified");
+    assert.equal(run("host", "candidate-show", "--project", project,
+      "--candidate-id", randomUUID(), "--json").status, 5);
+    assert.equal(run("host", "candidate-show", "--project", project,
+      "--candidate-id", "../work.md", "--json").status, 2);
+    ["work.md", "review.md", "turn.txt", "round.txt"].forEach((name, index) =>
+      assert.deepEqual(fs.readFileSync(path.join(state, name)), before[index]));
+    assert.equal(JSON.parse(snapshot().stdout).last_receipt_id, null);
+  });
+
+  it("fails closed when a stored body is changed before review", () => {
+    const lease = claim();
+    bind(lease.lease_id);
+    prepare(lease.lease_id);
+    const candidate = JSON.parse(propose(randomUUID()).stdout);
+    fs.appendFileSync(path.join(project, ".dual-agent", "host", "candidates",
+      candidate.candidate_id, "content.txt"), "tampered\n");
+    assert.equal(run("host", "candidates", "--project", project, "--json").status, 7);
+    assert.equal(run("host", "candidate-show", "--project", project,
+      "--candidate-id", candidate.candidate_id, "--json").status, 7);
+  });
+
   it("returns an identical candidate on retry and rejects different content for one ID", () => {
     const lease = claim();
     bind(lease.lease_id);

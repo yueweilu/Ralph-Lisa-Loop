@@ -10,6 +10,7 @@ import { acquireHostLock, assertAdoptionReady, assertNoManualRuntime, assertNoPe
 import { committedReceiptLedger } from "./receipt-store.js";
 import { rejectedReceiptInventory } from "./rejection.js";
 import { humanConfirmationInventory } from "./confirmation.js";
+import { snapshotProject } from "./snapshot.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -126,6 +127,44 @@ export function candidateInventory(host: string, project: string, state: string,
     hash.update(id).update("\0").update(JSON.stringify(record)).update("\0");
   }
   return { count: candidates.length, digest: hash.digest("hex"), candidates };
+}
+
+/** Read immutable candidate evidence through the host contract, without asserting its source. */
+export function reviewCandidates(project: string, candidateId?: string): object {
+  if (candidateId !== undefined && !UUID.test(candidateId)) {
+    throw new HostContractError("INVALID_ARGUMENTS", 2, "--candidate-id must be a UUID");
+  }
+  const root = canonicalProject(project);
+  // Snapshot checks the complete host history before any candidate is exposed.
+  const snapshot = snapshotProject(root);
+  const release = acquireHostLock(snapshot.state_realpath);
+  try {
+    const current = inspectProject(root);
+    if (current.session_id !== snapshot.session_id || current.state_realpath !== snapshot.state_realpath ||
+        businessDigest(snapshot.state_realpath, current.turn!, current.round!, current.step!) !== snapshot.state_digest) {
+      throw new HostContractError("STALE_SESSION", 5, "Session changed while reading candidates");
+    }
+    const inventory = candidateInventory(path.join(snapshot.state_realpath, "host"),
+      root, snapshot.state_realpath, snapshot.session_id);
+    if (candidateId === undefined) {
+      return { schema: 1, status: "ok", project_realpath: root,
+        session_id: snapshot.session_id, candidates: inventory.candidates };
+    }
+    const candidate = inventory.candidates.find((item) => item.candidate_id === candidateId.toLowerCase());
+    if (!candidate) throw new HostContractError("CANDIDATE_NOT_FOUND", 5, "No candidate for this ID");
+    let content: string;
+    try {
+      const bytes = fs.readFileSync(path.join(snapshot.state_realpath, "host", "candidates",
+        candidate.candidate_id, "content.txt"));
+      if (sha256(bytes) !== candidate.content_sha256) throw new Error("candidate changed");
+      content = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch {
+      throw new HostContractError("NEEDS_RECONCILE", 7, "Candidate content changed during review");
+    }
+    return { schema: 1, status: "ok", candidate, content };
+  } finally {
+    release();
+  }
 }
 
 function readProjectContent(project: string, file: string): Buffer {
