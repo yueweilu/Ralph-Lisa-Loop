@@ -80,6 +80,78 @@ function failRecord(paths, record, code) {
   emit({ status: "needs_reconcile", code, project: paths.real }, 7);
 }
 
+function requireActiveSnapshot(result, paths, record, plan) {
+  const value = result.value;
+  if (result.code !== 0 || value?.status !== "ok" ||
+      value.project_realpath !== paths.real || value.session_id !== record.session_id ||
+      value.host_state !== "claimed" || value.owner_id !== record.owner_id ||
+      value.binding_state !== "bound" || value.binding_generation !== record.binding_generation ||
+      value.workspace_id !== plan.workspace_id ||
+      value.seats?.ralph?.pane_id !== plan.seats.ralph.pane_id ||
+      value.seats?.lisa?.pane_id !== plan.seats.lisa.pane_id ||
+      !Number.isSafeInteger(value.generation) || value.generation < 0)
+    throw new Error(value?.code || "ACTIVE_SNAPSHOT_MISMATCH");
+  return value;
+}
+
+function deliveryFile(paths, requestId) {
+  if (!UUID.test(requestId)) throw new Error("INVALID_RECEIPT_ID");
+  return path.join(paths.dir, `delivery-${requestId.toLowerCase()}.json`);
+}
+
+function checkDelivery(paths, record, cli, herdr, plan) {
+  const snapshot = requireActiveSnapshot(call(cli, ["host", "snapshot", "--project", paths.real,
+    "--json"]), paths, record, plan);
+  if (snapshot.generation === record.cursor_generation) {
+    if (snapshot.last_receipt_id !== record.cursor_receipt_id ||
+        snapshot.turn !== record.cursor_turn)
+      throw new Error("RECEIPT_CURSOR_MISMATCH");
+    return record;
+  }
+  if (snapshot.generation !== record.cursor_generation + 1 ||
+      !UUID.test(snapshot.last_receipt_id ?? "")) throw new Error("MISSED_RECEIPT");
+  const result = call(cli, ["host", "receipt", "--project", paths.real,
+    "--request-id", snapshot.last_receipt_id, "--json"]);
+  const receipt = result.value;
+  if (result.code !== 0 || receipt?.status !== "committed" ||
+      receipt.request_id !== snapshot.last_receipt_id ||
+      receipt.project_realpath !== paths.real || receipt.session_id !== record.session_id ||
+      receipt.lease_id !== record.lease_id ||
+      receipt.binding_generation !== record.binding_generation ||
+      receipt.generation_before !== record.cursor_generation ||
+      receipt.generation_after !== snapshot.generation ||
+      receipt.role !== (record.cursor_turn === "ralph" ? "ralph" : "lisa") ||
+      receipt.turn_after !== snapshot.turn || receipt.turn_after === receipt.role ||
+      receipt.round_after !== snapshot.round || receipt.step_after !== snapshot.step ||
+      receipt.state_digest_after !== snapshot.state_digest ||
+      receipt.source_confirmation !== "human_asserted" ||
+      receipt.source_verification !== "unverified")
+    throw new Error(receipt?.code || "RECEIPT_MISMATCH");
+  const role = receipt.turn_after;
+  verifySeat(herdr, plan, role, role === "ralph" ? "claude" : "codex");
+  const message = `Ralph-Lisa committed handoff. Project: ${paths.real}. Session: ${record.session_id}. ` +
+    `Receipt: ${receipt.request_id}. Generation: ${receipt.generation_after}. ` +
+    `It is your ${role} turn in round ${receipt.round_after}. Read the current RLL state and ` +
+    "work/review files before acting. Submit through the RLL host contract; preserve its human source confirmation gate.";
+  const file = deliveryFile(paths, receipt.request_id);
+  const intent = { schema: 1, status: "intent", owner_id: record.owner_id,
+    lease_id: record.lease_id, request_id: receipt.request_id,
+    generation: receipt.generation_after, role, workspace_id: plan.workspace_id,
+    pane_id: plan.seats[role].pane_id,
+    message_sha256: crypto.createHash("sha256").update(message).digest("hex") };
+  durableWrite(file, intent, true);
+  const submitted = call(herdr, ["agent", "prompt", role, message]);
+  if (submitted.code !== 0 || !submitted.value?.result || submitted.value?.error)
+    throw new Error(submitted.value?.error?.code || submitted.error || "PROMPT_UNCERTAIN");
+  durableWrite(file, { ...intent, status: "accepted" });
+  const next = { ...record, cursor_generation: receipt.generation_after,
+    cursor_receipt_id: receipt.request_id, cursor_turn: role };
+  durableWrite(paths.record, next);
+  emit({ status: "handed_off", project: paths.real, request_id: receipt.request_id,
+    generation: receipt.generation_after, role, pane_id: intent.pane_id });
+  return next;
+}
+
 function verifySeat(herdr, plan, role, kind) {
   const result = call(herdr, ["agent", "get", role]);
   const agent = result.value?.result?.agent;
@@ -190,6 +262,11 @@ async function start() {
     emit({ status: "not_ready", code: error.message || "PROJECT_NOT_READY" }, 3);
     return;
   }
+  if (initial.generation !== null &&
+      (initial.generation !== 0 || initial.last_receipt_id !== null)) {
+    emit({ status: "not_ready", code: "EXISTING_GENERATION_REQUIRES_RECOVERY" }, 3);
+    return;
+  }
   const preflight = call([process.execPath, path.join(root, "actions.mjs")], ["seat-preflight"]);
   const bootNeeded = preflight.value?.code === "AGENT_MISSING";
   let plan = preflight.value?.status === "ready" ? preflight.value?.binding_plan : null;
@@ -252,7 +329,15 @@ async function start() {
         current.value?.seats?.lisa?.pane_id !== plan.seats.lisa.pane_id) {
       throw new Error("BINDING_SNAPSHOT_MISMATCH");
     }
-    record = { ...record, phase: "active", binding_generation: current.value.binding_generation };
+    const prepared = call(cli, ["host", "prepare-generation", "--project", paths.real,
+      "--lease-id", lease.lease_id, "--expected-digest", current.value.state_digest, "--json"]);
+    if (prepared.code !== 0 || prepared.value?.status !== "ready" ||
+        prepared.value.session_id !== plan.session_id ||
+        prepared.value.state_digest !== current.value.state_digest ||
+        prepared.value.generation !== 0 || prepared.value.last_receipt_id !== null)
+      throw new Error(prepared.value?.code || "GENERATION_BASELINE_UNCERTAIN");
+    record = { ...record, phase: "active", binding_generation: current.value.binding_generation,
+      cursor_generation: 0, cursor_receipt_id: null, cursor_turn: prepared.value.turn };
     durableWrite(paths.record, record);
     emit({ status: "started", project: paths.real, workspace_id: plan.workspace_id,
       binding_generation: record.binding_generation, owner_id: ownerId, lease_id: lease.lease_id });
@@ -263,6 +348,11 @@ async function start() {
         const request = readRecord(paths.stop);
         if (request.owner_id !== ownerId || request.lease_id !== lease.lease_id)
           throw new Error("STOP_REQUEST_MISMATCH");
+        const stoppedAt = requireActiveSnapshot(call(cli, ["host", "snapshot", "--project",
+          paths.real, "--json"]), paths, record, plan);
+        if (stoppedAt.generation !== record.cursor_generation ||
+            stoppedAt.last_receipt_id !== record.cursor_receipt_id)
+          throw new Error("UNDELIVERED_RECEIPT_ON_STOP");
         const released = call(cli, ["host", "release", "--project", paths.real,
           "--lease-id", lease.lease_id, "--json"]);
         if (released.code !== 0 || released.value?.status !== "released")
@@ -274,6 +364,7 @@ async function start() {
         emit({ status: "stopped", project: paths.real, owner_id: ownerId });
         return;
       }
+      record = checkDelivery(paths, record, cli, herdr, plan);
       if (++ticks % 5 === 0) {
         const heartbeat = call(cli, ["host", "heartbeat", "--project", paths.real,
           "--lease-id", lease.lease_id, "--owner-id", ownerId, "--json"]);

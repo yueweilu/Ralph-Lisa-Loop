@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -45,6 +46,7 @@ test("coordinator claims and binds observed seats, heartbeats, then releases on 
   const fakeHerdr = path.join(temp, "herdr");
   const fakeClaude = path.join(temp, "claude");
   const fakeCodex = path.join(temp, "codex");
+  const prompts = path.join(temp, "prompts.jsonl");
   fs.mkdirSync(project);
   fs.mkdirSync(configDir);
   fs.mkdirSync(stateDir);
@@ -56,6 +58,7 @@ test("coordinator claims and binds observed seats, heartbeats, then releases on 
     `if(a[0]==='--version') console.log('herdr 0.9.4');\n` +
     `else if(a[0]==='integration') console.log('claude: not installed\\ncodex: not installed');\n` +
     `else if(a[0]==='agent'&&a[1]==='get'){const role=a[2];console.log(JSON.stringify({result:{agent:{name:role,agent:role==='ralph'?'claude':'codex',workspace_id:'w1',pane_id:role==='ralph'?'w1:p1':'w1:p2',cwd:process.env.FAKE_PROJECT,interactive_ready:true,agent_status:'idle'}}}));}\n` +
+    `else if(a[0]==='agent'&&a[1]==='prompt'){require('node:fs').appendFileSync(process.env.FAKE_PROMPTS,JSON.stringify({role:a[2],message:a[3]})+'\\n');console.log(JSON.stringify({result:{accepted:true}}));}\n` +
     `else process.exit(2);\n`);
   fs.writeFileSync(fakeClaude, `#!${process.execPath}\nconsole.log('{"loggedIn":true}');\n`);
   fs.writeFileSync(fakeCodex, `#!${process.execPath}\nconsole.log('Logged in using ChatGPT');\n`);
@@ -69,7 +72,7 @@ test("coordinator claims and binds observed seats, heartbeats, then releases on 
     CLAUDE_BIN_PATH: fakeClaude, CODEX_BIN_PATH: fakeCodex,
     HERDR_PLUGIN_CONFIG_DIR: configDir, HERDR_PLUGIN_STATE_DIR: stateDir,
     HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({ workspace_id: "w1", workspace_cwd: project }),
-    FAKE_PROJECT: project };
+    FAKE_PROJECT: project, FAKE_PROMPTS: prompts };
   const child = spawn(process.execPath, [coordinator, "start"], { env, stdio: ["ignore", "pipe", "pipe"] });
   try {
     const started = await waitForLine(child, (value) => value.status === "started" || value.status === "needs_reconcile");
@@ -88,6 +91,59 @@ test("coordinator claims and binds observed seats, heartbeats, then releases on 
     await new Promise((resolve) => setTimeout(resolve, 5500));
     const lease = JSON.parse(fs.readFileSync(path.join(project, ".dual-agent", "host", "lease", "record.json")));
     assert.ok(lease.heartbeat_seq >= 1);
+    const host = (action, args = []) => {
+      const result = spawnSync(process.execPath, [cli, "host", action, "--project", project,
+        ...args, "--json"], { env, encoding: "utf8" });
+      assert.equal(result.status, 0, result.stdout + result.stderr);
+      return JSON.parse(result.stdout);
+    };
+    const promptRows = () => fs.existsSync(prompts)
+      ? fs.readFileSync(prompts, "utf8").trim().split("\n").map((line) => JSON.parse(line)) : [];
+    async function waitForPrompts(count) {
+      for (let i = 0; i < 40; i++) {
+        if (promptRows().length >= count) return promptRows();
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+      assert.fail(`expected ${count} Herdr prompts, got ${promptRows().length}`);
+    }
+    function submit(role, generation, content) {
+      const candidateId = randomUUID();
+      const requestId = randomUUID();
+      const filename = `candidate-${generation}.md`;
+      fs.writeFileSync(path.join(project, filename), content);
+      host("propose", ["--role", role, "--file", filename, "--candidate-id", candidateId]);
+      const args = ["--lease-id", started.lease_id, "--request-id", requestId,
+        "--candidate-id", candidateId, "--expected-generation", String(generation),
+        "--expected-binding-generation", String(started.binding_generation)];
+      const checked = host("commit-check", args);
+      assert.equal(checked.status, "awaiting_source_confirmation");
+      host("confirm-candidate", [...args, "--expected-content-sha256", checked.content_sha256,
+        "--decision", "reviewed_candidate_source"]);
+      const receipt = host("commit", args);
+      assert.equal(receipt.status, "committed");
+      return receipt;
+    }
+    const first = submit("ralph", 0, "[PLAN] Define the change.\n\nTest Plan: npm test\n");
+    assert.equal((await waitForPrompts(1))[0].role, "lisa");
+    assert.equal(host("receipt", ["--request-id", first.request_id]).request_id, first.request_id);
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    assert.equal(promptRows().length, 1, "polling must not replay a committed receipt");
+    const second = submit("lisa", 1,
+      "[NEEDS_WORK] Cover the missing case.\n\n- Issue at commands.ts:42 needs another check.\n");
+    const rows = await waitForPrompts(2);
+    assert.deepEqual(rows.map((row) => row.role), ["lisa", "ralph"]);
+    assert.match(rows[0].message, new RegExp(first.request_id));
+    assert.match(rows[1].message, new RegExp(second.request_id));
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    assert.equal(promptRows().length, 2);
+    const pluginDir = path.join(stateDir, "sessions");
+    const sessionDir = path.join(pluginDir, fs.readdirSync(pluginDir)[0]);
+    for (const receipt of [first, second]) {
+      const delivery = JSON.parse(fs.readFileSync(path.join(sessionDir,
+        `delivery-${receipt.request_id}.json`), "utf8"));
+      assert.equal(delivery.status, "accepted");
+      assert.equal(delivery.generation, receipt.generation_after);
+    }
     const stopped = spawnSync(process.execPath, [coordinator, "stop"], { env, encoding: "utf8", timeout: 15000 });
     assert.equal(stopped.status, 0, stopped.stdout + stopped.stderr);
     assert.equal(JSON.parse(stopped.stdout).status, "stopped");
@@ -96,7 +152,7 @@ test("coordinator claims and binds observed seats, heartbeats, then releases on 
     }).stdout);
     assert.equal(released.host_state, "unclaimed");
     assert.equal(released.binding_state, "stale");
-    assert.equal(released.state_digest, before.state_digest);
+    assert.equal(released.state_digest, second.state_digest_after);
   } finally {
     child.kill("SIGTERM");
     fs.rmSync(temp, { recursive: true, force: true });
@@ -171,6 +227,81 @@ test("start creates both seats and waits for a blocked agent before claiming", a
     assert.equal(released.host_state, "unclaimed");
     assert.equal(released.state_digest, before.state_digest);
     assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(fakeState, "utf8")).agents), ["ralph", "lisa"]);
+  } finally {
+    child.kill("SIGTERM");
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test("uncertain Herdr prompt keeps one durable intent and stops without replay", async () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "rll-herdr-uncertain-"));
+  const project = path.join(temp, "project");
+  const configDir = path.join(temp, "config");
+  const stateDir = path.join(temp, "state");
+  const prompts = path.join(temp, "prompts.txt");
+  const fakeHerdr = path.join(temp, "herdr");
+  const fakeClaude = path.join(temp, "claude");
+  const fakeCodex = path.join(temp, "codex");
+  for (const dir of [project, configDir, stateDir]) fs.mkdirSync(dir);
+  fs.writeFileSync(path.join(configDir, "settings.json"), JSON.stringify({
+    project, rll_cli_argv: [process.execPath, cli],
+  }));
+  fs.writeFileSync(fakeHerdr, `#!${process.execPath}\n` +
+    `const a=process.argv.slice(2);` +
+    `if(a[0]==='--version')console.log('herdr 0.9.4');` +
+    `else if(a[0]==='integration')console.log('claude: current (v10)\\ncodex: current (v9)');` +
+    `else if(a[0]==='agent'&&a[1]==='get'){const role=a[2];console.log(JSON.stringify({result:{agent:{name:role,agent:role==='ralph'?'claude':'codex',workspace_id:'w1',pane_id:role==='ralph'?'w1:p1':'w1:p2',cwd:process.env.FAKE_PROJECT,interactive_ready:true,agent_status:'idle'}}}));}` +
+    `else if(a[0]==='agent'&&a[1]==='prompt'){require('node:fs').appendFileSync(process.env.FAKE_PROMPTS,a[2]+'\\n');console.error(JSON.stringify({error:{code:'timeout'}}));process.exitCode=1;}` +
+    `else process.exitCode=2;\n`);
+  fs.writeFileSync(fakeClaude, `#!${process.execPath}\nconsole.log('{"loggedIn":true}');\n`);
+  fs.writeFileSync(fakeCodex, `#!${process.execPath}\nconsole.log('Logged in using ChatGPT');\n`);
+  for (const file of [fakeHerdr, fakeClaude, fakeCodex]) fs.chmodSync(file, 0o700);
+  const init = spawnSync(process.execPath, [cli, "init", "--minimal", project], { encoding: "utf8" });
+  assert.equal(init.status, 0, init.stderr);
+  const env = { ...process.env, HERDR_BIN_PATH: fakeHerdr,
+    CLAUDE_BIN_PATH: fakeClaude, CODEX_BIN_PATH: fakeCodex,
+    HERDR_PLUGIN_CONFIG_DIR: configDir, HERDR_PLUGIN_STATE_DIR: stateDir,
+    HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({ workspace_id: "w1", workspace_cwd: project }),
+    FAKE_PROJECT: project, FAKE_PROMPTS: prompts };
+  const child = spawn(process.execPath, [coordinator, "start"],
+    { env, stdio: ["ignore", "pipe", "pipe"] });
+  try {
+    const started = await waitForLine(child, (value) => value.status === "started");
+    const host = (action, args = []) => {
+      const result = spawnSync(process.execPath, [cli, "host", action,
+        "--project", project, ...args, "--json"], { env, encoding: "utf8" });
+      assert.equal(result.status, 0, result.stdout + result.stderr);
+      return JSON.parse(result.stdout);
+    };
+    const candidateId = randomUUID();
+    const requestId = randomUUID();
+    fs.writeFileSync(path.join(project, "candidate.md"),
+      "[PLAN] Define the change.\n\nTest Plan: npm test\n");
+    host("propose", ["--role", "ralph", "--file", "candidate.md", "--candidate-id", candidateId]);
+    const args = ["--lease-id", started.lease_id, "--request-id", requestId,
+      "--candidate-id", candidateId, "--expected-generation", "0",
+      "--expected-binding-generation", String(started.binding_generation)];
+    const checked = host("commit-check", args);
+    host("confirm-candidate", [...args, "--expected-content-sha256", checked.content_sha256,
+      "--decision", "reviewed_candidate_source"]);
+    host("commit", args);
+    const sessionDir = path.join(stateDir, "sessions", fs.readdirSync(path.join(stateDir, "sessions"))[0]);
+    let record;
+    for (let i = 0; i < 40; i++) {
+      record = JSON.parse(fs.readFileSync(path.join(sessionDir, "record.json"), "utf8"));
+      if (record.phase === "needs_reconcile") break;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    assert.equal(record.phase, "needs_reconcile");
+    assert.equal(record.error, "timeout");
+    const delivery = JSON.parse(fs.readFileSync(path.join(sessionDir,
+      `delivery-${requestId}.json`), "utf8"));
+    assert.equal(delivery.status, "intent");
+    assert.equal(delivery.role, "lisa");
+    assert.equal(fs.readFileSync(prompts, "utf8"), "lisa\n");
+    const stopped = spawnSync(process.execPath, [coordinator, "stop"], { env, encoding: "utf8" });
+    assert.equal(stopped.status, 7);
+    assert.equal(host("snapshot").host_state, "claimed");
   } finally {
     child.kill("SIGTERM");
     fs.rmSync(temp, { recursive: true, force: true });
