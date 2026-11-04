@@ -47,6 +47,7 @@ test("coordinator claims and binds observed seats, heartbeats, then releases on 
   const fakeClaude = path.join(temp, "claude");
   const fakeCodex = path.join(temp, "codex");
   const prompts = path.join(temp, "prompts.jsonl");
+  const busyFile = path.join(temp, "lisa-busy");
   fs.mkdirSync(project);
   fs.mkdirSync(configDir);
   fs.mkdirSync(stateDir);
@@ -57,7 +58,7 @@ test("coordinator claims and binds observed seats, heartbeats, then releases on 
     `const a=process.argv.slice(2);\n` +
     `if(a[0]==='--version') console.log('herdr 0.9.4');\n` +
     `else if(a[0]==='integration') console.log('claude: not installed\\ncodex: not installed');\n` +
-    `else if(a[0]==='agent'&&a[1]==='get'){const role=a[2];console.log(JSON.stringify({result:{agent:{name:role,agent:role==='ralph'?'claude':'codex',workspace_id:'w1',pane_id:role==='ralph'?'w1:p1':'w1:p2',cwd:process.env.FAKE_PROJECT,interactive_ready:true,agent_status:'idle'}}}));}\n` +
+    `else if(a[0]==='agent'&&a[1]==='get'){const role=a[2];console.log(JSON.stringify({result:{agent:{name:role,agent:role==='ralph'?'claude':'codex',workspace_id:'w1',pane_id:role==='ralph'?'w1:p1':'w1:p2',cwd:process.env.FAKE_PROJECT,interactive_ready:true,agent_status:role==='lisa'&&require('node:fs').existsSync(process.env.FAKE_BUSY_FILE)?'working':'idle'}}}));}\n` +
     `else if(a[0]==='agent'&&a[1]==='prompt'){const role=a[2];require('node:fs').appendFileSync(process.env.FAKE_PROMPTS,JSON.stringify({role,message:a[3]})+'\\n');console.log(JSON.stringify({result:{type:'agent_prompted',agent:{name:role,agent:role==='ralph'?'claude':'codex',workspace_id:'w1',pane_id:role==='ralph'?'w1:p1':'w1:p2',cwd:process.env.FAKE_PROJECT,agent_status:'working'}}}));}\n` +
     `else process.exit(2);\n`);
   fs.writeFileSync(fakeClaude, `#!${process.execPath}\nconsole.log('{"loggedIn":true}');\n`);
@@ -72,8 +73,11 @@ test("coordinator claims and binds observed seats, heartbeats, then releases on 
     CLAUDE_BIN_PATH: fakeClaude, CODEX_BIN_PATH: fakeCodex,
     HERDR_PLUGIN_CONFIG_DIR: configDir, HERDR_PLUGIN_STATE_DIR: stateDir,
     HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({ workspace_id: "w1", workspace_cwd: project }),
-    FAKE_PROJECT: project, FAKE_PROMPTS: prompts };
+    FAKE_PROJECT: project, FAKE_PROMPTS: prompts, FAKE_BUSY_FILE: busyFile };
   const child = spawn(process.execPath, [coordinator, "start"], { env, stdio: ["ignore", "pipe", "pipe"] });
+  let laterOutput = "";
+  child.stdout.on("data", (chunk) => { laterOutput += chunk.toString(); });
+  child.stderr.on("data", (chunk) => { laterOutput += chunk.toString(); });
   try {
     const started = await waitForLine(child, (value) => value.status === "started" || value.status === "needs_reconcile");
     assert.equal(started.status, "started", JSON.stringify(started));
@@ -88,6 +92,25 @@ test("coordinator claims and binds observed seats, heartbeats, then releases on 
     const duplicate = spawnSync(process.execPath, [coordinator, "start"], { env, encoding: "utf8" });
     assert.equal(duplicate.status, 3);
     assert.equal(JSON.parse(duplicate.stdout).code, "HOST_ALREADY_CLAIMED");
+    const paused = spawnSync(process.execPath, [coordinator, "pause"],
+      { env, encoding: "utf8", timeout: 15000 });
+    assert.equal(paused.status, 0, paused.stdout + paused.stderr);
+    assert.equal(JSON.parse(paused.stdout).status, "paused");
+    const actionStatus = () => JSON.parse(spawnSync(process.execPath,
+      [path.join(root, "actions.mjs"), "status"], { env, encoding: "utf8" }).stdout);
+    assert.equal(actionStatus().coordination.phase, "paused");
+    fs.writeFileSync(busyFile, "busy");
+    const tooEarly = spawnSync(process.execPath, [coordinator, "resume"],
+      { env, encoding: "utf8", timeout: 15000 });
+    assert.equal(tooEarly.status, 4, tooEarly.stdout + tooEarly.stderr);
+    assert.equal(JSON.parse(tooEarly.stdout).code, "AGENT_NOT_READY");
+    assert.equal(actionStatus().coordination.phase, "paused");
+    fs.unlinkSync(busyFile);
+    const resumed = spawnSync(process.execPath, [coordinator, "resume"],
+      { env, encoding: "utf8", timeout: 15000 });
+    assert.equal(resumed.status, 0, resumed.stdout + resumed.stderr);
+    assert.equal(JSON.parse(resumed.stdout).status, "active");
+    assert.equal(actionStatus().coordination.phase, "active");
     await new Promise((resolve) => setTimeout(resolve, 5500));
     const lease = JSON.parse(fs.readFileSync(path.join(project, ".dual-agent", "host", "lease", "record.json")));
     assert.ok(lease.heartbeat_seq >= 1);
@@ -104,7 +127,10 @@ test("coordinator claims and binds observed seats, heartbeats, then releases on 
         if (promptRows().length >= count) return promptRows();
         await new Promise((resolve) => setTimeout(resolve, 250));
       }
-      assert.fail(`expected ${count} Herdr prompts, got ${promptRows().length}`);
+      const pluginDir = path.join(stateDir, "sessions");
+      const sessionDir = fs.existsSync(pluginDir) ? path.join(pluginDir, fs.readdirSync(pluginDir)[0]) : null;
+      const record = sessionDir ? fs.readFileSync(path.join(sessionDir, "record.json"), "utf8") : "missing";
+      assert.fail(`expected ${count} Herdr prompts, got ${promptRows().length}; record=${record}; output=${laterOutput}`);
     }
     function submit(role, generation, content) {
       const candidateId = randomUUID();
@@ -218,6 +244,10 @@ test("start creates both seats and waits for a blocked agent before claiming", a
     assert.equal(claimed.host_state, "claimed");
     assert.equal(claimed.workspace_id, "w2");
     assert.equal(claimed.state_digest, before.state_digest);
+    const paused = spawnSync(process.execPath, [coordinator, "pause"],
+      { env, encoding: "utf8", timeout: 15000 });
+    assert.equal(paused.status, 0, paused.stdout + paused.stderr);
+    assert.equal(JSON.parse(paused.stdout).status, "paused");
     const stopped = spawnSync(process.execPath, [coordinator, "stop"], { env, encoding: "utf8", timeout: 15000 });
     assert.equal(stopped.status, 0, stopped.stdout + stopped.stderr);
     assert.equal(JSON.parse(stopped.stdout).status, "stopped");
@@ -233,7 +263,7 @@ test("start creates both seats and waits for a blocked agent before claiming", a
   }
 });
 
-for (const failure of ["timeout", "wrong-pane"]) test(
+for (const failure of ["timeout", "wrong-pane", "paused-commit"]) test(
   `${failure} Herdr prompt keeps one durable intent and stops without replay`, async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "rll-herdr-uncertain-"));
   const project = path.join(temp, "project");
@@ -268,6 +298,12 @@ for (const failure of ["timeout", "wrong-pane"]) test(
     { env, stdio: ["ignore", "pipe", "pipe"] });
   try {
     const started = await waitForLine(child, (value) => value.status === "started");
+    if (failure === "paused-commit") {
+      const paused = spawnSync(process.execPath, [coordinator, "pause"],
+        { env, encoding: "utf8", timeout: 15000 });
+      assert.equal(paused.status, 0, paused.stdout + paused.stderr);
+      assert.equal(JSON.parse(paused.stdout).status, "paused");
+    }
     const host = (action, args = []) => {
       const result = spawnSync(process.execPath, [cli, "host", action,
         "--project", project, ...args, "--json"], { env, encoding: "utf8" });
@@ -287,6 +323,18 @@ for (const failure of ["timeout", "wrong-pane"]) test(
       "--decision", "reviewed_candidate_source"]);
     host("commit", args);
     const sessionDir = path.join(stateDir, "sessions", fs.readdirSync(path.join(stateDir, "sessions"))[0]);
+    if (failure === "paused-commit") {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      assert.equal(fs.existsSync(prompts), false, "paused coordinator must not prompt");
+      const resume = spawnSync(process.execPath, [coordinator, "resume"],
+        { env, encoding: "utf8", timeout: 15000 });
+      assert.equal(resume.status, 7, resume.stdout + resume.stderr);
+      const record = JSON.parse(fs.readFileSync(path.join(sessionDir, "record.json"), "utf8"));
+      assert.equal(record.phase, "needs_reconcile");
+      assert.equal(record.error, "RESUME_STATE_CHANGED");
+      assert.equal(host("snapshot").host_state, "claimed");
+      return;
+    }
     let record;
     for (let i = 0; i < 40; i++) {
       record = JSON.parse(fs.readFileSync(path.join(sessionDir, "record.json"), "utf8"));

@@ -32,13 +32,13 @@ command = ["node", "coordinator.mjs", "start"]
 id = "pause"
 title = "Pause Ralph-Lisa workflow"
 contexts = ["workspace"]
-command = ["node", "actions.mjs", "pause"]
+command = ["node", "coordinator.mjs", "pause"]
 
 [[actions]]
 id = "resume"
 title = "Resume Ralph-Lisa workflow"
 contexts = ["workspace"]
-command = ["node", "actions.mjs", "resume"]
+command = ["node", "coordinator.mjs", "resume"]
 
 [[actions]]
 id = "stop"

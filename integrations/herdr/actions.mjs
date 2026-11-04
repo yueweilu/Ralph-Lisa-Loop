@@ -1,11 +1,12 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import * as crypto from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const pluginRoot = path.dirname(fileURLToPath(import.meta.url));
 const MIN_HERDR = [0, 9, 4];
-const ACTIONS = new Set(["doctor", "status", "seat-preflight", "pause", "resume"]);
+const ACTIONS = new Set(["doctor", "status", "seat-preflight"]);
 
 function emit(value, exitCode = 0) {
   process.stdout.write(`${JSON.stringify({ schema: 1, ...value })}\n`);
@@ -63,6 +64,23 @@ function settings() {
 function readJson(result) {
   try { return JSON.parse(result.stdout); }
   catch { return null; }
+}
+
+function coordinatorState(snapshot) {
+  const root = process.env.HERDR_PLUGIN_STATE_DIR;
+  if (!root || !path.isAbsolute(root) || snapshot?.status !== "ok") return null;
+  const key = crypto.createHash("sha256").update(snapshot.project_realpath).digest("hex");
+  const file = path.join(root, "sessions", key, "record.json");
+  if (!fs.existsSync(file)) return null;
+  try {
+    const stat = fs.lstatSync(file);
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("invalid record");
+    const record = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (record.project_realpath !== snapshot.project_realpath ||
+        record.session_id !== snapshot.session_id) throw new Error("wrong session");
+    return { phase: record.phase, cursor_generation: record.cursor_generation ?? null,
+      paused_at: record.paused_at ?? null, control_error: record.control_error ?? null };
+  } catch { return { phase: "needs_reconcile", code: "PLUGIN_RECORD_INVALID" }; }
 }
 
 function diagnostics(config) {
@@ -164,11 +182,6 @@ function main() {
     emit({ status: "error", code: "UNKNOWN_ACTION" }, 2);
     return;
   }
-  if (["pause", "resume"].includes(action)) {
-    emit({ status: "not_ready", action, code: "S2_COORDINATOR_PENDING",
-      message: "Pause and resume await turn handoff coordination" }, 4);
-    return;
-  }
   const config = settings();
   if (config.error) {
     emit({ status: "needs_setup", code: config.error }, 3);
@@ -205,7 +218,8 @@ function main() {
   emit({ status: observed.code === 0 && diagnosis.ready ? "ready" : "needs_setup",
     code: observed.code === 0 ? setupCode(diagnosis.checks)
       : snapshot?.code || "RLL_SNAPSHOT_FAILED",
-    project, checks: diagnosis.checks, snapshot }, observed.code === 0 && diagnosis.ready ? 0 : 3);
+    project, checks: diagnosis.checks, snapshot,
+    coordination: coordinatorState(snapshot) }, observed.code === 0 && diagnosis.ready ? 0 : 3);
 }
 
 main();

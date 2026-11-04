@@ -16,7 +16,8 @@ function show(action) {
       console.log(response.snapshot.message ?? response.snapshot.code);
     else if (action === "status" && response.snapshot) {
       const { host_state, turn, round, step, session_id } = response.snapshot;
-      console.log(JSON.stringify({ host_state, turn, round, step, session_id }, null, 2));
+      console.log(JSON.stringify({ host_state, turn, round, step, session_id,
+        coordination: response.coordination }, null, 2));
     }
     if (action === "seat-preflight" && response.binding_plan) {
       const { workspace_id, seats } = response.binding_plan;
@@ -28,7 +29,7 @@ function show(action) {
 }
 
 console.log("Ralph-Lisa / Herdr control");
-console.log("Read-only diagnostics. Start creates or attaches two seats and claims a lease; stop releases it. Pause, resume and turn handoff are pending.");
+console.log("Read-only diagnostics. Start binds two seats; pause waits for automatic delivery to halt, resume rechecks RLL state and seat identities, stop releases the lease. Use the Herdr actions for control.");
 show("doctor");
 show("status");
 show("seat-preflight");

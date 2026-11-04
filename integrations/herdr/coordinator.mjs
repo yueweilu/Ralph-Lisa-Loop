@@ -54,7 +54,8 @@ function files(project) {
   const real = fs.realpathSync.native(project);
   const key = crypto.createHash("sha256").update(real).digest("hex");
   const dir = path.join(stateRoot, "sessions", key);
-  return { real, dir, record: path.join(dir, "record.json"), stop: path.join(dir, "stop.json") };
+  return { real, dir, record: path.join(dir, "record.json"),
+    stop: path.join(dir, "stop.json"), control: path.join(dir, "control.json") };
 }
 
 function durableWrite(file, value, exclusive = false) {
@@ -80,6 +81,10 @@ function failRecord(paths, record, code) {
   emit({ status: "needs_reconcile", code, project: paths.real }, 7);
 }
 
+function hostBusy(result) {
+  return result.value?.code === "HOST_BUSY";
+}
+
 function requireActiveSnapshot(result, paths, record, plan) {
   const value = result.value;
   if (result.code !== 0 || value?.status !== "ok" ||
@@ -100,8 +105,9 @@ function deliveryFile(paths, requestId) {
 }
 
 function checkDelivery(paths, record, cli, herdr, plan) {
-  const snapshot = requireActiveSnapshot(call(cli, ["host", "snapshot", "--project", paths.real,
-    "--json"]), paths, record, plan);
+  const observed = call(cli, ["host", "snapshot", "--project", paths.real, "--json"]);
+  if (hostBusy(observed)) return record;
+  const snapshot = requireActiveSnapshot(observed, paths, record, plan);
   if (snapshot.generation === record.cursor_generation) {
     if (snapshot.last_receipt_id !== record.cursor_receipt_id ||
         snapshot.turn !== record.cursor_turn)
@@ -112,6 +118,7 @@ function checkDelivery(paths, record, cli, herdr, plan) {
       !UUID.test(snapshot.last_receipt_id ?? "")) throw new Error("MISSED_RECEIPT");
   const result = call(cli, ["host", "receipt", "--project", paths.real,
     "--request-id", snapshot.last_receipt_id, "--json"]);
+  if (hostBusy(result)) return record;
   const receipt = result.value;
   if (result.code !== 0 || receipt?.status !== "committed" ||
       receipt.request_id !== snapshot.last_receipt_id ||
@@ -163,6 +170,61 @@ function checkDelivery(paths, record, cli, herdr, plan) {
   return next;
 }
 
+function processControl(paths, record, cli, herdr, plan) {
+  if (!fs.existsSync(paths.control)) return record;
+  const request = readRecord(paths.control);
+  if (request.owner_id !== record.owner_id || request.lease_id !== record.lease_id ||
+      !UUID.test(request.request_id ?? "") ||
+      !["pause", "resume"].includes(request.action))
+    throw new Error("CONTROL_REQUEST_MISMATCH");
+  if (record.control_request_id === request.request_id) {
+    fs.unlinkSync(paths.control);
+    return record;
+  }
+  const observed = call(cli, ["host", "snapshot", "--project", paths.real, "--json"]);
+  if (hostBusy(observed)) return record;
+  const snapshot = requireActiveSnapshot(observed, paths, record, plan);
+  if (request.action === "pause") {
+    if (record.phase !== "active") throw new Error("PAUSE_STATE_CHANGED");
+    record = { ...record, phase: "paused", control_request_id: request.request_id,
+      paused_at: new Date().toISOString(), pause_state_digest: snapshot.state_digest,
+      pause_round: snapshot.round, pause_step: snapshot.step,
+      pause_generation: snapshot.generation, pause_receipt_id: snapshot.last_receipt_id,
+      pause_turn: snapshot.turn, control_error: null };
+  } else {
+    if (record.phase !== "paused" || snapshot.generation !== record.cursor_generation ||
+        snapshot.last_receipt_id !== record.cursor_receipt_id ||
+        snapshot.turn !== record.cursor_turn ||
+        snapshot.generation !== record.pause_generation ||
+        snapshot.last_receipt_id !== record.pause_receipt_id ||
+        snapshot.turn !== record.pause_turn ||
+        snapshot.state_digest !== record.pause_state_digest ||
+        snapshot.round !== record.pause_round || snapshot.step !== record.pause_step)
+      throw new Error("RESUME_STATE_CHANGED");
+    try {
+      for (const [role, kind] of [["ralph", "claude"], ["lisa", "codex"]])
+        verifySeat(herdr, plan, role, kind);
+    } catch (error) {
+      if (error.message !== "AGENT_NOT_READY") throw error;
+      record = { ...record, control_request_id: request.request_id,
+        control_error: "AGENT_NOT_READY" };
+      durableWrite(paths.record, record);
+      fs.unlinkSync(paths.control);
+      emit({ status: "not_ready", code: "AGENT_NOT_READY", project: paths.real,
+        request_id: request.request_id });
+      return record;
+    }
+    record = { ...record, phase: "active", control_request_id: request.request_id,
+      paused_at: null, pause_state_digest: null, pause_round: null, pause_step: null,
+      pause_generation: null, pause_receipt_id: null, pause_turn: null, control_error: null };
+  }
+  durableWrite(paths.record, record);
+  fs.unlinkSync(paths.control);
+  emit({ status: record.phase, project: paths.real, request_id: request.request_id,
+    generation: record.cursor_generation });
+  return record;
+}
+
 function verifySeat(herdr, plan, role, kind) {
   const result = call(herdr, ["agent", "get", role]);
   const agent = result.value?.result?.agent;
@@ -171,8 +233,9 @@ function verifySeat(herdr, plan, role, kind) {
   try { cwd = fs.realpathSync.native(agent.cwd); } catch { /* Fail closed. */ }
   if (result.code !== 0 || agent?.name !== role || agent?.agent !== kind ||
       agent?.workspace_id !== plan.workspace_id || agent?.pane_id !== expected.pane_id ||
-      cwd !== plan.project_realpath || !agent.interactive_ready ||
-      !["idle", "done"].includes(agent.agent_status)) throw new Error("AGENT_CHANGED");
+      cwd !== plan.project_realpath) throw new Error("AGENT_CHANGED");
+  if (!agent.interactive_ready || !["idle", "done"].includes(agent.agent_status))
+    throw new Error("AGENT_NOT_READY");
 }
 
 function requireSnapshot(result) {
@@ -355,12 +418,15 @@ async function start() {
     let ticks = 0;
     for (;;) {
       await new Promise((resolve) => setTimeout(resolve, 1000));
+      if (fs.existsSync(paths.stop) && fs.existsSync(paths.control))
+        throw new Error("CONCURRENT_CONTROL_REQUESTS");
       if (fs.existsSync(paths.stop)) {
         const request = readRecord(paths.stop);
         if (request.owner_id !== ownerId || request.lease_id !== lease.lease_id)
           throw new Error("STOP_REQUEST_MISMATCH");
-        const stoppedAt = requireActiveSnapshot(call(cli, ["host", "snapshot", "--project",
-          paths.real, "--json"]), paths, record, plan);
+        const stoppedRead = call(cli, ["host", "snapshot", "--project", paths.real, "--json"]);
+        if (hostBusy(stoppedRead)) continue;
+        const stoppedAt = requireActiveSnapshot(stoppedRead, paths, record, plan);
         if (stoppedAt.generation !== record.cursor_generation ||
             stoppedAt.last_receipt_id !== record.cursor_receipt_id)
           throw new Error("UNDELIVERED_RECEIPT_ON_STOP");
@@ -375,10 +441,12 @@ async function start() {
         emit({ status: "stopped", project: paths.real, owner_id: ownerId });
         return;
       }
-      record = checkDelivery(paths, record, cli, herdr, plan);
+      record = processControl(paths, record, cli, herdr, plan);
+      if (record.phase === "active") record = checkDelivery(paths, record, cli, herdr, plan);
       if (++ticks % 5 === 0) {
         const heartbeat = call(cli, ["host", "heartbeat", "--project", paths.real,
           "--lease-id", lease.lease_id, "--owner-id", ownerId, "--json"]);
+        if (hostBusy(heartbeat)) continue;
         if (heartbeat.code !== 0 || heartbeat.value?.lease_id !== lease.lease_id)
           throw new Error(heartbeat.value?.code || "HEARTBEAT_UNCERTAIN");
       }
@@ -397,7 +465,7 @@ async function stop() {
   let record;
   try { record = readRecord(paths.record); }
   catch { emit({ status: "not_ready", code: "COORDINATOR_NOT_RUNNING" }, 4); return; }
-  if (record.phase !== "active" || !UUID.test(record.lease_id ?? "")) {
+  if (!["active", "paused"].includes(record.phase) || !UUID.test(record.lease_id ?? "")) {
     emit({ status: "needs_reconcile", code: "COORDINATOR_NOT_ACTIVE" }, 7);
     return;
   }
@@ -414,9 +482,56 @@ async function stop() {
   emit({ status: "needs_reconcile", code: "STOP_UNCONFIRMED", project: paths.real }, 7);
 }
 
+async function control(action) {
+  const project = projectFromContext();
+  if (!project) { emit({ status: "not_ready", code: "PROJECT_REQUIRED" }, 3); return; }
+  const paths = files(project);
+  let record;
+  try { record = readRecord(paths.record); }
+  catch { emit({ status: "not_ready", code: "COORDINATOR_NOT_RUNNING" }, 4); return; }
+  if (record.project_realpath !== paths.real || !UUID.test(record.lease_id ?? "") ||
+      !["active", "paused"].includes(record.phase)) {
+    emit({ status: "needs_reconcile", code: "COORDINATOR_NOT_ACTIVE" }, 7);
+    return;
+  }
+  if (record.phase === (action === "pause" ? "paused" : "active")) {
+    emit({ status: "not_ready", code: action === "pause" ? "ALREADY_PAUSED" : "ALREADY_ACTIVE",
+      project: paths.real }, 4);
+    return;
+  }
+  const requestId = crypto.randomUUID();
+  try { durableWrite(paths.control, { action, request_id: requestId,
+    owner_id: record.owner_id, lease_id: record.lease_id }, true); }
+  catch (error) {
+    emit({ status: "not_ready", code: error.code === "EEXIST" ?
+      "CONTROL_PENDING" : "STATE_WRITE_FAILED" }, 4);
+    return;
+  }
+  for (let i = 0; i < 20; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    let current;
+    try { current = readRecord(paths.record); }
+    catch { break; }
+    if (current.phase === "needs_reconcile") break;
+    if (current.control_request_id === requestId && current.control_error) {
+      emit({ status: "not_ready", code: current.control_error, project: paths.real,
+        request_id: requestId }, 4);
+      return;
+    }
+    if (current.control_request_id === requestId &&
+        current.phase === (action === "pause" ? "paused" : "active")) {
+      emit({ status: current.phase, project: paths.real, request_id: requestId,
+        generation: current.cursor_generation });
+      return;
+    }
+  }
+  emit({ status: "needs_reconcile", code: "CONTROL_UNCONFIRMED", project: paths.real }, 7);
+}
+
 try {
   if (process.argv[2] === "start") await start();
   else if (process.argv[2] === "stop") await stop();
+  else if (["pause", "resume"].includes(process.argv[2])) await control(process.argv[2]);
   else emit({ status: "error", code: "UNKNOWN_ACTION" }, 2);
 } catch (error) {
   emit({ status: "error", code: error.message || "COORDINATOR_ERROR" }, 7);

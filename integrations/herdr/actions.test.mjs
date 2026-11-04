@@ -170,11 +170,11 @@ test("seat preflight verifies real CLI state and two distinct Herdr agent identi
   assert.equal(fs.existsSync(path.join(project, ".dual-agent", "host", "lease")), false);
 });
 
-test("pause and resume remain unavailable before handoff coordination exists", () => {
+test("control actions are handled by the coordinator entrypoint", () => {
   for (const action of ["pause", "resume"]) {
     const result = run(action);
-    assert.equal(result.code, 4);
-    assert.equal(result.value.code, "S2_COORDINATOR_PENDING");
+    assert.equal(result.code, 2);
+    assert.equal(result.value.code, "UNKNOWN_ACTION");
   }
   assert.equal(fs.existsSync(project), false);
 });
