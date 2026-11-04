@@ -58,7 +58,7 @@ test("coordinator claims and binds observed seats, heartbeats, then releases on 
     `if(a[0]==='--version') console.log('herdr 0.9.4');\n` +
     `else if(a[0]==='integration') console.log('claude: not installed\\ncodex: not installed');\n` +
     `else if(a[0]==='agent'&&a[1]==='get'){const role=a[2];console.log(JSON.stringify({result:{agent:{name:role,agent:role==='ralph'?'claude':'codex',workspace_id:'w1',pane_id:role==='ralph'?'w1:p1':'w1:p2',cwd:process.env.FAKE_PROJECT,interactive_ready:true,agent_status:'idle'}}}));}\n` +
-    `else if(a[0]==='agent'&&a[1]==='prompt'){require('node:fs').appendFileSync(process.env.FAKE_PROMPTS,JSON.stringify({role:a[2],message:a[3]})+'\\n');console.log(JSON.stringify({result:{accepted:true}}));}\n` +
+    `else if(a[0]==='agent'&&a[1]==='prompt'){const role=a[2];require('node:fs').appendFileSync(process.env.FAKE_PROMPTS,JSON.stringify({role,message:a[3]})+'\\n');console.log(JSON.stringify({result:{type:'agent_prompted',agent:{name:role,agent:role==='ralph'?'claude':'codex',workspace_id:'w1',pane_id:role==='ralph'?'w1:p1':'w1:p2',cwd:process.env.FAKE_PROJECT,agent_status:'working'}}}));}\n` +
     `else process.exit(2);\n`);
   fs.writeFileSync(fakeClaude, `#!${process.execPath}\nconsole.log('{"loggedIn":true}');\n`);
   fs.writeFileSync(fakeCodex, `#!${process.execPath}\nconsole.log('Logged in using ChatGPT');\n`);
@@ -233,7 +233,8 @@ test("start creates both seats and waits for a blocked agent before claiming", a
   }
 });
 
-test("uncertain Herdr prompt keeps one durable intent and stops without replay", async () => {
+for (const failure of ["timeout", "wrong-pane"]) test(
+  `${failure} Herdr prompt keeps one durable intent and stops without replay`, async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "rll-herdr-uncertain-"));
   const project = path.join(temp, "project");
   const configDir = path.join(temp, "config");
@@ -251,7 +252,7 @@ test("uncertain Herdr prompt keeps one durable intent and stops without replay",
     `if(a[0]==='--version')console.log('herdr 0.9.4');` +
     `else if(a[0]==='integration')console.log('claude: current (v10)\\ncodex: current (v9)');` +
     `else if(a[0]==='agent'&&a[1]==='get'){const role=a[2];console.log(JSON.stringify({result:{agent:{name:role,agent:role==='ralph'?'claude':'codex',workspace_id:'w1',pane_id:role==='ralph'?'w1:p1':'w1:p2',cwd:process.env.FAKE_PROJECT,interactive_ready:true,agent_status:'idle'}}}));}` +
-    `else if(a[0]==='agent'&&a[1]==='prompt'){require('node:fs').appendFileSync(process.env.FAKE_PROMPTS,a[2]+'\\n');console.error(JSON.stringify({error:{code:'timeout'}}));process.exitCode=1;}` +
+    `else if(a[0]==='agent'&&a[1]==='prompt'){require('node:fs').appendFileSync(process.env.FAKE_PROMPTS,a[2]+'\\n');if(process.env.FAKE_PROMPT_FAILURE==='timeout'){console.error(JSON.stringify({error:{code:'timeout'}}));process.exitCode=1;}else console.log(JSON.stringify({result:{type:'agent_prompted',agent:{name:a[2],agent:'codex',workspace_id:'w1',pane_id:'w1:p9',cwd:process.env.FAKE_PROJECT}}}));}` +
     `else process.exitCode=2;\n`);
   fs.writeFileSync(fakeClaude, `#!${process.execPath}\nconsole.log('{"loggedIn":true}');\n`);
   fs.writeFileSync(fakeCodex, `#!${process.execPath}\nconsole.log('Logged in using ChatGPT');\n`);
@@ -262,7 +263,7 @@ test("uncertain Herdr prompt keeps one durable intent and stops without replay",
     CLAUDE_BIN_PATH: fakeClaude, CODEX_BIN_PATH: fakeCodex,
     HERDR_PLUGIN_CONFIG_DIR: configDir, HERDR_PLUGIN_STATE_DIR: stateDir,
     HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({ workspace_id: "w1", workspace_cwd: project }),
-    FAKE_PROJECT: project, FAKE_PROMPTS: prompts };
+    FAKE_PROJECT: project, FAKE_PROMPTS: prompts, FAKE_PROMPT_FAILURE: failure };
   const child = spawn(process.execPath, [coordinator, "start"],
     { env, stdio: ["ignore", "pipe", "pipe"] });
   try {
@@ -293,7 +294,7 @@ test("uncertain Herdr prompt keeps one durable intent and stops without replay",
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
     assert.equal(record.phase, "needs_reconcile");
-    assert.equal(record.error, "timeout");
+    assert.equal(record.error, failure === "timeout" ? "timeout" : "PROMPT_ACK_MISMATCH");
     const delivery = JSON.parse(fs.readFileSync(path.join(sessionDir,
       `delivery-${requestId}.json`), "utf8"));
     assert.equal(delivery.status, "intent");

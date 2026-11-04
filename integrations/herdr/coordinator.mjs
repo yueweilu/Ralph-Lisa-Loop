@@ -141,8 +141,19 @@ function checkDelivery(paths, record, cli, herdr, plan) {
     message_sha256: crypto.createHash("sha256").update(message).digest("hex") };
   durableWrite(file, intent, true);
   const submitted = call(herdr, ["agent", "prompt", role, message]);
-  if (submitted.code !== 0 || !submitted.value?.result || submitted.value?.error)
+  if (submitted.code !== 0 || submitted.value?.error)
     throw new Error(submitted.value?.error?.code || submitted.error || "PROMPT_UNCERTAIN");
+  const acknowledged = submitted.value?.result;
+  let acknowledgedCwd = null;
+  try { acknowledgedCwd = fs.realpathSync.native(acknowledged.agent.cwd); }
+  catch { /* A missing or changed project is not an acknowledged seat. */ }
+  if (acknowledged?.type !== "agent_prompted" ||
+      acknowledged.agent?.name !== role ||
+      acknowledged.agent?.agent !== (role === "ralph" ? "claude" : "codex") ||
+      acknowledged.agent?.workspace_id !== plan.workspace_id ||
+      acknowledged.agent?.pane_id !== plan.seats[role].pane_id ||
+      acknowledgedCwd !== paths.real)
+    throw new Error("PROMPT_ACK_MISMATCH");
   durableWrite(file, { ...intent, status: "accepted" });
   const next = { ...record, cursor_generation: receipt.generation_after,
     cursor_receipt_id: receipt.request_id, cursor_turn: role };
