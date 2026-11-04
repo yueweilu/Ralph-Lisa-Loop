@@ -127,3 +127,5 @@ S4 后续切片将原生会话引用的摘要随席位计划持久保存，并�
 S4 最新实测纠正了“Server 重启必然结束插件协调器”的假设：一次命名服务重启后，旧插件 action 进程仍存活并持续心跳，而 Lisa 不可用。现已将 Herdr Terminal 身份纳入席位计划及投递意图，并在每次心跳前检查两席，连接丢失或 Terminal 改变即停在待核对。更新后的代码在第二次真实命名服务重启中验证了旧协调器退出、租约保留且心跳不再增长；重启后的自动重绑与接续仍未完成，见 [S4 孤儿协调器阻断](s4-server-epoch-fence-2026-11-04.md)。
 
 S3 真实双席交接试验已让 Claude/Ralph 生成候选，经现有人工来源确认与正式提交后，由插件只向真实 Codex/Lisa 投递一次匹配回执；Lisa 已生成并提议 `[NEEDS_WORK]` 候选；经同一人工来源确认后正式提交，插件只向真实 Claude/Ralph 投递一次匹配回执。RLL 快照进入第 2 轮 Ralph。命名测试会话已停止，宿主租约已释放。见 [S3 真实交接试验](s3-real-handoff-trial-2026-11-04.md)。
+
+S3 后续来源归因试验发现：插件 action 上下文使用界面聚焦 Pane，不能代表命令调用 Pane；从 Agent Pane 运行的 `pane current --current` 可返回调用 Pane。新增 Agent Pane 候选提议辅助命令，在提议前核对 Herdr 实时 Agent 与公开 CLI 席位绑定；真实 Claude/Ralph 已在隔离项目中成功调用。该观察不能证明候选文件写入者，`source_verification` 和人工确认门禁仍保持原样，见 [S3 Agent Pane 候选提议](s3-agent-pane-candidate-proposal-2026-11-04.md)。

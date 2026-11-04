@@ -27,4 +27,4 @@ jobs:
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm run build
       - run: npm test
-      - run: node --test ../integrations/herdr/actions.test.mjs ../integrations/herdr/coordinator.test.mjs
+      - run: node --test ../integrations/herdr/actions.test.mjs ../integrations/herdr/coordinator.test.mjs ../integrations/herdr/candidate-propose.test.mjs
