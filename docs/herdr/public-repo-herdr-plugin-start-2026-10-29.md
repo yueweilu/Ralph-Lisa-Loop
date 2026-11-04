@@ -129,3 +129,5 @@ S4 最新实测纠正了“Server 重启必然结束插件协调器”的假设�
 S3 真实双席交接试验已让 Claude/Ralph 生成候选，经现有人工来源确认与正式提交后，由插件只向真实 Codex/Lisa 投递一次匹配回执；Lisa 已生成并提议 `[NEEDS_WORK]` 候选；经同一人工来源确认后正式提交，插件只向真实 Claude/Ralph 投递一次匹配回执。RLL 快照进入第 2 轮 Ralph。命名测试会话已停止，宿主租约已释放。见 [S3 真实交接试验](s3-real-handoff-trial-2026-11-04.md)。
 
 S3 后续来源归因试验发现：插件 action 上下文使用界面聚焦 Pane，不能代表命令调用 Pane；从 Agent Pane 运行的 `pane current --current` 可返回调用 Pane。新增 Agent Pane 候选提议辅助命令，在提议前核对 Herdr 实时 Agent 与公开 CLI 席位绑定；真实 Claude/Ralph 已在隔离项目中成功调用。该观察不能证明候选文件写入者，`source_verification` 和人工确认门禁仍保持原样，见 [S3 Agent Pane 候选提议](s3-agent-pane-candidate-proposal-2026-11-04.md)。
+
+S3 人工确认路径现有独立 `review` Pane：公开 CLI 先只读列出/读取已保存候选，Pane 展示正文、席位和摘要，预检通过后要求用户键入候选 ID 与完整摘要，才调用人工声明和正式提交。隔离自动化测试覆盖取消、通过与篡改冻结；Herdr 0.9.4 manifest 注册已核验，真实 Pane 目视操作及真实用户审阅仍待验收。来源继续标记 `unverified`，见 [S3 人工候选审阅](s3-human-candidate-review-2026-11-04.md)。
