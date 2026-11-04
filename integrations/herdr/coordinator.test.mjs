@@ -74,6 +74,17 @@ test("coordinator claims and binds observed seats, heartbeats, then releases on 
     HERDR_PLUGIN_CONFIG_DIR: configDir, HERDR_PLUGIN_STATE_DIR: stateDir,
     HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({ workspace_id: "w1", workspace_cwd: project }),
     FAKE_PROJECT: project, FAKE_PROMPTS: prompts, FAKE_BUSY_FILE: busyFile };
+  const runWithHostBusyRetry = async (args, options = { env }) => {
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const result = spawnSync(process.execPath, args,
+        { encoding: "utf8", ...options });
+      let value;
+      try { value = JSON.parse(result.stdout); } catch { /* Keep the original result. */ }
+      if (value?.code !== "HOST_BUSY") return result;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    assert.fail(`command stayed HOST_BUSY after bounded retries: ${args.slice(1, 3).join(" ")}`);
+  };
   const child = spawn(process.execPath, [coordinator, "start"], { env, stdio: ["ignore", "pipe", "pipe"] });
   let laterOutput = "";
   child.stdout.on("data", (chunk) => { laterOutput += chunk.toString(); });
@@ -83,8 +94,7 @@ test("coordinator claims and binds observed seats, heartbeats, then releases on 
     assert.equal(started.status, "started", JSON.stringify(started));
     assert.equal(fs.readFileSync(prompts, "utf8").trim().split("\n").length, 1);
     assert.match(JSON.parse(fs.readFileSync(prompts, "utf8").trim()).message, /task\.md/);
-    const recovery = spawnSync(process.execPath,
-      [path.join(root, "actions.mjs"), "recovery-check"], { env, encoding: "utf8" });
+    const recovery = await runWithHostBusyRetry([path.join(root, "actions.mjs"), "recovery-check"]);
     assert.equal(recovery.status, 0, recovery.stdout + recovery.stderr);
     const audited = JSON.parse(recovery.stdout);
     assert.equal(audited.status, "review_required");
@@ -101,18 +111,16 @@ test("coordinator claims and binds observed seats, heartbeats, then releases on 
     assert.equal(audited.seats.lisa.native_session.continuity, "not_recorded");
     assert.equal(audited.restart_observation, "manual_rebind_required");
     assert.doesNotMatch(recovery.stdout, /session-123/);
-    const changedSession = spawnSync(process.execPath,
-      [path.join(root, "actions.mjs"), "recovery-check"], {
-        env: { ...env, FAKE_RALPH_SESSION: "replacement-session" }, encoding: "utf8",
-      });
+    const changedSession = await runWithHostBusyRetry(
+      [path.join(root, "actions.mjs"), "recovery-check"],
+      { env: { ...env, FAKE_RALPH_SESSION: "replacement-session" } });
     assert.equal(changedSession.status, 0, changedSession.stdout + changedSession.stderr);
     const changedAudit = JSON.parse(changedSession.stdout);
     assert.equal(changedAudit.seats.ralph.observation, "matches_binding");
     assert.equal(changedAudit.seats.ralph.native_session.continuity, "changed_or_missing");
     assert.equal(changedAudit.restart_observation, "manual_rebind_required");
-    const claimed = JSON.parse(spawnSync(process.execPath, [cli, "host", "snapshot", "--project", project, "--json"], {
-      encoding: "utf8",
-    }).stdout);
+    const claimed = JSON.parse((await runWithHostBusyRetry(
+      [cli, "host", "snapshot", "--project", project, "--json"])).stdout);
     assert.equal(claimed.host_state, "claimed");
     assert.equal(claimed.binding_state, "bound");
     assert.equal(claimed.seats.ralph.pane_id, "w1:p1");
@@ -124,11 +132,10 @@ test("coordinator claims and binds observed seats, heartbeats, then releases on 
     assert.equal(boundRecord.plan.seats.ralph.native_session_fingerprint_sha256,
       audited.seats.ralph.native_session.fingerprint_sha256);
     assert.equal(boundRecord.plan.seats.lisa.native_session_fingerprint_sha256, null);
-    const duplicate = spawnSync(process.execPath, [coordinator, "start"], { env, encoding: "utf8" });
+    const duplicate = await runWithHostBusyRetry([coordinator, "start"]);
     assert.equal(duplicate.status, 3);
     assert.equal(JSON.parse(duplicate.stdout).code, "HOST_ALREADY_CLAIMED");
-    const paused = spawnSync(process.execPath, [coordinator, "pause"],
-      { env, encoding: "utf8", timeout: 15000 });
+    const paused = await runWithHostBusyRetry([coordinator, "pause"], { env, timeout: 15000 });
     assert.equal(paused.status, 0, paused.stdout + paused.stderr);
     assert.equal(JSON.parse(paused.stdout).status, "paused");
     const actionStatus = () => JSON.parse(spawnSync(process.execPath,
@@ -145,14 +152,12 @@ test("coordinator claims and binds observed seats, heartbeats, then releases on 
     assert.equal((await stableActionStatus()).coordination.phase, "paused");
     assert.equal((await stableActionStatus()).coordination.initial_status, "accepted");
     fs.writeFileSync(busyFile, "busy");
-    const tooEarly = spawnSync(process.execPath, [coordinator, "resume"],
-      { env, encoding: "utf8", timeout: 15000 });
+    const tooEarly = await runWithHostBusyRetry([coordinator, "resume"], { env, timeout: 15000 });
     assert.equal(tooEarly.status, 4, tooEarly.stdout + tooEarly.stderr);
     assert.equal(JSON.parse(tooEarly.stdout).code, "AGENT_NOT_READY");
     assert.equal((await stableActionStatus()).coordination.phase, "paused");
     fs.unlinkSync(busyFile);
-    const resumed = spawnSync(process.execPath, [coordinator, "resume"],
-      { env, encoding: "utf8", timeout: 15000 });
+    const resumed = await runWithHostBusyRetry([coordinator, "resume"], { env, timeout: 15000 });
     assert.equal(resumed.status, 0, resumed.stdout + resumed.stderr);
     assert.equal(JSON.parse(resumed.stdout).status, "active");
     assert.equal((await stableActionStatus()).coordination.phase, "active");
@@ -160,18 +165,10 @@ test("coordinator claims and binds observed seats, heartbeats, then releases on 
     const lease = JSON.parse(fs.readFileSync(path.join(project, ".dual-agent", "host", "lease", "record.json")));
     assert.ok(lease.heartbeat_seq >= 1);
     const host = async (action, args = []) => {
-      for (let attempt = 0; attempt < 20; attempt++) {
-        const result = spawnSync(process.execPath, [cli, "host", action, "--project", project,
-          ...args, "--json"], { env, encoding: "utf8" });
-        if (result.status === 0) return JSON.parse(result.stdout);
-        let value;
-        try { value = JSON.parse(result.stdout); } catch { /* Keep the original failure. */ }
-        if (value?.code !== "HOST_BUSY") {
-          assert.equal(result.status, 0, result.stdout + result.stderr);
-        }
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      }
-      assert.fail(`host ${action} stayed busy after bounded retries`);
+      const result = await runWithHostBusyRetry([cli, "host", action, "--project", project,
+        ...args, "--json"]);
+      assert.equal(result.status, 0, result.stdout + result.stderr);
+      return JSON.parse(result.stdout);
     };
     const promptRows = () => fs.existsSync(prompts)
       ? fs.readFileSync(prompts, "utf8").trim().split("\n").map((line) => JSON.parse(line)) : [];
@@ -231,12 +228,11 @@ test("coordinator claims and binds observed seats, heartbeats, then releases on 
       "record.json"), "utf8"));
     assert.match(boundAfterHandoff.plan.seats.lisa.native_session_fingerprint_sha256,
       /^[0-9a-f]{64}$/);
-    const stopped = spawnSync(process.execPath, [coordinator, "stop"], { env, encoding: "utf8", timeout: 15000 });
+    const stopped = await runWithHostBusyRetry([coordinator, "stop"], { env, timeout: 15000 });
     assert.equal(stopped.status, 0, stopped.stdout + stopped.stderr);
     assert.equal(JSON.parse(stopped.stdout).status, "stopped");
-    const released = JSON.parse(spawnSync(process.execPath, [cli, "host", "snapshot", "--project", project, "--json"], {
-      encoding: "utf8",
-    }).stdout);
+    const released = JSON.parse((await runWithHostBusyRetry(
+      [cli, "host", "snapshot", "--project", project, "--json"])).stdout);
     assert.equal(released.host_state, "unclaimed");
     assert.equal(released.binding_state, "stale");
     assert.equal(released.state_digest, second.state_digest_after);
