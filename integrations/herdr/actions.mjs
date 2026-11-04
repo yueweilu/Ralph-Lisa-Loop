@@ -132,6 +132,8 @@ function recoveryPluginState(projectRealpath, cliEvidence) {
     const seat = plan?.seats?.[role];
     const fingerprint = seat?.native_session_fingerprint_sha256;
     if (seat && (seat.agent_kind !== kind ||
+        (seat.terminal_id !== undefined &&
+          (typeof seat.terminal_id !== "string" || !seat.terminal_id)) ||
         (fingerprint !== undefined && fingerprint !== null &&
           !/^[0-9a-f]{64}$/.test(fingerprint))))
       throw new Error("PLUGIN_BINDING_MISMATCH");
@@ -150,6 +152,8 @@ function recoveryPluginState(projectRealpath, cliEvidence) {
         !["ralph", "lisa"].includes(value.role) ||
         value.workspace_id !== plan.workspace_id ||
         value.pane_id !== plan.seats[value.role]?.pane_id ||
+        (plan.seats[value.role]?.terminal_id &&
+          value.terminal_id !== plan.seats[value.role].terminal_id) ||
         !/^[0-9a-f]{64}$/.test(value.message_sha256 ?? "") ||
         !Number.isSafeInteger(value.generation) || value.generation < 0 ||
         (name.startsWith("initial-") ? value.session_id !== record.session_id ||
@@ -186,9 +190,13 @@ function recoverySeats(herdr, projectRealpath, recordPlan) {
       agent.name === role && agent.agent === kind &&
       agent.workspace_id === recordPlan.workspace_id &&
       agent.pane_id === recordPlan.seats[role]?.pane_id && cwd === projectRealpath ?
-        "matches_binding" : "identity_changed",
+        (recordPlan.seats[role]?.terminal_id &&
+          agent.terminal_id !== recordPlan.seats[role].terminal_id ?
+            "terminal_changed" : "matches_binding") :
+        "identity_changed",
       status: agent?.agent_status ?? null,
       pane_id: agent?.pane_id ?? null,
+      terminal_id: agent?.terminal_id ?? null,
       native_session: { ...nativeSession,
         continuity: recordedFingerprint ?
           nativeSession.fingerprint_sha256 === recordedFingerprint ?
@@ -317,7 +325,8 @@ function seatPreflight(diagnosis, snapshot) {
     const agent = readJson(observed)?.result?.agent;
     if (observed.code !== 0 || !agent) return { status: "not_ready", code: "AGENT_MISSING", role };
     if (agent.name !== role || agent.agent !== kind || agent.workspace_id !== workspaceId ||
-        typeof agent.pane_id !== "string" || !agent.pane_id) {
+        typeof agent.pane_id !== "string" || !agent.pane_id ||
+        typeof agent.terminal_id !== "string" || !agent.terminal_id) {
       return { status: "not_ready", code: "AGENT_IDENTITY_MISMATCH", role };
     }
     let agentCwd = null;
@@ -329,7 +338,8 @@ function seatPreflight(diagnosis, snapshot) {
     const nativeSession = nativeSessionReference(agent, kind);
     if (nativeSession.status === "invalid")
       return { status: "not_ready", code: "AGENT_SESSION_INVALID", role };
-    seats[role] = { pane_id: agent.pane_id, agent_target: role, agent_kind: kind,
+    seats[role] = { pane_id: agent.pane_id, terminal_id: agent.terminal_id,
+      agent_target: role, agent_kind: kind,
       native_session_fingerprint_sha256: nativeSession.fingerprint_sha256 };
   }
   if (seats.ralph.pane_id === seats.lisa.pane_id)

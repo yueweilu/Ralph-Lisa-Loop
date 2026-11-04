@@ -118,7 +118,7 @@ flowchart TB
 | **3. 输出与活动**：`capture-pane`、`pipe-pane`、watcher 的 busy/permission 检查 | `agent.get/read/wait`、`pane.read`、Socket 事件订阅与状态快照；原始日志限量留存 | 新增观察适配器。订阅中任一 Pane ID 已失效会拒绝整组订阅；`events_lost` 后须先新订阅并等待 `subscription_started`，再从另一连接取快照。Herdr 屏幕识别可误把新权限提示判为 idle，`idle` 不等于授权；插件不靠屏幕 `[PASS]` 字样修改业务轮次 |
 | **4. 轮次交接**：watcher 读 `turn.txt/round.txt`，发送“轮到你” | 订阅/监控提交回执及 CLI 状态，生成唯一交接意图；核实轮次、目标身份和对侧可接收后 `agent.prompt` | 新增长运行协调器；以 CLI 回执为准，状态事件只负责唤醒。提示投递的超时/断线为未知结果，不自动重复发同一轮 |
 | **5. 人工输入**：tmux 终端与 watcher `control.txt` | Herdr 原生 Pane 供用户直接查看；插件 action 提供状态、**先暂停再人工输入**、恢复、停止、发送受控消息 | `pane.focused` 事件没有客户端身份，且已选中 Pane 再聚焦不产生事件；插件不能仅凭焦点识别所有用户键入。P0 必须验证能否提供可靠的接管/输入租约，否则首版只承诺“显式暂停后的人工输入”，不能宣称任意时刻无冲突接管。范围变更仍调用 CLI |
-| **6. 存活与恢复**：watcher supervisor/watchdog、心跳、PID、session 记录 | 控制 Pane 中运行可观察的协调器；启动 hook 只做一次性检查/恢复提示；连接失效后订阅并重新读取快照 | 插件不能把一次性 `[[startup]]` 当作常驻 daemon。Server 重启后旧进程消失；先重核 Claude/Codex 原生会话、RLL 轮次与未决投递，再安全续跑或暂停人工确认 |
+| **6. 存活与恢复**：watcher supervisor/watchdog、心跳、PID、session 记录 | 插件 action 运行协调器并持久记录席位；启动 hook 只做一次性检查/恢复提示；连接失效后订阅并重新读取快照 | 插件不能把一次性 `[[startup]]` 当作常驻 daemon。2026-11-04 隔离实测发现 Server 重启后旧插件 action 进程可能作为孤儿继续心跳；必须先用实时 Terminal/Agent 身份阻断它，再核对 Claude/Codex 原生会话、RLL 轮次与未决投递。仅凭旧 PID 或 Server 重启不可断言协调器已停止 |
 | **7. 诊断与日志**：`watcher.log`、`pane0.log`、`pane1.log`、`doctor` | CLI 业务状态 + Herdr Agent 状态 + 插件控制日志分别显示；给出“运行中、阻塞、投递未知、协调器停止”等明确原因 | 新增插件诊断/终端状态 Pane；只保留所需日志并限制大小/敏感信息，不把屏幕文本当交付证据 |
 
 **重要依赖：** 当前 `cmdAuto` 在 [commands.ts](../../cli/src/commands.ts) 中混合了初始化、后端启动、tmux 座位绑定及很长的 watcher 脚本。首版建议**新增插件宿主**，把确需共享的后端启动/提交结果抽成小接口；不要直接编辑 watcher 内所有 `tmux` 字符串。`auto --engine` 使用独立 `TurnCoordinator` 和 ACP/其他传输，直接运行会使 Claude/Codex 离开 Herdr Pane，不能充当本插件的双席实施。[autoEngine 源码](../../cli/src/engine/autoEngine.ts)
@@ -140,9 +140,9 @@ src/control-pane.ts        Herdr 终端内状态/人工操作入口
 tests/                     隔离项目里的契约、故障与真实双席测试
 ```
 
-Manifest 的 `[[actions]]` 可声明 `start`、`status`、`pause`、`resume`、`stop`、`open-report`；`[[panes]]` 提供**非 popup**控制 Pane，使协调器随 Pane 生命周期受 Herdr 管理。`[[startup]]` 仅重读绑定并提示/触发可证明安全的恢复，不后台藏一个无限进程。Herdr 插件配置目录保存用户选项，插件状态目录只保存运行绑定。Herdr 插件的命令是 argv 数组，运行时可用 `HERDR_BIN_PATH`、`HERDR_PLUGIN_CONTEXT_JSON`、`HERDR_PLUGIN_STATE_DIR`；首次发布时根据实际用到的接口设置准确的 `min_herdr_version`。[插件文档](https://herdr.dev/docs/plugins/)
+Manifest 的 `[[actions]]` 可声明 `start`、`status`、`pause`、`resume`、`stop`、`open-report`；`[[panes]]` 提供**非 popup**控制 Pane 显示诊断。当前实现的 `start` action 自身运行长期协调循环，控制 Pane 并不持有该循环；Server 重启时 action 子进程可能存活，需独立核验和阻断。`[[startup]]` 仅重读绑定并提示/触发可证明安全的恢复，不后台藏一个无限进程。Herdr 插件配置目录保存用户选项，插件状态目录只保存运行绑定。Herdr 插件的命令是 argv 数组，运行时可用 `HERDR_BIN_PATH`、`HERDR_PLUGIN_CONTEXT_JSON`、`HERDR_PLUGIN_STATE_DIR`；首次发布时根据实际用到的接口设置准确的 `min_herdr_version`。[插件文档](https://herdr.dev/docs/plugins/)
 
-`start` action 是短命入口：完成项目/会话预检后通过 `HERDR_BIN_PATH` 打开 `control` Pane；控制 Pane 内的进程持有自动协调循环。插件安装对当前用户的所有 Herdr 会话全局可见，运行绑定仍须按项目真实路径、RLL 会话和 Herdr 命名会话隔离。
+当前 `start` action 是长期运行入口：预检、双席启动、初始投递和后续协调均由该 action 进程执行；`control` Pane 只提供只读查看和刷新。未来若改为 Pane 或专用 supervisor 持有循环，必须重新验证停机、重启和日志持久性。插件安装对当前用户的所有 Herdr 会话全局可见，运行绑定仍须按项目真实路径、RLL 会话和 Herdr 命名会话隔离。
 
 ### 6.1 对照 Herdr 插件 v1 的发布契约
 
@@ -219,11 +219,11 @@ Socket 订阅的恢复顺序必须具体化：重新连接 → 建立新订阅�
 |---|---|
 | 用户退出 Herdr 客户端，Server 仍在 | 原进程和 Pane 继续；重新附着后快照核对，控制 Pane/协调器继续 |
 | 插件控制 Pane 退出 | 自动投递暂停；现有 Agent/CLI 业务文件保留；重新打开控制 Pane 后从真实状态恢复，避免双协调器 |
-| Herdr Server 重启 | 原进程已消失；需安装相应 Claude/Codex 集成并满足原生会话恢复条件；获取新快照、重绑身份和代次，再恢复交接 |
+| Herdr Server 重启 | Pane 内旧进程终止，但插件 action 协调器可能存活；先验证或阻断旧协调器及租约心跳，再核对 Agent 原生会话、Terminal、RLL 轮次和投递记录。任一身份缺失则保持人工核对，不自动接续 |
 | 事件丢失或 Socket 断开 | 重新订阅，读取权威快照和 CLI 状态；不能仅用增量事件回放推断当前轮次 |
 | 权限提示或用户显式暂停接管 | 暂停自动提示；显示可见原始提示，用户在终端处理后再核对轮次；未经显式暂停的直接键入属于 P0 待验证的冲突边界；`--full-auto` 不扩大对外发送/发布权限 |
 
-Herdr 官方说明：客户端脱离时进程继续；**Server 重启时原进程不继续**，只有满足原生会话恢复条件的 Agent 会话可重启。事件订阅也不是持久日志；落后时会报 `events_lost`，必须重取快照。[会话恢复](https://herdr.dev/docs/session-state/)、[Socket 事件](https://herdr.dev/docs/socket-api/)
+Herdr 的 Pane 内进程在 Server 重启时不继续，满足条件的 Agent 原生会话可重启；**插件 action 子进程的生命周期另需验证**。本机隔离试验已观察到旧协调器继续心跳，因此不能把 Pane 进程语义套用到 action 进程。事件订阅不是持久日志；落后时会报 `events_lost`，必须重取快照。[会话恢复](https://herdr.dev/docs/session-state/)、[Socket 事件](https://herdr.dev/docs/socket-api/)
 
 ### 6.4 实施前要冻结的最小机器契约
 

@@ -57,10 +57,11 @@ beforeEach(() => {
     `else if (args[0] === 'workspace') console.log(JSON.stringify({result:{workspace:{cwd:process.env.FAKE_HERDR_WORKSPACE}}}));\n` +
     `else if (args[0] === 'agent' && args[1] === 'get') {\n` +
     `  const role = args[2], scenario = process.env.FAKE_HERDR_AGENT_SCENARIO;\n` +
-    `  const agent = {name:role,agent:role === 'ralph' ? 'claude' : 'codex',workspace_id:'w1',pane_id:role === 'ralph' ? 'w1:p1' : 'w1:p2',cwd:process.env.FAKE_HERDR_WORKSPACE,interactive_ready:true,agent_status:'idle'};\n` +
+    `  const agent = {name:role,agent:role === 'ralph' ? 'claude' : 'codex',workspace_id:'w1',pane_id:role === 'ralph' ? 'w1:p1' : 'w1:p2',terminal_id:role === 'ralph' ? 'term-r' : 'term-l',cwd:process.env.FAKE_HERDR_WORKSPACE,interactive_ready:true,agent_status:'idle'};\n` +
     `  if (scenario === 'wrong-kind' && role === 'lisa') agent.agent = 'claude';\n` +
     `  if (scenario === 'same-pane' && role === 'lisa') agent.pane_id = 'w1:p1';\n` +
     `  if (scenario === 'blocked' && role === 'lisa') agent.agent_status = 'blocked';\n` +
+    `  if (scenario === 'missing-terminal' && role === 'lisa') delete agent.terminal_id;\n` +
     `  if (scenario === 'native-session' && role === 'ralph') agent.agent_session = {agent:'claude',kind:'id',source:'herdr:claude',value:'session-123'};\n` +
     `  if (scenario === 'invalid-session' && role === 'lisa') agent.agent_session = {agent:'claude',kind:'id',source:'herdr:codex',value:'session-456'};\n` +
     `  console.log(JSON.stringify({result:{agent}}));\n` +
@@ -168,6 +169,7 @@ test("seat preflight verifies real CLI state and two distinct Herdr agent identi
   assert.equal(ready.value.status, "ready");
   assert.equal(ready.value.binding_plan.workspace_id, "w1");
   assert.equal(ready.value.binding_plan.seats.ralph.pane_id, "w1:p1");
+  assert.equal(ready.value.binding_plan.seats.ralph.terminal_id, "term-r");
   assert.equal(ready.value.binding_plan.seats.lisa.agent_kind, "codex");
   assert.equal(ready.value.binding_plan.seats.lisa.native_session_fingerprint_sha256, null);
   const native = run("seat-preflight", { context, agentScenario: "native-session" });
@@ -185,6 +187,8 @@ test("seat preflight verifies real CLI state and two distinct Herdr agent identi
     "SEATS_SHARE_PANE");
   assert.equal(run("seat-preflight", { context, agentScenario: "blocked" }).value.code,
     "AGENT_NOT_READY");
+  assert.equal(run("seat-preflight", { context, agentScenario: "missing-terminal" }).value.code,
+    "AGENT_IDENTITY_MISMATCH");
   assert.equal(run("seat-preflight", { context, agentScenario: "invalid-session" }).value.code,
     "AGENT_SESSION_INVALID");
   assert.equal(fs.existsSync(path.join(project, ".dual-agent", "host", "lease")), false);

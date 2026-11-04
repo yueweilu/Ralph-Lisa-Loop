@@ -114,7 +114,7 @@ function submitPrompt(paths, record, herdr, plan, role, message, file, details) 
   verifySeat(herdr, plan, role, role === "ralph" ? "claude" : "codex");
   const intent = { schema: 1, status: "intent", owner_id: record.owner_id,
     lease_id: record.lease_id, role, workspace_id: plan.workspace_id,
-    pane_id: plan.seats[role].pane_id,
+    pane_id: plan.seats[role].pane_id, terminal_id: plan.seats[role].terminal_id,
     message_sha256: crypto.createHash("sha256").update(message).digest("hex"),
     ...details };
   durableWrite(file, intent, true);
@@ -279,6 +279,8 @@ function observeSeat(herdr, plan, role, kind, requireReady) {
   if (result.code !== 0 || agent?.name !== role || agent?.agent !== kind ||
       agent?.workspace_id !== plan.workspace_id || agent?.pane_id !== expected.pane_id ||
       cwd !== plan.project_realpath) throw new Error("AGENT_CHANGED");
+  if (expected.terminal_id && agent.terminal_id !== expected.terminal_id)
+    throw new Error("HERDR_TERMINAL_CHANGED");
   const nativeSession = nativeSessionReference(agent, kind);
   if (nativeSession.status === "invalid") throw new Error("AGENT_SESSION_INVALID");
   if (expected.native_session_fingerprint_sha256 &&
@@ -514,6 +516,8 @@ async function start() {
       record = processControl(paths, record, cli, herdr, plan);
       if (record.phase === "active") record = checkDelivery(paths, record, cli, herdr, plan);
       if (++ticks % 5 === 0) {
+        for (const [role, kind] of [["ralph", "claude"], ["lisa", "codex"]])
+          observeSeat(herdr, plan, role, kind, false);
         const heartbeat = call(cli, ["host", "heartbeat", "--project", paths.real,
           "--lease-id", lease.lease_id, "--owner-id", ownerId, "--json"]);
         if (hostBusy(heartbeat)) continue;

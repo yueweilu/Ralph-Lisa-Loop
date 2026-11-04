@@ -58,7 +58,7 @@ test("coordinator claims and binds observed seats, heartbeats, then releases on 
     `const a=process.argv.slice(2);\n` +
     `if(a[0]==='--version') console.log('herdr 0.9.4');\n` +
     `else if(a[0]==='integration') console.log('claude: not installed\\ncodex: not installed');\n` +
-    `else if(a[0]==='agent'&&a[1]==='get'){const role=a[2];const prompts=require('node:fs').existsSync(process.env.FAKE_PROMPTS)?require('node:fs').readFileSync(process.env.FAKE_PROMPTS,'utf8'):'';const hasLisaSession=prompts.includes('"role":"lisa"');const agent=role==='ralph'?'claude':'codex';console.log(JSON.stringify({result:{agent:{name:role,agent,workspace_id:'w1',pane_id:role==='ralph'?'w1:p1':'w1:p2',cwd:process.env.FAKE_PROJECT,agent_session:role==='ralph'||hasLisaSession?{agent,kind:'id',source:'herdr:'+agent,value:role==='ralph'?(process.env.FAKE_RALPH_SESSION||'session-123'):'lisa-session-123'}:undefined,interactive_ready:true,agent_status:role==='lisa'&&require('node:fs').existsSync(process.env.FAKE_BUSY_FILE)?'working':'idle'}}}));}\n` +
+    `else if(a[0]==='agent'&&a[1]==='get'){const role=a[2];const prompts=require('node:fs').existsSync(process.env.FAKE_PROMPTS)?require('node:fs').readFileSync(process.env.FAKE_PROMPTS,'utf8'):'';const hasLisaSession=prompts.includes('"role":"lisa"');const agent=role==='ralph'?'claude':'codex';console.log(JSON.stringify({result:{agent:{name:role,agent,workspace_id:'w1',pane_id:role==='ralph'?'w1:p1':'w1:p2',terminal_id:role==='ralph'?(process.env.FAKE_RALPH_TERMINAL||'term-r'):'term-l',cwd:process.env.FAKE_PROJECT,agent_session:role==='ralph'||hasLisaSession?{agent,kind:'id',source:'herdr:'+agent,value:role==='ralph'?(process.env.FAKE_RALPH_SESSION||'session-123'):'lisa-session-123'}:undefined,interactive_ready:true,agent_status:role==='lisa'&&require('node:fs').existsSync(process.env.FAKE_BUSY_FILE)?'working':'idle'}}}));}\n` +
     `else if(a[0]==='agent'&&a[1]==='prompt'){const role=a[2];require('node:fs').appendFileSync(process.env.FAKE_PROMPTS,JSON.stringify({role,message:a[3]})+'\\n');console.log(JSON.stringify({result:{type:'agent_prompted',agent:{name:role,agent:role==='ralph'?'claude':'codex',workspace_id:'w1',pane_id:role==='ralph'?'w1:p1':'w1:p2',cwd:process.env.FAKE_PROJECT,agent_status:'working'}}}));}\n` +
     `else process.exit(2);\n`);
   fs.writeFileSync(fakeClaude, `#!${process.execPath}\nconsole.log('{"loggedIn":true}');\n`);
@@ -266,7 +266,7 @@ test("start creates both seats and waits for a blocked agent before claiming", a
       `out({workspace:{workspace_id:'w2'},root_pane:{workspace_id:'w2',pane_id:'w2:p1'}});}` +
     `else if(a[0]==='pane'&&a[1]==='split')out({pane:{workspace_id:'w2',pane_id:'w2:p2'}});` +
     `else if(a[0]==='agent'&&a[1]==='start'){const role=a[2];` +
-      `const agent={name:role,agent:a[4],workspace_id:'w2',pane_id:a[6],cwd:process.env.FAKE_PROJECT,interactive_ready:role==='ralph',agent_status:role==='ralph'?'idle':'blocked'};` +
+      `const agent={name:role,agent:a[4],workspace_id:'w2',pane_id:a[6],terminal_id:'term-'+role,cwd:process.env.FAKE_PROJECT,interactive_ready:role==='ralph',agent_status:role==='ralph'?'idle':'blocked'};` +
       `s.agents[role]=agent;save();if(role==='lisa'){console.error(JSON.stringify({error:{code:'agent_not_ready'}}));process.exitCode=1;}else out({agent});}` +
     `else if(a[0]==='agent'&&a[1]==='prompt'){const agent=s.agents[a[2]];s.prompts=(s.prompts||0)+1;save();out({type:'agent_prompted',agent});}` +
     `else process.exit(2);\n`);
@@ -325,13 +325,14 @@ test("start creates both seats and waits for a blocked agent before claiming", a
   }
 });
 
-for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commit"]) test(
+for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commit", "server-restart"]) test(
   `${failure} Herdr prompt keeps one durable intent and stops without replay`, async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "rll-herdr-uncertain-"));
   const project = path.join(temp, "project");
   const configDir = path.join(temp, "config");
   const stateDir = path.join(temp, "state");
   const prompts = path.join(temp, "prompts.txt");
+  const restartedFile = path.join(temp, "server-restarted");
   const fakeHerdr = path.join(temp, "herdr");
   const fakeClaude = path.join(temp, "claude");
   const fakeCodex = path.join(temp, "codex");
@@ -343,7 +344,7 @@ for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commi
     `const a=process.argv.slice(2);` +
     `if(a[0]==='--version')console.log('herdr 0.9.4');` +
     `else if(a[0]==='integration')console.log('claude: current (v10)\\ncodex: current (v9)');` +
-    `else if(a[0]==='agent'&&a[1]==='get'){const role=a[2];console.log(JSON.stringify({result:{agent:{name:role,agent:role==='ralph'?'claude':'codex',workspace_id:'w1',pane_id:role==='ralph'?'w1:p1':'w1:p2',cwd:process.env.FAKE_PROJECT,interactive_ready:true,agent_status:'idle'}}}));}` +
+    `else if(a[0]==='agent'&&a[1]==='get'){const role=a[2];const changed=require('node:fs').existsSync(process.env.FAKE_SERVER_RESTARTED);console.log(JSON.stringify({result:{agent:{name:role,agent:role==='ralph'?'claude':'codex',workspace_id:'w1',pane_id:role==='ralph'?'w1:p1':'w1:p2',terminal_id:(changed?'new-':'term-')+role,cwd:process.env.FAKE_PROJECT,interactive_ready:true,agent_status:'idle'}}}));}` +
     `else if(a[0]==='agent'&&a[1]==='prompt'){require('node:fs').appendFileSync(process.env.FAKE_PROMPTS,a[2]+'\\n');if((a[2]==='ralph'&&process.env.FAKE_PROMPT_FAILURE==='initial-timeout')||(a[2]==='lisa'&&process.env.FAKE_PROMPT_FAILURE==='timeout')){console.error(JSON.stringify({error:{code:'timeout'}}));process.exitCode=1;}else if(a[2]==='ralph')console.log(JSON.stringify({result:{type:'agent_prompted',agent:{name:'ralph',agent:'claude',workspace_id:'w1',pane_id:'w1:p1',cwd:process.env.FAKE_PROJECT}}}));else console.log(JSON.stringify({result:{type:'agent_prompted',agent:{name:a[2],agent:'codex',workspace_id:'w1',pane_id:'w1:p9',cwd:process.env.FAKE_PROJECT}}}));}` +
     `else process.exitCode=2;\n`);
   fs.writeFileSync(fakeClaude, `#!${process.execPath}\nconsole.log('{"loggedIn":true}');\n`);
@@ -355,7 +356,8 @@ for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commi
     CLAUDE_BIN_PATH: fakeClaude, CODEX_BIN_PATH: fakeCodex,
     HERDR_PLUGIN_CONFIG_DIR: configDir, HERDR_PLUGIN_STATE_DIR: stateDir,
     HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({ workspace_id: "w1", workspace_cwd: project }),
-    FAKE_PROJECT: project, FAKE_PROMPTS: prompts, FAKE_PROMPT_FAILURE: failure };
+    FAKE_PROJECT: project, FAKE_PROMPTS: prompts, FAKE_PROMPT_FAILURE: failure,
+    FAKE_SERVER_RESTARTED: restartedFile };
   const child = spawn(process.execPath, [coordinator, "start"],
     { env, stdio: ["ignore", "pipe", "pipe"] });
   try {
@@ -423,6 +425,27 @@ for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commi
       return;
     }
     assert.equal(started.status, "started");
+    if (failure === "server-restart") {
+      const failed = waitForLine(child, (value) => value.status === "needs_reconcile");
+      fs.writeFileSync(restartedFile, "restarted");
+      const fenced = await failed;
+      assert.equal(fenced.code, "HERDR_TERMINAL_CHANGED");
+      assert.equal(fs.readFileSync(prompts, "utf8"), "ralph\n");
+      const snapshot = JSON.parse(spawnSync(process.execPath,
+        [cli, "host", "snapshot", "--project", project, "--json"], {
+          env, encoding: "utf8",
+        }).stdout);
+      assert.equal(snapshot.host_state, "claimed");
+      const sessionDir = path.join(stateDir, "sessions",
+        fs.readdirSync(path.join(stateDir, "sessions"))[0]);
+      const record = JSON.parse(fs.readFileSync(path.join(sessionDir, "record.json"), "utf8"));
+      assert.equal(record.phase, "needs_reconcile");
+      const audit = spawnSync(process.execPath,
+        [path.join(root, "actions.mjs"), "recovery-check"], { env, encoding: "utf8" });
+      assert.equal(audit.status, 0, audit.stdout + audit.stderr);
+      assert.equal(JSON.parse(audit.stdout).seats.ralph.observation, "terminal_changed");
+      return;
+    }
     if (failure === "paused-commit") {
       const paused = spawnSync(process.execPath, [coordinator, "pause"],
         { env, encoding: "utf8", timeout: 15000 });
