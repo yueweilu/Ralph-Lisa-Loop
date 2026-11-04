@@ -163,6 +163,19 @@ function recoveryPluginState(projectRealpath, cliEvidence) {
       "DELIVERY_OUTCOME_UNCERTAIN" : null };
 }
 
+function nativeSessionReference(agent, kind) {
+  if (!agent) return { status: "unavailable", fingerprint_sha256: null };
+  const reference = agent.agent_session;
+  if (reference == null) return { status: "missing", fingerprint_sha256: null };
+  if (reference.agent !== kind || typeof reference.kind !== "string" || !reference.kind ||
+      typeof reference.source !== "string" || !reference.source ||
+      typeof reference.value !== "string" || !reference.value)
+    return { status: "invalid", fingerprint_sha256: null };
+  return { status: "present", fingerprint_sha256: crypto.createHash("sha256")
+    .update(JSON.stringify({ agent: reference.agent, kind: reference.kind,
+      source: reference.source, value: reference.value })).digest("hex") };
+}
+
 function recoverySeats(herdr, projectRealpath, recordPlan) {
   if (!recordPlan?.seats || !recordPlan.workspace_id) return null;
   const seats = {};
@@ -171,13 +184,15 @@ function recoverySeats(herdr, projectRealpath, recordPlan) {
     const agent = readJson(result)?.result?.agent;
     let cwd = null;
     try { cwd = fs.realpathSync.native(agent.cwd); } catch { /* Unavailable is not proof of exit. */ }
+    const nativeSession = nativeSessionReference(result.code === 0 ? agent : null, kind);
     seats[role] = { observation: result.code !== 0 || !agent ? "unavailable" :
       agent.name === role && agent.agent === kind &&
       agent.workspace_id === recordPlan.workspace_id &&
       agent.pane_id === recordPlan.seats[role]?.pane_id && cwd === projectRealpath ?
         "matches_binding" : "identity_changed",
       status: agent?.agent_status ?? null,
-      pane_id: agent?.pane_id ?? null };
+      pane_id: agent?.pane_id ?? null,
+      native_session: nativeSession };
   }
   return seats;
 }
@@ -212,11 +227,16 @@ function recoveryAudit(diagnosis, project) {
           snapshot.seats?.ralph?.pane_id !== plan.seats.ralph.pane_id ||
           snapshot.seats?.lisa?.pane_id !== plan.seats.lisa.pane_id))
       throw new Error("PLUGIN_HOST_BINDING_MISMATCH");
+    const seats = recoverySeats(diagnosis.herdr, evidence.project_realpath, plan);
     emit({ status: "review_required", project: evidence.project_realpath,
       cli: evidence, plugin: plugin.record, deliveries: plugin.deliveries,
       plugin_warning: plugin.warning,
-      seats: recoverySeats(diagnosis.herdr, evidence.project_realpath, plan),
-      note: "Read-only observations do not prove coordinator or Agents stopped; inspect before recover-lease." });
+      seats,
+      restart_observation: !seats ? "binding_plan_unavailable" :
+        Object.values(seats).every((seat) => seat.observation === "matches_binding" &&
+          seat.native_session.status === "present") ?
+          "native_session_references_present" : "manual_rebind_required",
+      note: "Native session reference presence does not prove continuity across restart. Read-only observations do not prove coordinator or Agents stopped; inspect before recover-lease." });
   } catch (error) {
     emit({ status: "needs_reconcile", code: error.message || "PLUGIN_RECOVERY_INVALID",
       project: evidence.project_realpath, cli: evidence }, 7);

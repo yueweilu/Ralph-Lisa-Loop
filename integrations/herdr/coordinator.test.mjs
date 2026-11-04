@@ -58,7 +58,7 @@ test("coordinator claims and binds observed seats, heartbeats, then releases on 
     `const a=process.argv.slice(2);\n` +
     `if(a[0]==='--version') console.log('herdr 0.9.4');\n` +
     `else if(a[0]==='integration') console.log('claude: not installed\\ncodex: not installed');\n` +
-    `else if(a[0]==='agent'&&a[1]==='get'){const role=a[2];console.log(JSON.stringify({result:{agent:{name:role,agent:role==='ralph'?'claude':'codex',workspace_id:'w1',pane_id:role==='ralph'?'w1:p1':'w1:p2',cwd:process.env.FAKE_PROJECT,interactive_ready:true,agent_status:role==='lisa'&&require('node:fs').existsSync(process.env.FAKE_BUSY_FILE)?'working':'idle'}}}));}\n` +
+    `else if(a[0]==='agent'&&a[1]==='get'){const role=a[2];console.log(JSON.stringify({result:{agent:{name:role,agent:role==='ralph'?'claude':'codex',workspace_id:'w1',pane_id:role==='ralph'?'w1:p1':'w1:p2',cwd:process.env.FAKE_PROJECT,agent_session:role==='ralph'?{agent:'claude',kind:'id',source:'herdr:claude',value:'session-123'}:undefined,interactive_ready:true,agent_status:role==='lisa'&&require('node:fs').existsSync(process.env.FAKE_BUSY_FILE)?'working':'idle'}}}));}\n` +
     `else if(a[0]==='agent'&&a[1]==='prompt'){const role=a[2];require('node:fs').appendFileSync(process.env.FAKE_PROMPTS,JSON.stringify({role,message:a[3]})+'\\n');console.log(JSON.stringify({result:{type:'agent_prompted',agent:{name:role,agent:role==='ralph'?'claude':'codex',workspace_id:'w1',pane_id:role==='ralph'?'w1:p1':'w1:p2',cwd:process.env.FAKE_PROJECT,agent_status:'working'}}}));}\n` +
     `else process.exit(2);\n`);
   fs.writeFileSync(fakeClaude, `#!${process.execPath}\nconsole.log('{"loggedIn":true}');\n`);
@@ -94,6 +94,11 @@ test("coordinator claims and binds observed seats, heartbeats, then releases on 
     assert.deepEqual(audited.deliveries.map((row) => [row.kind, row.status]),
       [["initial", "accepted"]]);
     assert.equal(audited.seats.ralph.observation, "matches_binding");
+    assert.equal(audited.seats.ralph.native_session.status, "present");
+    assert.match(audited.seats.ralph.native_session.fingerprint_sha256, /^[0-9a-f]{64}$/);
+    assert.equal(audited.seats.lisa.native_session.status, "missing");
+    assert.equal(audited.restart_observation, "manual_rebind_required");
+    assert.doesNotMatch(recovery.stdout, /session-123/);
     const claimed = JSON.parse(spawnSync(process.execPath, [cli, "host", "snapshot", "--project", project, "--json"], {
       encoding: "utf8",
     }).stdout);

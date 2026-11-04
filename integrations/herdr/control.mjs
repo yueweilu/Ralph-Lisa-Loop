@@ -26,7 +26,8 @@ function show(action) {
     if (action === "recovery-check" && response.status === "review_required") {
       console.log(JSON.stringify({ lease_id: response.cli?.lease_id,
         plugin: response.plugin, plugin_warning: response.plugin_warning,
-        deliveries: response.deliveries, seats: response.seats }, null, 2));
+        deliveries: response.deliveries, seats: response.seats,
+        restart_observation: response.restart_observation }, null, 2));
     }
   } catch {
     console.log(`${action}: probe failed (${result.error?.code ?? result.status ?? "unknown"})`);
