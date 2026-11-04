@@ -345,7 +345,38 @@ for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commi
       assert.equal(audited.plugin.phase, "needs_reconcile");
       assert.deepEqual(audited.deliveries.map((row) => [row.kind, row.status]),
         [["initial", "intent"]]);
-      fs.writeFileSync(path.join(sessionDir, `initial-${record.session_id}.json`), "{broken");
+      const recordFile = path.join(sessionDir, "record.json");
+      const initialFile = path.join(sessionDir, `initial-${record.session_id}.json`);
+      const originalInitial = fs.readFileSync(initialFile, "utf8");
+      const audit = () => spawnSync(process.execPath,
+        [path.join(root, "actions.mjs"), "recovery-check"], { env, encoding: "utf8" });
+      for (const change of [
+        { pane_id: "w1:other" }, { workspace_id: "other" },
+        { message_sha256: "not-a-hash" }, { role: "lisa" },
+      ]) {
+        fs.writeFileSync(initialFile, JSON.stringify({ ...initial, ...change }));
+        const mismatched = audit();
+        assert.equal(mismatched.status, 7, mismatched.stdout + mismatched.stderr);
+        assert.equal(JSON.parse(mismatched.stdout).code, "PLUGIN_DELIVERY_INVALID");
+      }
+      fs.writeFileSync(initialFile, originalInitial);
+      fs.writeFileSync(recordFile, JSON.stringify({ ...record,
+        binding_generation: record.binding_generation + 1 }));
+      const wrongBinding = audit();
+      assert.equal(wrongBinding.status, 7, wrongBinding.stdout + wrongBinding.stderr);
+      assert.equal(JSON.parse(wrongBinding.stdout).code, "PLUGIN_BINDING_MISMATCH");
+      fs.writeFileSync(recordFile, JSON.stringify(record));
+      fs.writeFileSync(recordFile, JSON.stringify({ ...record, plan: {
+        ...record.plan, seats: { ...record.plan.seats,
+          ralph: { ...record.plan.seats.ralph, pane_id: "w1:other" } },
+      } }));
+      fs.writeFileSync(initialFile, JSON.stringify({ ...initial, pane_id: "w1:other" }));
+      const wrongHostSeat = audit();
+      assert.equal(wrongHostSeat.status, 7, wrongHostSeat.stdout + wrongHostSeat.stderr);
+      assert.equal(JSON.parse(wrongHostSeat.stdout).code, "PLUGIN_HOST_BINDING_MISMATCH");
+      fs.writeFileSync(recordFile, JSON.stringify(record));
+      fs.writeFileSync(initialFile, originalInitial);
+      fs.writeFileSync(initialFile, "{broken");
       const invalid = spawnSync(process.execPath,
         [path.join(root, "actions.mjs"), "recovery-check"], { env, encoding: "utf8" });
       assert.equal(invalid.status, 7);

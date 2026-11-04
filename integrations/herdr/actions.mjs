@@ -116,8 +116,21 @@ function recoveryPluginState(projectRealpath, cliEvidence) {
       !UUID.test(record.owner_id ?? "")) throw new Error("PLUGIN_LEASE_MISMATCH");
   if (!Number.isSafeInteger(record.pid) || record.pid < 1 ||
       typeof record.phase !== "string") throw new Error("PLUGIN_RECORD_INVALID");
+  if (record.binding_generation !== undefined &&
+      record.binding_generation !== cliEvidence.binding_generation)
+    throw new Error("PLUGIN_BINDING_MISMATCH");
+  const plan = record.plan;
+  if (plan && (plan.project_realpath !== projectRealpath ||
+      plan.session_id !== record.session_id ||
+      typeof plan.workspace_id !== "string" || !plan.workspace_id ||
+      typeof plan.seats?.ralph?.pane_id !== "string" ||
+      typeof plan.seats?.lisa?.pane_id !== "string" ||
+      plan.seats.ralph.pane_id === plan.seats.lisa.pane_id))
+    throw new Error("PLUGIN_BINDING_MISMATCH");
   const names = fs.readdirSync(dir).filter((name) =>
     name.startsWith("initial-") || name.startsWith("delivery-"));
+  if (names.length && (!plan || record.binding_generation !== cliEvidence.binding_generation))
+    throw new Error("PLUGIN_BINDING_MISMATCH");
   const deliveries = names.map((name) => {
     if (!/^(?:initial|delivery)-[0-9a-f-]{36}\.json$/i.test(name))
       throw new Error("PLUGIN_DELIVERY_INVALID");
@@ -126,10 +139,14 @@ function recoveryPluginState(projectRealpath, cliEvidence) {
         !["intent", "accepted"].includes(value.status) ||
         value.owner_id !== record.owner_id || value.lease_id !== record.lease_id ||
         !["ralph", "lisa"].includes(value.role) ||
+        value.workspace_id !== plan.workspace_id ||
+        value.pane_id !== plan.seats[value.role]?.pane_id ||
+        !/^[0-9a-f]{64}$/.test(value.message_sha256 ?? "") ||
         !Number.isSafeInteger(value.generation) || value.generation < 0 ||
         (name.startsWith("initial-") ? value.session_id !== record.session_id ||
-          name.slice(8, -5) !== record.session_id || value.generation !== 0 :
-          value.request_id !== name.slice(9, -5)))
+          name.slice(8, -5) !== record.session_id || value.generation !== 0 ||
+          value.role !== "ralph" :
+          value.request_id !== name.slice(9, -5) || value.generation === 0))
       throw new Error("PLUGIN_DELIVERY_INVALID");
     return { kind: name.startsWith("initial-") ? "initial" : "handoff",
       status: value.status, role: value.role, generation: value.generation ?? null,
@@ -178,6 +195,23 @@ function recoveryAudit(diagnosis, project) {
     const key = crypto.createHash("sha256").update(evidence.project_realpath).digest("hex");
     const recordPath = path.join(process.env.HERDR_PLUGIN_STATE_DIR, "sessions", key, "record.json");
     const plan = plugin.record ? regularJson(recordPath).plan : null;
+    const observed = invoke(diagnosis.cli, ["host", "snapshot", "--project",
+      evidence.project_realpath, "--json"]);
+    const snapshot = readJson(observed);
+    if (observed.code !== 0 || snapshot?.status !== "ok" ||
+        snapshot.project_realpath !== evidence.project_realpath ||
+        snapshot.session_id !== evidence.session_id ||
+        snapshot.owner_id !== evidence.owner_id ||
+        snapshot.binding_generation !== evidence.binding_generation ||
+        snapshot.generation !== evidence.generation ||
+        snapshot.state_digest !== evidence.state_digest)
+      throw new Error("RECOVERY_STATE_CHANGED");
+    if (plugin.deliveries.length &&
+        (snapshot.binding_state !== "bound" ||
+          snapshot.workspace_id !== plan.workspace_id ||
+          snapshot.seats?.ralph?.pane_id !== plan.seats.ralph.pane_id ||
+          snapshot.seats?.lisa?.pane_id !== plan.seats.lisa.pane_id))
+      throw new Error("PLUGIN_HOST_BINDING_MISMATCH");
     emit({ status: "review_required", project: evidence.project_realpath,
       cli: evidence, plugin: plugin.record, deliveries: plugin.deliveries,
       plugin_warning: plugin.warning,
