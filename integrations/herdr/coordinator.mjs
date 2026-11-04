@@ -104,6 +104,65 @@ function deliveryFile(paths, requestId) {
   return path.join(paths.dir, `delivery-${requestId.toLowerCase()}.json`);
 }
 
+function initialFile(paths, sessionId) {
+  if (!UUID.test(sessionId)) throw new Error("INVALID_SESSION_ID");
+  return path.join(paths.dir, `initial-${sessionId.toLowerCase()}.json`);
+}
+
+function submitPrompt(paths, record, herdr, plan, role, message, file, details) {
+  verifySeat(herdr, plan, role, role === "ralph" ? "claude" : "codex");
+  const intent = { schema: 1, status: "intent", owner_id: record.owner_id,
+    lease_id: record.lease_id, role, workspace_id: plan.workspace_id,
+    pane_id: plan.seats[role].pane_id,
+    message_sha256: crypto.createHash("sha256").update(message).digest("hex"),
+    ...details };
+  durableWrite(file, intent, true);
+  const submitted = call(herdr, ["agent", "prompt", role, message]);
+  if (submitted.code !== 0 || submitted.value?.error)
+    throw new Error(submitted.value?.error?.code || submitted.error || "PROMPT_UNCERTAIN");
+  const acknowledged = submitted.value?.result;
+  let acknowledgedCwd = null;
+  try { acknowledgedCwd = fs.realpathSync.native(acknowledged.agent.cwd); }
+  catch { /* A missing or changed project is not an acknowledged seat. */ }
+  if (acknowledged?.type !== "agent_prompted" ||
+      acknowledged.agent?.name !== role ||
+      acknowledged.agent?.agent !== (role === "ralph" ? "claude" : "codex") ||
+      acknowledged.agent?.workspace_id !== plan.workspace_id ||
+      acknowledged.agent?.pane_id !== plan.seats[role].pane_id ||
+      acknowledgedCwd !== paths.real)
+    throw new Error("PROMPT_ACK_MISMATCH");
+  durableWrite(file, { ...intent, status: "accepted" });
+}
+
+function requireTaskFile(snapshot) {
+  const task = path.join(snapshot.state_realpath, "task.md");
+  try {
+    const stat = fs.lstatSync(task);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size === 0)
+      throw new Error("invalid task file");
+  } catch { throw new Error("TASK_FILE_INVALID"); }
+  return task;
+}
+
+function deliverInitial(paths, record, cli, herdr, plan, taskFile) {
+  const observed = call(cli, ["host", "snapshot", "--project", paths.real, "--json"]);
+  const snapshot = requireActiveSnapshot(observed, paths, record, plan);
+  if (snapshot.generation !== 0 || snapshot.last_receipt_id !== null ||
+      snapshot.turn !== "ralph" || snapshot.state_digest !== record.expected_digest)
+    throw new Error("INITIAL_STATE_CHANGED");
+  const message = `Initial Ralph-Lisa task. Project: ${paths.real}. Session: ${record.session_id}. ` +
+    `You are Ralph in round ${snapshot.round}. Read ${taskFile} and the current RLL state, ` +
+    "then work in the project. Prepare a candidate file and follow the RLL host contract. " +
+    "The current source gate requires a human to review and confirm each candidate before commit; do not bypass it.";
+  submitPrompt(paths, record, herdr, plan, "ralph", message,
+    initialFile(paths, record.session_id), { session_id: record.session_id, generation: 0 });
+  record = { ...record, initial_status: "accepted" };
+  durableWrite(paths.record, record);
+  emit({ status: "initial_prompted", project: paths.real, session_id: record.session_id,
+    role: "ralph", pane_id: plan.seats.ralph.pane_id });
+  return record;
+}
+
 function checkDelivery(paths, record, cli, herdr, plan) {
   const observed = call(cli, ["host", "snapshot", "--project", paths.real, "--json"]);
   if (hostBusy(observed)) return record;
@@ -135,38 +194,18 @@ function checkDelivery(paths, record, cli, herdr, plan) {
       receipt.source_verification !== "unverified")
     throw new Error(receipt?.code || "RECEIPT_MISMATCH");
   const role = receipt.turn_after;
-  verifySeat(herdr, plan, role, role === "ralph" ? "claude" : "codex");
   const message = `Ralph-Lisa committed handoff. Project: ${paths.real}. Session: ${record.session_id}. ` +
     `Receipt: ${receipt.request_id}. Generation: ${receipt.generation_after}. ` +
     `It is your ${role} turn in round ${receipt.round_after}. Read the current RLL state and ` +
     "work/review files before acting. Submit through the RLL host contract; preserve its human source confirmation gate.";
   const file = deliveryFile(paths, receipt.request_id);
-  const intent = { schema: 1, status: "intent", owner_id: record.owner_id,
-    lease_id: record.lease_id, request_id: receipt.request_id,
-    generation: receipt.generation_after, role, workspace_id: plan.workspace_id,
-    pane_id: plan.seats[role].pane_id,
-    message_sha256: crypto.createHash("sha256").update(message).digest("hex") };
-  durableWrite(file, intent, true);
-  const submitted = call(herdr, ["agent", "prompt", role, message]);
-  if (submitted.code !== 0 || submitted.value?.error)
-    throw new Error(submitted.value?.error?.code || submitted.error || "PROMPT_UNCERTAIN");
-  const acknowledged = submitted.value?.result;
-  let acknowledgedCwd = null;
-  try { acknowledgedCwd = fs.realpathSync.native(acknowledged.agent.cwd); }
-  catch { /* A missing or changed project is not an acknowledged seat. */ }
-  if (acknowledged?.type !== "agent_prompted" ||
-      acknowledged.agent?.name !== role ||
-      acknowledged.agent?.agent !== (role === "ralph" ? "claude" : "codex") ||
-      acknowledged.agent?.workspace_id !== plan.workspace_id ||
-      acknowledged.agent?.pane_id !== plan.seats[role].pane_id ||
-      acknowledgedCwd !== paths.real)
-    throw new Error("PROMPT_ACK_MISMATCH");
-  durableWrite(file, { ...intent, status: "accepted" });
+  submitPrompt(paths, record, herdr, plan, role, message, file,
+    { request_id: receipt.request_id, generation: receipt.generation_after });
   const next = { ...record, cursor_generation: receipt.generation_after,
     cursor_receipt_id: receipt.request_id, cursor_turn: role };
   durableWrite(paths.record, next);
   emit({ status: "handed_off", project: paths.real, request_id: receipt.request_id,
-    generation: receipt.generation_after, role, pane_id: intent.pane_id });
+    generation: receipt.generation_after, role, pane_id: plan.seats[role].pane_id });
   return next;
 }
 
@@ -245,6 +284,8 @@ function requireSnapshot(result) {
       !UUID.test(snapshot.session_id ?? "") ||
       typeof snapshot.project_realpath !== "string" ||
       !path.isAbsolute(snapshot.project_realpath) ||
+      typeof snapshot.state_realpath !== "string" ||
+      !path.isAbsolute(snapshot.state_realpath) ||
       typeof snapshot.state_digest !== "string") {
     throw new Error(result.value?.code || "PROJECT_NOT_READY");
   }
@@ -341,6 +382,14 @@ async function start() {
     emit({ status: "not_ready", code: "EXISTING_GENERATION_REQUIRES_RECOVERY" }, 3);
     return;
   }
+  let taskFile;
+  try {
+    if (initial.turn !== "ralph") throw new Error("INITIAL_TURN_REQUIRED");
+    taskFile = requireTaskFile(initial);
+  } catch (error) {
+    emit({ status: "not_ready", code: error.message || "TASK_FILE_INVALID" }, 3);
+    return;
+  }
   const preflight = call([process.execPath, path.join(root, "actions.mjs")], ["seat-preflight"]);
   const bootNeeded = preflight.value?.code === "AGENT_MISSING";
   let plan = preflight.value?.status === "ready" ? preflight.value?.binding_plan : null;
@@ -350,6 +399,10 @@ async function start() {
   }
   const paths = files(initial.project_realpath);
   fs.mkdirSync(paths.dir, { recursive: true, mode: 0o700 });
+  if (fs.existsSync(initialFile(paths, initial.session_id))) {
+    emit({ status: "not_ready", code: "INITIAL_PROMPT_REQUIRES_RECOVERY" }, 3);
+    return;
+  }
   const ownerId = crypto.randomUUID();
   let record = { schema: 1, phase: "intent", owner_id: ownerId, pid: process.pid,
     project_realpath: paths.real, session_id: initial.session_id,
@@ -413,6 +466,7 @@ async function start() {
     record = { ...record, phase: "active", binding_generation: current.value.binding_generation,
       cursor_generation: 0, cursor_receipt_id: null, cursor_turn: prepared.value.turn };
     durableWrite(paths.record, record);
+    record = deliverInitial(paths, record, cli, herdr, plan, taskFile);
     emit({ status: "started", project: paths.real, workspace_id: plan.workspace_id,
       binding_generation: record.binding_generation, owner_id: ownerId, lease_id: lease.lease_id });
     let ticks = 0;

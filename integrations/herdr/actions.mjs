@@ -79,6 +79,7 @@ function coordinatorState(snapshot) {
     if (record.project_realpath !== snapshot.project_realpath ||
         record.session_id !== snapshot.session_id) throw new Error("wrong session");
     return { phase: record.phase, cursor_generation: record.cursor_generation ?? null,
+      initial_status: record.initial_status ?? null,
       paused_at: record.paused_at ?? null, control_error: record.control_error ?? null };
   } catch { return { phase: "needs_reconcile", code: "PLUGIN_RECORD_INVALID" }; }
 }

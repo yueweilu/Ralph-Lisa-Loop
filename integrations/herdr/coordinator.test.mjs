@@ -81,6 +81,8 @@ test("coordinator claims and binds observed seats, heartbeats, then releases on 
   try {
     const started = await waitForLine(child, (value) => value.status === "started" || value.status === "needs_reconcile");
     assert.equal(started.status, "started", JSON.stringify(started));
+    assert.equal(fs.readFileSync(prompts, "utf8").trim().split("\n").length, 1);
+    assert.match(JSON.parse(fs.readFileSync(prompts, "utf8").trim()).message, /task\.md/);
     const claimed = JSON.parse(spawnSync(process.execPath, [cli, "host", "snapshot", "--project", project, "--json"], {
       encoding: "utf8",
     }).stdout);
@@ -99,6 +101,7 @@ test("coordinator claims and binds observed seats, heartbeats, then releases on 
     const actionStatus = () => JSON.parse(spawnSync(process.execPath,
       [path.join(root, "actions.mjs"), "status"], { env, encoding: "utf8" }).stdout);
     assert.equal(actionStatus().coordination.phase, "paused");
+    assert.equal(actionStatus().coordination.initial_status, "accepted");
     fs.writeFileSync(busyFile, "busy");
     const tooEarly = spawnSync(process.execPath, [coordinator, "resume"],
       { env, encoding: "utf8", timeout: 15000 });
@@ -150,20 +153,24 @@ test("coordinator claims and binds observed seats, heartbeats, then releases on 
       return receipt;
     }
     const first = submit("ralph", 0, "[PLAN] Define the change.\n\nTest Plan: npm test\n");
-    assert.equal((await waitForPrompts(1))[0].role, "lisa");
+    assert.equal((await waitForPrompts(2))[1].role, "lisa");
     assert.equal(host("receipt", ["--request-id", first.request_id]).request_id, first.request_id);
     await new Promise((resolve) => setTimeout(resolve, 1500));
-    assert.equal(promptRows().length, 1, "polling must not replay a committed receipt");
+    assert.equal(promptRows().length, 2, "polling must not replay a committed receipt");
     const second = submit("lisa", 1,
       "[NEEDS_WORK] Cover the missing case.\n\n- Issue at commands.ts:42 needs another check.\n");
-    const rows = await waitForPrompts(2);
-    assert.deepEqual(rows.map((row) => row.role), ["lisa", "ralph"]);
-    assert.match(rows[0].message, new RegExp(first.request_id));
-    assert.match(rows[1].message, new RegExp(second.request_id));
+    const rows = await waitForPrompts(3);
+    assert.deepEqual(rows.map((row) => row.role), ["ralph", "lisa", "ralph"]);
+    assert.match(rows[1].message, new RegExp(first.request_id));
+    assert.match(rows[2].message, new RegExp(second.request_id));
     await new Promise((resolve) => setTimeout(resolve, 1500));
-    assert.equal(promptRows().length, 2);
+    assert.equal(promptRows().length, 3);
     const pluginDir = path.join(stateDir, "sessions");
     const sessionDir = path.join(pluginDir, fs.readdirSync(pluginDir)[0]);
+    const initial = JSON.parse(fs.readFileSync(path.join(sessionDir,
+      `initial-${claimed.session_id}.json`), "utf8"));
+    assert.equal(initial.status, "accepted");
+    assert.equal(initial.role, "ralph");
     for (const receipt of [first, second]) {
       const delivery = JSON.parse(fs.readFileSync(path.join(sessionDir,
         `delivery-${receipt.request_id}.json`), "utf8"));
@@ -215,6 +222,7 @@ test("start creates both seats and waits for a blocked agent before claiming", a
     `else if(a[0]==='agent'&&a[1]==='start'){const role=a[2];` +
       `const agent={name:role,agent:a[4],workspace_id:'w2',pane_id:a[6],cwd:process.env.FAKE_PROJECT,interactive_ready:role==='ralph',agent_status:role==='ralph'?'idle':'blocked'};` +
       `s.agents[role]=agent;save();if(role==='lisa'){console.error(JSON.stringify({error:{code:'agent_not_ready'}}));process.exitCode=1;}else out({agent});}` +
+    `else if(a[0]==='agent'&&a[1]==='prompt'){const agent=s.agents[a[2]];s.prompts=(s.prompts||0)+1;save();out({type:'agent_prompted',agent});}` +
     `else process.exit(2);\n`);
   fs.writeFileSync(fakeClaude, `#!${process.execPath}\nconsole.log('{"loggedIn":true}');\n`);
   fs.writeFileSync(fakeCodex, `#!${process.execPath}\nconsole.log('Logged in using ChatGPT');\n`);
@@ -238,6 +246,7 @@ test("start creates both seats and waits for a blocked agent before claiming", a
     assert.equal(herdrState.workspaces, 1);
     assert.equal(herdrState.agents.ralph.pane_id, "w2:p1");
     assert.equal(herdrState.agents.lisa.pane_id, "w2:p2");
+    assert.equal(herdrState.prompts, 1);
     const claimed = JSON.parse(spawnSync(process.execPath, [cli, "host", "snapshot", "--project", project, "--json"], {
       encoding: "utf8",
     }).stdout);
@@ -257,13 +266,20 @@ test("start creates both seats and waits for a blocked agent before claiming", a
     assert.equal(released.host_state, "unclaimed");
     assert.equal(released.state_digest, before.state_digest);
     assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(fakeState, "utf8")).agents), ["ralph", "lisa"]);
+    const retryEnv = { ...env, HERDR_PLUGIN_CONTEXT_JSON:
+      JSON.stringify({ workspace_id: "w2", workspace_cwd: project }) };
+    const retry = spawnSync(process.execPath, [coordinator, "start"],
+      { env: retryEnv, encoding: "utf8" });
+    assert.equal(retry.status, 3, retry.stdout + retry.stderr);
+    assert.equal(JSON.parse(retry.stdout).code, "INITIAL_PROMPT_REQUIRES_RECOVERY");
+    assert.equal(JSON.parse(fs.readFileSync(fakeState, "utf8")).prompts, 1);
   } finally {
     child.kill("SIGTERM");
     fs.rmSync(temp, { recursive: true, force: true });
   }
 });
 
-for (const failure of ["timeout", "wrong-pane", "paused-commit"]) test(
+for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commit"]) test(
   `${failure} Herdr prompt keeps one durable intent and stops without replay`, async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "rll-herdr-uncertain-"));
   const project = path.join(temp, "project");
@@ -282,7 +298,7 @@ for (const failure of ["timeout", "wrong-pane", "paused-commit"]) test(
     `if(a[0]==='--version')console.log('herdr 0.9.4');` +
     `else if(a[0]==='integration')console.log('claude: current (v10)\\ncodex: current (v9)');` +
     `else if(a[0]==='agent'&&a[1]==='get'){const role=a[2];console.log(JSON.stringify({result:{agent:{name:role,agent:role==='ralph'?'claude':'codex',workspace_id:'w1',pane_id:role==='ralph'?'w1:p1':'w1:p2',cwd:process.env.FAKE_PROJECT,interactive_ready:true,agent_status:'idle'}}}));}` +
-    `else if(a[0]==='agent'&&a[1]==='prompt'){require('node:fs').appendFileSync(process.env.FAKE_PROMPTS,a[2]+'\\n');if(process.env.FAKE_PROMPT_FAILURE==='timeout'){console.error(JSON.stringify({error:{code:'timeout'}}));process.exitCode=1;}else console.log(JSON.stringify({result:{type:'agent_prompted',agent:{name:a[2],agent:'codex',workspace_id:'w1',pane_id:'w1:p9',cwd:process.env.FAKE_PROJECT}}}));}` +
+    `else if(a[0]==='agent'&&a[1]==='prompt'){require('node:fs').appendFileSync(process.env.FAKE_PROMPTS,a[2]+'\\n');if((a[2]==='ralph'&&process.env.FAKE_PROMPT_FAILURE==='initial-timeout')||(a[2]==='lisa'&&process.env.FAKE_PROMPT_FAILURE==='timeout')){console.error(JSON.stringify({error:{code:'timeout'}}));process.exitCode=1;}else if(a[2]==='ralph')console.log(JSON.stringify({result:{type:'agent_prompted',agent:{name:'ralph',agent:'claude',workspace_id:'w1',pane_id:'w1:p1',cwd:process.env.FAKE_PROJECT}}}));else console.log(JSON.stringify({result:{type:'agent_prompted',agent:{name:a[2],agent:'codex',workspace_id:'w1',pane_id:'w1:p9',cwd:process.env.FAKE_PROJECT}}}));}` +
     `else process.exitCode=2;\n`);
   fs.writeFileSync(fakeClaude, `#!${process.execPath}\nconsole.log('{"loggedIn":true}');\n`);
   fs.writeFileSync(fakeCodex, `#!${process.execPath}\nconsole.log('Logged in using ChatGPT');\n`);
@@ -297,7 +313,26 @@ for (const failure of ["timeout", "wrong-pane", "paused-commit"]) test(
   const child = spawn(process.execPath, [coordinator, "start"],
     { env, stdio: ["ignore", "pipe", "pipe"] });
   try {
-    const started = await waitForLine(child, (value) => value.status === "started");
+    const started = await waitForLine(child, (value) =>
+      value.status === "started" || value.status === "needs_reconcile");
+    if (failure === "initial-timeout") {
+      assert.equal(started.status, "needs_reconcile");
+      assert.equal(started.code, "timeout");
+      const sessionDir = path.join(stateDir, "sessions",
+        fs.readdirSync(path.join(stateDir, "sessions"))[0]);
+      const record = JSON.parse(fs.readFileSync(path.join(sessionDir, "record.json"), "utf8"));
+      const initial = JSON.parse(fs.readFileSync(path.join(sessionDir,
+        `initial-${record.session_id}.json`), "utf8"));
+      assert.equal(initial.status, "intent");
+      assert.equal(initial.role, "ralph");
+      assert.equal(fs.readFileSync(prompts, "utf8"), "ralph\n");
+      const duplicate = spawnSync(process.execPath, [coordinator, "start"],
+        { env, encoding: "utf8" });
+      assert.equal(duplicate.status, 3);
+      assert.equal(fs.readFileSync(prompts, "utf8"), "ralph\n");
+      return;
+    }
+    assert.equal(started.status, "started");
     if (failure === "paused-commit") {
       const paused = spawnSync(process.execPath, [coordinator, "pause"],
         { env, encoding: "utf8", timeout: 15000 });
@@ -325,7 +360,8 @@ for (const failure of ["timeout", "wrong-pane", "paused-commit"]) test(
     const sessionDir = path.join(stateDir, "sessions", fs.readdirSync(path.join(stateDir, "sessions"))[0]);
     if (failure === "paused-commit") {
       await new Promise((resolve) => setTimeout(resolve, 1500));
-      assert.equal(fs.existsSync(prompts), false, "paused coordinator must not prompt");
+      assert.equal(fs.readFileSync(prompts, "utf8"), "ralph\n",
+        "paused coordinator must not prompt after the initial task");
       const resume = spawnSync(process.execPath, [coordinator, "resume"],
         { env, encoding: "utf8", timeout: 15000 });
       assert.equal(resume.status, 7, resume.stdout + resume.stderr);
@@ -347,7 +383,7 @@ for (const failure of ["timeout", "wrong-pane", "paused-commit"]) test(
       `delivery-${requestId}.json`), "utf8"));
     assert.equal(delivery.status, "intent");
     assert.equal(delivery.role, "lisa");
-    assert.equal(fs.readFileSync(prompts, "utf8"), "lisa\n");
+    assert.equal(fs.readFileSync(prompts, "utf8"), "ralph\nlisa\n");
     const stopped = spawnSync(process.execPath, [coordinator, "stop"], { env, encoding: "utf8" });
     assert.equal(stopped.status, 7);
     assert.equal(host("snapshot").host_state, "claimed");
