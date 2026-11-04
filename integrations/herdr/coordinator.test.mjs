@@ -58,7 +58,7 @@ test("coordinator claims and binds observed seats, heartbeats, then releases on 
     `const a=process.argv.slice(2);\n` +
     `if(a[0]==='--version') console.log('herdr 0.9.4');\n` +
     `else if(a[0]==='integration') console.log('claude: not installed\\ncodex: not installed');\n` +
-    `else if(a[0]==='agent'&&a[1]==='get'){const role=a[2];console.log(JSON.stringify({result:{agent:{name:role,agent:role==='ralph'?'claude':'codex',workspace_id:'w1',pane_id:role==='ralph'?'w1:p1':'w1:p2',cwd:process.env.FAKE_PROJECT,agent_session:role==='ralph'?{agent:'claude',kind:'id',source:'herdr:claude',value:'session-123'}:undefined,interactive_ready:true,agent_status:role==='lisa'&&require('node:fs').existsSync(process.env.FAKE_BUSY_FILE)?'working':'idle'}}}));}\n` +
+    `else if(a[0]==='agent'&&a[1]==='get'){const role=a[2];const prompts=require('node:fs').existsSync(process.env.FAKE_PROMPTS)?require('node:fs').readFileSync(process.env.FAKE_PROMPTS,'utf8'):'';const hasLisaSession=prompts.includes('"role":"lisa"');const agent=role==='ralph'?'claude':'codex';console.log(JSON.stringify({result:{agent:{name:role,agent,workspace_id:'w1',pane_id:role==='ralph'?'w1:p1':'w1:p2',cwd:process.env.FAKE_PROJECT,agent_session:role==='ralph'||hasLisaSession?{agent,kind:'id',source:'herdr:'+agent,value:role==='ralph'?(process.env.FAKE_RALPH_SESSION||'session-123'):'lisa-session-123'}:undefined,interactive_ready:true,agent_status:role==='lisa'&&require('node:fs').existsSync(process.env.FAKE_BUSY_FILE)?'working':'idle'}}}));}\n` +
     `else if(a[0]==='agent'&&a[1]==='prompt'){const role=a[2];require('node:fs').appendFileSync(process.env.FAKE_PROMPTS,JSON.stringify({role,message:a[3]})+'\\n');console.log(JSON.stringify({result:{type:'agent_prompted',agent:{name:role,agent:role==='ralph'?'claude':'codex',workspace_id:'w1',pane_id:role==='ralph'?'w1:p1':'w1:p2',cwd:process.env.FAKE_PROJECT,agent_status:'working'}}}));}\n` +
     `else process.exit(2);\n`);
   fs.writeFileSync(fakeClaude, `#!${process.execPath}\nconsole.log('{"loggedIn":true}');\n`);
@@ -96,9 +96,20 @@ test("coordinator claims and binds observed seats, heartbeats, then releases on 
     assert.equal(audited.seats.ralph.observation, "matches_binding");
     assert.equal(audited.seats.ralph.native_session.status, "present");
     assert.match(audited.seats.ralph.native_session.fingerprint_sha256, /^[0-9a-f]{64}$/);
+    assert.equal(audited.seats.ralph.native_session.continuity, "matches_record");
     assert.equal(audited.seats.lisa.native_session.status, "missing");
+    assert.equal(audited.seats.lisa.native_session.continuity, "not_recorded");
     assert.equal(audited.restart_observation, "manual_rebind_required");
     assert.doesNotMatch(recovery.stdout, /session-123/);
+    const changedSession = spawnSync(process.execPath,
+      [path.join(root, "actions.mjs"), "recovery-check"], {
+        env: { ...env, FAKE_RALPH_SESSION: "replacement-session" }, encoding: "utf8",
+      });
+    assert.equal(changedSession.status, 0, changedSession.stdout + changedSession.stderr);
+    const changedAudit = JSON.parse(changedSession.stdout);
+    assert.equal(changedAudit.seats.ralph.observation, "matches_binding");
+    assert.equal(changedAudit.seats.ralph.native_session.continuity, "changed_or_missing");
+    assert.equal(changedAudit.restart_observation, "manual_rebind_required");
     const claimed = JSON.parse(spawnSync(process.execPath, [cli, "host", "snapshot", "--project", project, "--json"], {
       encoding: "utf8",
     }).stdout);
@@ -107,6 +118,12 @@ test("coordinator claims and binds observed seats, heartbeats, then releases on 
     assert.equal(claimed.seats.ralph.pane_id, "w1:p1");
     assert.equal(claimed.seats.lisa.pane_id, "w1:p2");
     assert.equal(claimed.state_digest, before.state_digest);
+    const sessionDir = path.join(stateDir, "sessions",
+      fs.readdirSync(path.join(stateDir, "sessions"))[0]);
+    const boundRecord = JSON.parse(fs.readFileSync(path.join(sessionDir, "record.json"), "utf8"));
+    assert.equal(boundRecord.plan.seats.ralph.native_session_fingerprint_sha256,
+      audited.seats.ralph.native_session.fingerprint_sha256);
+    assert.equal(boundRecord.plan.seats.lisa.native_session_fingerprint_sha256, null);
     const duplicate = spawnSync(process.execPath, [coordinator, "start"], { env, encoding: "utf8" });
     assert.equal(duplicate.status, 3);
     assert.equal(JSON.parse(duplicate.stdout).code, "HOST_ALREADY_CLAIMED");
@@ -191,17 +208,21 @@ test("coordinator claims and binds observed seats, heartbeats, then releases on 
     await new Promise((resolve) => setTimeout(resolve, 1500));
     assert.equal(promptRows().length, 3);
     const pluginDir = path.join(stateDir, "sessions");
-    const sessionDir = path.join(pluginDir, fs.readdirSync(pluginDir)[0]);
-    const initial = JSON.parse(fs.readFileSync(path.join(sessionDir,
+    const sessionDirAfterHandoff = path.join(pluginDir, fs.readdirSync(pluginDir)[0]);
+    const initial = JSON.parse(fs.readFileSync(path.join(sessionDirAfterHandoff,
       `initial-${claimed.session_id}.json`), "utf8"));
     assert.equal(initial.status, "accepted");
     assert.equal(initial.role, "ralph");
     for (const receipt of [first, second]) {
-      const delivery = JSON.parse(fs.readFileSync(path.join(sessionDir,
+      const delivery = JSON.parse(fs.readFileSync(path.join(sessionDirAfterHandoff,
         `delivery-${receipt.request_id}.json`), "utf8"));
       assert.equal(delivery.status, "accepted");
       assert.equal(delivery.generation, receipt.generation_after);
     }
+    const boundAfterHandoff = JSON.parse(fs.readFileSync(path.join(sessionDirAfterHandoff,
+      "record.json"), "utf8"));
+    assert.match(boundAfterHandoff.plan.seats.lisa.native_session_fingerprint_sha256,
+      /^[0-9a-f]{64}$/);
     const stopped = spawnSync(process.execPath, [coordinator, "stop"], { env, encoding: "utf8", timeout: 15000 });
     assert.equal(stopped.status, 0, stopped.stdout + stopped.stderr);
     assert.equal(JSON.parse(stopped.stdout).status, "stopped");

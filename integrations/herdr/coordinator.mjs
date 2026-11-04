@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { nativeSessionReference } from "./native-session.mjs";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const stateRoot = process.env.HERDR_PLUGIN_STATE_DIR;
@@ -132,6 +133,11 @@ function submitPrompt(paths, record, herdr, plan, role, message, file, details) 
       acknowledgedCwd !== paths.real)
     throw new Error("PROMPT_ACK_MISMATCH");
   durableWrite(file, { ...intent, status: "accepted" });
+  const nativeSession = observeSeat(herdr, plan, role,
+    role === "ralph" ? "claude" : "codex", false);
+  if (!plan.seats[role].native_session_fingerprint_sha256 &&
+      nativeSession.status === "present")
+    plan.seats[role].native_session_fingerprint_sha256 = nativeSession.fingerprint_sha256;
 }
 
 function requireTaskFile(snapshot) {
@@ -264,7 +270,7 @@ function processControl(paths, record, cli, herdr, plan) {
   return record;
 }
 
-function verifySeat(herdr, plan, role, kind) {
+function observeSeat(herdr, plan, role, kind, requireReady) {
   const result = call(herdr, ["agent", "get", role]);
   const agent = result.value?.result?.agent;
   const expected = plan.seats[role];
@@ -273,8 +279,18 @@ function verifySeat(herdr, plan, role, kind) {
   if (result.code !== 0 || agent?.name !== role || agent?.agent !== kind ||
       agent?.workspace_id !== plan.workspace_id || agent?.pane_id !== expected.pane_id ||
       cwd !== plan.project_realpath) throw new Error("AGENT_CHANGED");
-  if (!agent.interactive_ready || !["idle", "done"].includes(agent.agent_status))
+  const nativeSession = nativeSessionReference(agent, kind);
+  if (nativeSession.status === "invalid") throw new Error("AGENT_SESSION_INVALID");
+  if (expected.native_session_fingerprint_sha256 &&
+      nativeSession.fingerprint_sha256 !== expected.native_session_fingerprint_sha256)
+    throw new Error("AGENT_SESSION_CHANGED");
+  if (requireReady && (!agent.interactive_ready || !["idle", "done"].includes(agent.agent_status)))
     throw new Error("AGENT_NOT_READY");
+  return nativeSession;
+}
+
+function verifySeat(herdr, plan, role, kind) {
+  observeSeat(herdr, plan, role, kind, true);
 }
 
 function requireSnapshot(result) {

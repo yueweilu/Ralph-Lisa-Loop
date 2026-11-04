@@ -3,6 +3,7 @@ import * as path from "node:path";
 import * as crypto from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { nativeSessionReference } from "./native-session.mjs";
 
 const pluginRoot = path.dirname(fileURLToPath(import.meta.url));
 const MIN_HERDR = [0, 9, 4];
@@ -127,6 +128,14 @@ function recoveryPluginState(projectRealpath, cliEvidence) {
       typeof plan.seats?.lisa?.pane_id !== "string" ||
       plan.seats.ralph.pane_id === plan.seats.lisa.pane_id))
     throw new Error("PLUGIN_BINDING_MISMATCH");
+  for (const [role, kind] of [["ralph", "claude"], ["lisa", "codex"]]) {
+    const seat = plan?.seats?.[role];
+    const fingerprint = seat?.native_session_fingerprint_sha256;
+    if (seat && (seat.agent_kind !== kind ||
+        (fingerprint !== undefined && fingerprint !== null &&
+          !/^[0-9a-f]{64}$/.test(fingerprint))))
+      throw new Error("PLUGIN_BINDING_MISMATCH");
+  }
   const names = fs.readdirSync(dir).filter((name) =>
     name.startsWith("initial-") || name.startsWith("delivery-"));
   if (names.length && (!plan || record.binding_generation !== cliEvidence.binding_generation))
@@ -163,19 +172,6 @@ function recoveryPluginState(projectRealpath, cliEvidence) {
       "DELIVERY_OUTCOME_UNCERTAIN" : null };
 }
 
-function nativeSessionReference(agent, kind) {
-  if (!agent) return { status: "unavailable", fingerprint_sha256: null };
-  const reference = agent.agent_session;
-  if (reference == null) return { status: "missing", fingerprint_sha256: null };
-  if (reference.agent !== kind || typeof reference.kind !== "string" || !reference.kind ||
-      typeof reference.source !== "string" || !reference.source ||
-      typeof reference.value !== "string" || !reference.value)
-    return { status: "invalid", fingerprint_sha256: null };
-  return { status: "present", fingerprint_sha256: crypto.createHash("sha256")
-    .update(JSON.stringify({ agent: reference.agent, kind: reference.kind,
-      source: reference.source, value: reference.value })).digest("hex") };
-}
-
 function recoverySeats(herdr, projectRealpath, recordPlan) {
   if (!recordPlan?.seats || !recordPlan.workspace_id) return null;
   const seats = {};
@@ -185,6 +181,7 @@ function recoverySeats(herdr, projectRealpath, recordPlan) {
     let cwd = null;
     try { cwd = fs.realpathSync.native(agent.cwd); } catch { /* Unavailable is not proof of exit. */ }
     const nativeSession = nativeSessionReference(result.code === 0 ? agent : null, kind);
+    const recordedFingerprint = recordPlan.seats[role]?.native_session_fingerprint_sha256;
     seats[role] = { observation: result.code !== 0 || !agent ? "unavailable" :
       agent.name === role && agent.agent === kind &&
       agent.workspace_id === recordPlan.workspace_id &&
@@ -192,7 +189,10 @@ function recoverySeats(herdr, projectRealpath, recordPlan) {
         "matches_binding" : "identity_changed",
       status: agent?.agent_status ?? null,
       pane_id: agent?.pane_id ?? null,
-      native_session: nativeSession };
+      native_session: { ...nativeSession,
+        continuity: recordedFingerprint ?
+          nativeSession.fingerprint_sha256 === recordedFingerprint ?
+            "matches_record" : "changed_or_missing" : "not_recorded" } };
   }
   return seats;
 }
@@ -234,9 +234,9 @@ function recoveryAudit(diagnosis, project) {
       seats,
       restart_observation: !seats ? "binding_plan_unavailable" :
         Object.values(seats).every((seat) => seat.observation === "matches_binding" &&
-          seat.native_session.status === "present") ?
-          "native_session_references_present" : "manual_rebind_required",
-      note: "Native session reference presence does not prove continuity across restart. Read-only observations do not prove coordinator or Agents stopped; inspect before recover-lease." });
+          seat.native_session.continuity === "matches_record") ?
+          "recorded_native_sessions_match" : "manual_rebind_required",
+      note: "Matching native session fingerprints do not prove coordinator or Agents stopped. Review unrecorded deliveries before recover-lease; this action never resumes the coordinator." });
   } catch (error) {
     emit({ status: "needs_reconcile", code: error.message || "PLUGIN_RECOVERY_INVALID",
       project: evidence.project_realpath, cli: evidence }, 7);
@@ -326,7 +326,11 @@ function seatPreflight(diagnosis, snapshot) {
       return { status: "not_ready", code: "AGENT_PROJECT_MISMATCH", role };
     if (!agent.interactive_ready || !["idle", "done"].includes(agent.agent_status))
       return { status: "not_ready", code: "AGENT_NOT_READY", role };
-    seats[role] = { pane_id: agent.pane_id, agent_target: role, agent_kind: kind };
+    const nativeSession = nativeSessionReference(agent, kind);
+    if (nativeSession.status === "invalid")
+      return { status: "not_ready", code: "AGENT_SESSION_INVALID", role };
+    seats[role] = { pane_id: agent.pane_id, agent_target: role, agent_kind: kind,
+      native_session_fingerprint_sha256: nativeSession.fingerprint_sha256 };
   }
   if (seats.ralph.pane_id === seats.lisa.pane_id)
     return { status: "not_ready", code: "SEATS_SHARE_PANE" };

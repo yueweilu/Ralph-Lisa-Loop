@@ -61,6 +61,8 @@ beforeEach(() => {
     `  if (scenario === 'wrong-kind' && role === 'lisa') agent.agent = 'claude';\n` +
     `  if (scenario === 'same-pane' && role === 'lisa') agent.pane_id = 'w1:p1';\n` +
     `  if (scenario === 'blocked' && role === 'lisa') agent.agent_status = 'blocked';\n` +
+    `  if (scenario === 'native-session' && role === 'ralph') agent.agent_session = {agent:'claude',kind:'id',source:'herdr:claude',value:'session-123'};\n` +
+    `  if (scenario === 'invalid-session' && role === 'lisa') agent.agent_session = {agent:'claude',kind:'id',source:'herdr:codex',value:'session-456'};\n` +
     `  console.log(JSON.stringify({result:{agent}}));\n` +
     `}\n` +
     `else process.exit(2);\n`);
@@ -167,6 +169,11 @@ test("seat preflight verifies real CLI state and two distinct Herdr agent identi
   assert.equal(ready.value.binding_plan.workspace_id, "w1");
   assert.equal(ready.value.binding_plan.seats.ralph.pane_id, "w1:p1");
   assert.equal(ready.value.binding_plan.seats.lisa.agent_kind, "codex");
+  assert.equal(ready.value.binding_plan.seats.lisa.native_session_fingerprint_sha256, null);
+  const native = run("seat-preflight", { context, agentScenario: "native-session" });
+  assert.match(native.value.binding_plan.seats.ralph.native_session_fingerprint_sha256,
+    /^[0-9a-f]{64}$/);
+  assert.doesNotMatch(JSON.stringify(native.value), /session-123/);
   assert.equal(ready.value.checks.integrations.codex, false);
   assert.equal(ready.value.binding_plan.expected_digest,
     JSON.parse(spawnSync(process.execPath, [cli, "host", "snapshot", "--project", project, "--json"], {
@@ -178,6 +185,8 @@ test("seat preflight verifies real CLI state and two distinct Herdr agent identi
     "SEATS_SHARE_PANE");
   assert.equal(run("seat-preflight", { context, agentScenario: "blocked" }).value.code,
     "AGENT_NOT_READY");
+  assert.equal(run("seat-preflight", { context, agentScenario: "invalid-session" }).value.code,
+    "AGENT_SESSION_INVALID");
   assert.equal(fs.existsSync(path.join(project, ".dual-agent", "host", "lease")), false);
 });
 
