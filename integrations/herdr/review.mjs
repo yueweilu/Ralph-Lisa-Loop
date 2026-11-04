@@ -7,6 +7,17 @@ import { fileURLToPath } from "node:url";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/;
+const HIDDEN_TERMINAL_CHARS = /[\u0000-\u001f\u007f-\u009f\u034f\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/g;
+
+function visible(value) {
+  return String(value).replace(HIDDEN_TERMINAL_CHARS, (character) =>
+    `\\u${character.codePointAt(0).toString(16).padStart(4, "0")}`);
+}
+
+function visibleBody(content) {
+  return content.split("\n").map((line, index) =>
+    `${String(index + 1).padStart(4, "0")} | ${visible(line)}`).join("\n");
+}
 
 function invoke(argv, args, timeout = 150000) {
   const env = { ...process.env };
@@ -57,10 +68,10 @@ export async function reviewCandidate({ project, cli, ask, write = console.log, 
   const listed = call(cli, "candidates", project);
   if (listed.code !== 0 || listed.value?.status !== "ok" || !Array.isArray(listed.value.candidates))
     throw new Error(listed.value?.code || "CANDIDATE_LIST_FAILED");
-  write(`Project: ${project}`);
+  write(`Project: ${visible(project)}`);
   write(`Session: ${listed.value.session_id}`);
   for (const candidate of listed.value.candidates) {
-    write(`${candidate.candidate_id}  ${candidate.role}  round ${candidate.round}  generation ${candidate.generation}  ${candidate.content_sha256}`);
+    write(`${visible(candidate.candidate_id)}  ${visible(candidate.role)}  round ${visible(candidate.round)}  generation ${visible(candidate.generation)}  ${visible(candidate.content_sha256)}`);
   }
   if (!listed.value.candidates.length) return { status: "empty" };
   const id = (await ask("Candidate ID to review (Enter cancels): ")).trim().toLowerCase();
@@ -74,12 +85,12 @@ export async function reviewCandidate({ project, cli, ask, write = console.log, 
   if (c.source_verification !== "unverified" || !SHA256.test(c.content_sha256) ||
       c.project_realpath !== project || c.session_id !== listed.value.session_id)
     throw new Error("CANDIDATE_IDENTITY_MISMATCH");
-  write(`\nCandidate ${id}\nRole: ${c.role}  Round: ${c.round}  Step: ${c.step}`);
-  write(`Session: ${c.session_id}\nLease: ${c.lease_id}\nGeneration: ${c.generation}  Binding: ${c.binding_generation}`);
-  write(`Workspace: ${c.intended_workspace_id}\nPane: ${c.intended_pane_id}\nAgent: ${c.intended_agent_target}`);
+  write(`\nCandidate ${id}\nRole: ${visible(c.role)}  Round: ${visible(c.round)}  Step: ${visible(c.step)}`);
+  write(`Session: ${visible(c.session_id)}\nLease: ${visible(c.lease_id)}\nGeneration: ${visible(c.generation)}  Binding: ${visible(c.binding_generation)}`);
+  write(`Workspace: ${visible(c.intended_workspace_id)}\nPane: ${visible(c.intended_pane_id)}\nAgent: ${visible(c.intended_agent_target)}`);
   write(`SHA-256: ${c.content_sha256}\nSource: unverified`);
   write("----- Candidate body -----");
-  write(detail.value.content);
+  write(visibleBody(detail.value.content));
   write("----- End candidate body -----");
   const requestId = randomUUID();
   const args = ["--lease-id", c.lease_id, "--request-id", requestId,

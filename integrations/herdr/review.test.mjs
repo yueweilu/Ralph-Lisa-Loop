@@ -50,10 +50,27 @@ test("review displays stored body and identity, and cancellation leaves business
   const result = await reviewCandidate({ project, cli, write: (line) => lines.push(line),
     ask: async (prompt) => prompt.startsWith("Candidate ID") ? candidate.candidate_id : "" });
   assert.equal(result.status, "cancelled");
-  assert.ok(lines.includes("[PLAN] Review the task\n"));
+  assert.ok(lines.includes("0001 | [PLAN] Review the task\n0002 | "));
   assert.ok(lines.some((line) => line.includes(candidate.intended_pane_id)));
   assert.equal(host("snapshot").value.turn, "ralph");
   assert.equal(host("receipt", ["--request-id", result.request_id]).value.status, "unknown");
+});
+
+test("candidate text cannot move the cursor, erase the screen, or reverse the review display", async () => {
+  fs.writeFileSync(path.join(project, "proposal.md"),
+    "[PLAN] first\u001b[2J\rOVERRIDE\b\u202e\nsecond line\n");
+  const proposed = host("propose", ["--role", "ralph", "--file", "proposal.md",
+    "--candidate-id", randomUUID()]);
+  assert.equal(proposed.code, 0);
+  const lines = [];
+  const result = await reviewCandidate({ project, cli, write: (line) => lines.push(line),
+    ask: async (prompt) => prompt.startsWith("Candidate ID") ? proposed.value.candidate_id : "" });
+  assert.equal(result.status, "cancelled");
+  const display = lines.join("\n");
+  assert.equal(/[\u001b\r\b\u202e]/.test(display), false);
+  assert.match(display, /0001 \| \[PLAN\] first\\u001b\[2J\\u000dOVERRIDE\\u0008\\u202e/);
+  assert.match(display, /0002 \| second line/);
+  assert.equal(host("snapshot").value.turn, "ralph");
 });
 
 test("typed candidate ID and digest submit once through the existing confirmation gate", async () => {
