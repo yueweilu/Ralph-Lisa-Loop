@@ -69,3 +69,9 @@ id = "review"
 title = "Ralph-Lisa candidate review"
 placement = "tab"
 command = ["node", "review.mjs"]
+
+[[panes]]
+id = "rebind"
+title = "Ralph-Lisa recovered lease rebind"
+placement = "tab"
+command = ["node", "rebind.mjs"]

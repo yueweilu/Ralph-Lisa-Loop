@@ -105,54 +105,34 @@ function regularDirectory(dir, code) {
   } catch { throw new Error(code); }
 }
 
-function recoveryPluginState(projectRealpath, cliEvidence) {
-  const root = process.env.HERDR_PLUGIN_STATE_DIR;
-  if (!root || !path.isAbsolute(root)) throw new Error("PLUGIN_STATE_DIR_REQUIRED");
-  const key = crypto.createHash("sha256").update(projectRealpath).digest("hex");
-  const dir = path.join(root, "sessions", key);
-  if (!fs.existsSync(dir)) return { record: null, deliveries: [], warning: "PLUGIN_RECORD_MISSING",
-    evidence_sha256: null };
-  const stat = fs.lstatSync(dir);
-  if (!stat.isDirectory() || stat.isSymbolicLink())
-    throw new Error("PLUGIN_RECORD_INVALID");
-  const recordPath = path.join(dir, "record.json");
-  if (!fs.existsSync(recordPath))
-    return { record: null, deliveries: [], warning: "PLUGIN_RECORD_MISSING",
-      evidence_sha256: null };
-  const record = regularJson(recordPath);
-  const digest = crypto.createHash("sha256").update(JSON.stringify(record));
-  if (record.project_realpath !== projectRealpath ||
-      record.session_id !== cliEvidence.session_id ||
-      record.lease_id !== cliEvidence.lease_id ||
-      record.owner_id !== cliEvidence.owner_id ||
-      !UUID.test(record.owner_id ?? "")) throw new Error("PLUGIN_LEASE_MISMATCH");
-  if (!Number.isSafeInteger(record.pid) || record.pid < 1 ||
-      typeof record.phase !== "string") throw new Error("PLUGIN_RECORD_INVALID");
-  if (record.binding_generation !== undefined &&
-      record.binding_generation !== cliEvidence.binding_generation)
-    throw new Error("PLUGIN_BINDING_MISMATCH");
-  const plan = record.plan;
-  if (plan && (plan.project_realpath !== projectRealpath ||
-      plan.session_id !== record.session_id ||
+function entryExists(file) {
+  try { fs.lstatSync(file); return true; }
+  catch (error) { if (error.code === "ENOENT") return false; throw error; }
+}
+
+function validatePluginPlan(plan, projectRealpath, sessionId) {
+  if (!plan || plan.project_realpath !== projectRealpath ||
+      plan.session_id !== sessionId ||
       typeof plan.workspace_id !== "string" || !plan.workspace_id ||
       typeof plan.seats?.ralph?.pane_id !== "string" ||
       typeof plan.seats?.lisa?.pane_id !== "string" ||
-      plan.seats.ralph.pane_id === plan.seats.lisa.pane_id))
+      plan.seats.ralph.pane_id === plan.seats.lisa.pane_id)
     throw new Error("PLUGIN_BINDING_MISMATCH");
   for (const [role, kind] of [["ralph", "claude"], ["lisa", "codex"]]) {
-    const seat = plan?.seats?.[role];
-    const fingerprint = seat?.native_session_fingerprint_sha256;
-    if (seat && (seat.agent_kind !== kind ||
+    const seat = plan.seats[role];
+    const fingerprint = seat.native_session_fingerprint_sha256;
+    if (seat.agent_kind !== kind ||
         (seat.terminal_id !== undefined &&
           (typeof seat.terminal_id !== "string" || !seat.terminal_id)) ||
         (fingerprint !== undefined && fingerprint !== null &&
-          !/^[0-9a-f]{64}$/.test(fingerprint))))
+          !/^[0-9a-f]{64}$/.test(fingerprint)))
       throw new Error("PLUGIN_BINDING_MISMATCH");
   }
+}
+
+function readDeliveryRecords(dir, record, plan, digest) {
   const names = fs.readdirSync(dir).filter((name) =>
     name.startsWith("initial-") || name.startsWith("delivery-")).sort();
-  if (names.length && (!plan || record.binding_generation !== cliEvidence.binding_generation))
-    throw new Error("PLUGIN_BINDING_MISMATCH");
   const deliveries = names.map((name) => {
     if (!/^(?:initial|delivery)-[0-9a-f-]{36}\.json$/i.test(name))
       throw new Error("PLUGIN_DELIVERY_INVALID");
@@ -176,7 +156,75 @@ function recoveryPluginState(projectRealpath, cliEvidence) {
     return { kind: name.startsWith("initial-") ? "initial" : "handoff",
       status: value.status, role: value.role, generation: value.generation ?? null,
       id: name.slice(name.indexOf("-") + 1, -5) };
-  }).sort((a, b) => a.generation - b.generation || a.id.localeCompare(b.id));
+  });
+  return deliveries.sort((a, b) => a.generation - b.generation || a.id.localeCompare(b.id));
+}
+
+function recoveryPluginState(projectRealpath, cliEvidence) {
+  const root = process.env.HERDR_PLUGIN_STATE_DIR;
+  if (!root || !path.isAbsolute(root)) throw new Error("PLUGIN_STATE_DIR_REQUIRED");
+  const key = crypto.createHash("sha256").update(projectRealpath).digest("hex");
+  const dir = path.join(root, "sessions", key);
+  if (!fs.existsSync(dir)) return { record: null, deliveries: [], warning: "PLUGIN_RECORD_MISSING",
+    evidence_sha256: null };
+  const stat = fs.lstatSync(dir);
+  if (!stat.isDirectory() || stat.isSymbolicLink())
+    throw new Error("PLUGIN_RECORD_INVALID");
+  if (entryExists(path.join(dir, "rebind.pending.json")))
+    throw new Error("REBIND_PENDING_REVIEW");
+  const recordPath = path.join(dir, "record.json");
+  if (!fs.existsSync(recordPath))
+    return { record: null, deliveries: [], warning: "PLUGIN_RECORD_MISSING",
+      evidence_sha256: null };
+  const record = regularJson(recordPath);
+  const digest = crypto.createHash("sha256").update(JSON.stringify(record));
+  if (record.project_realpath !== projectRealpath ||
+      record.session_id !== cliEvidence.session_id ||
+      record.lease_id !== cliEvidence.lease_id ||
+      record.owner_id !== cliEvidence.owner_id ||
+      !UUID.test(record.owner_id ?? "")) throw new Error("PLUGIN_LEASE_MISMATCH");
+  if (!Number.isSafeInteger(record.pid) || record.pid < 1 ||
+      typeof record.phase !== "string") throw new Error("PLUGIN_RECORD_INVALID");
+  if (record.binding_generation !== undefined &&
+      record.binding_generation !== cliEvidence.binding_generation)
+    throw new Error("PLUGIN_BINDING_MISMATCH");
+  const plan = record.plan;
+  if (plan) validatePluginPlan(plan, projectRealpath, record.session_id);
+  const currentNames = fs.readdirSync(dir).filter((name) =>
+    name.startsWith("initial-") || name.startsWith("delivery-"));
+  if (currentNames.length && (!plan || record.binding_generation !== cliEvidence.binding_generation))
+    throw new Error("PLUGIN_BINDING_MISMATCH");
+  let deliveries = currentNames.length ? readDeliveryRecords(dir, record, plan, digest) : [];
+  let inherited = false;
+  if (record.prior_archive !== undefined) {
+    if (record.phase !== "rebound_paused" || currentNames.length ||
+        !UUID.test(record.prior_lease_id ?? "") ||
+        !UUID.test(record.prior_recovery_id ?? "") ||
+        record.prior_archive !== `prior-${record.prior_lease_id}` ||
+        record.replay !== "not_replayed" ||
+        record.initial_status !== "inherited_accepted")
+      throw new Error("PLUGIN_LINEAGE_HEADER_INVALID");
+    const archive = path.join(dir, record.prior_archive);
+    try {
+      const archiveStat = fs.lstatSync(archive);
+      if (!archiveStat.isDirectory() || archiveStat.isSymbolicLink())
+        throw new Error("invalid archive");
+    } catch { throw new Error("PLUGIN_LINEAGE_INVALID"); }
+    const prior = regularJson(path.join(archive, "record.json"), "PLUGIN_LINEAGE_INVALID");
+    if (prior.phase !== "needs_reconcile" ||
+        prior.project_realpath !== projectRealpath ||
+        prior.session_id !== record.session_id ||
+        prior.lease_id !== record.prior_lease_id || !UUID.test(prior.owner_id ?? "") ||
+        prior.initial_status !== "accepted" ||
+        prior.cursor_generation !== record.cursor_generation ||
+        prior.cursor_receipt_id !== record.cursor_receipt_id ||
+        prior.cursor_turn !== record.cursor_turn)
+      throw new Error("PLUGIN_LINEAGE_RECORD_INVALID");
+    validatePluginPlan(prior.plan, projectRealpath, record.session_id);
+    digest.update(record.prior_archive).update(JSON.stringify(prior));
+    deliveries = readDeliveryRecords(archive, prior, prior.plan, digest);
+    inherited = true;
+  }
   return { record: { phase: record.phase, pid: record.pid,
     session_id: record.session_id, owner_id: record.owner_id,
     lease_id: record.lease_id, binding_generation: record.binding_generation ?? null,
@@ -184,7 +232,9 @@ function recoveryPluginState(projectRealpath, cliEvidence) {
     cursor_receipt_id: record.cursor_receipt_id ?? null,
     cursor_turn: record.cursor_turn ?? null,
     initial_status: record.initial_status ?? null,
-    error: record.error ?? null }, deliveries,
+    prior_lease_id: record.prior_lease_id ?? null,
+    prior_recovery_id: record.prior_recovery_id ?? null,
+    error: record.error ?? null }, deliveries, inherited,
     warning: deliveries.some((item) => item.status === "intent") ?
       "DELIVERY_OUTCOME_UNCERTAIN" : null,
     evidence_sha256: digest.digest("hex") };
@@ -275,7 +325,8 @@ function recoveryAudit(diagnosis, project) {
         "COORDINATOR_PID_PRESENT" : "COORDINATOR_PID_UNKNOWN");
     if (!plugin.record) blockers.push("PLUGIN_RECORD_MISSING");
     else {
-      if (plugin.record.initial_status !== "accepted" ||
+      if ((plugin.record.initial_status !== "accepted" &&
+          !(plugin.inherited && plugin.record.initial_status === "inherited_accepted")) ||
           plugin.deliveries.some((item) => item.status !== "accepted"))
         blockers.push("DELIVERY_OUTCOME_UNCERTAIN");
       const initial = plugin.deliveries.find((item) =>
@@ -342,6 +393,8 @@ function rebindAudit(diagnosis, project) {
       throw new Error("PLUGIN_STATE_DIR_REQUIRED");
     const key = crypto.createHash("sha256").update(snapshot.project_realpath).digest("hex");
     const dir = path.join(process.env.HERDR_PLUGIN_STATE_DIR, "sessions", key);
+    if (entryExists(path.join(dir, "rebind.pending.json")))
+      throw new Error("REBIND_PENDING_REVIEW");
     const old = regularJson(path.join(dir, "record.json"));
     if (old.project_realpath !== snapshot.project_realpath ||
         old.session_id !== snapshot.session_id || !UUID.test(old.lease_id ?? "") ||
@@ -459,8 +512,10 @@ function rebindAudit(diagnosis, project) {
       code: blockers.length ? "REBIND_BLOCKED" : null,
       project: snapshot.project_realpath, session_id: snapshot.session_id,
       old_lease_id: old.lease_id, recovery_id: recovery.recovery_id,
-      generation: snapshot.generation, coordinator_process: processObservation,
+      generation: snapshot.generation, last_receipt_id: snapshot.last_receipt_id,
+      turn: snapshot.turn, coordinator_process: processObservation,
       continuation_blockers: blockers, binding_plan: plan,
+      plugin_evidence_sha256: plugin.evidence_sha256,
       evidence_sha256: evidenceSha,
       note: "Read-only rebind preflight. Human confirmation and a separate guarded rebind action are still required; this never claims a lease or prompts an Agent." },
     blockers.length ? 4 : 0);

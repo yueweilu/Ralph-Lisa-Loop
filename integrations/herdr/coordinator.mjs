@@ -56,7 +56,8 @@ function files(project) {
   const key = crypto.createHash("sha256").update(real).digest("hex");
   const dir = path.join(stateRoot, "sessions", key);
   return { real, dir, record: path.join(dir, "record.json"),
-    stop: path.join(dir, "stop.json"), control: path.join(dir, "control.json") };
+    stop: path.join(dir, "stop.json"), control: path.join(dir, "control.json"),
+    rebind: path.join(dir, "rebind.pending.json") };
 }
 
 function durableWrite(file, value, exclusive = false) {
@@ -75,6 +76,23 @@ function readRecord(file) {
   const stat = fs.lstatSync(file);
   if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("STATE_INVALID");
   return JSON.parse(fs.readFileSync(file, "utf8"));
+}
+
+function priorDeliveryFiles(paths) {
+  const names = fs.readdirSync(paths.dir).filter((name) =>
+    name.startsWith("initial-") || name.startsWith("delivery-")).sort();
+  for (const name of names) {
+    if (!/^(?:initial|delivery)-[0-9a-f-]{36}\.json$/i.test(name))
+      throw new Error("PRIOR_DELIVERY_INVALID");
+  }
+  return names;
+}
+
+function priorPluginDigest(paths, names) {
+  const digest = crypto.createHash("sha256").update(JSON.stringify(readRecord(paths.record)));
+  for (const name of names)
+    digest.update(name).update(JSON.stringify(readRecord(path.join(paths.dir, name))));
+  return digest.digest("hex");
 }
 
 function failRecord(paths, record, code) {
@@ -108,6 +126,20 @@ function deliveryFile(paths, requestId) {
 function initialFile(paths, sessionId) {
   if (!UUID.test(sessionId)) throw new Error("INVALID_SESSION_ID");
   return path.join(paths.dir, `initial-${sessionId.toLowerCase()}.json`);
+}
+
+function initialPromptExists(paths, sessionId) {
+  const name = path.basename(initialFile(paths, sessionId));
+  if (fs.existsSync(path.join(paths.dir, name))) return true;
+  for (const entry of fs.readdirSync(paths.dir)) {
+    if (!/^prior-[0-9a-f-]{36}$/i.test(entry)) continue;
+    const dir = path.join(paths.dir, entry);
+    const stat = fs.lstatSync(dir);
+    if (!stat.isDirectory() || stat.isSymbolicLink())
+      throw new Error("PRIOR_DELIVERY_ARCHIVE_INVALID");
+    if (fs.existsSync(path.join(dir, name))) return true;
+  }
+  return false;
 }
 
 function submitPrompt(paths, record, herdr, plan, role, message, file, details) {
@@ -417,7 +449,7 @@ async function start() {
   }
   const paths = files(initial.project_realpath);
   fs.mkdirSync(paths.dir, { recursive: true, mode: 0o700 });
-  if (fs.existsSync(initialFile(paths, initial.session_id))) {
+  if (initialPromptExists(paths, initial.session_id)) {
     emit({ status: "not_ready", code: "INITIAL_PROMPT_REQUIRES_RECOVERY" }, 3);
     return;
   }
@@ -539,6 +571,32 @@ async function stop() {
   let record;
   try { record = readRecord(paths.record); }
   catch { emit({ status: "not_ready", code: "COORDINATOR_NOT_RUNNING" }, 4); return; }
+  if (record.phase === "rebound_paused") {
+    try {
+      if (fs.existsSync(paths.rebind)) throw new Error("REBIND_PENDING_REVIEW");
+      const cli = config().cli;
+      const observed = call(cli, ["host", "snapshot", "--project", paths.real, "--json"]);
+      const snapshot = requireActiveSnapshot(observed, paths, record, record.plan);
+      if (snapshot.generation !== record.cursor_generation ||
+          snapshot.last_receipt_id !== record.cursor_receipt_id ||
+          snapshot.turn !== record.cursor_turn ||
+          snapshot.state_digest !== record.pause_state_digest)
+        throw new Error("REBOUND_STATE_CHANGED");
+      const finished = path.join(paths.dir, `finished-${record.owner_id}.json`);
+      if (fs.existsSync(finished)) throw new Error("FINISHED_RECORD_EXISTS");
+      const released = call(cli, ["host", "release", "--project", paths.real,
+        "--lease-id", record.lease_id, "--json"]);
+      if (released.code !== 0 || released.value?.status !== "released")
+        throw new Error(released.value?.code || "RELEASE_UNCERTAIN");
+      fs.renameSync(paths.record, finished);
+      emit({ status: "stopped", project: paths.real, owner_id: record.owner_id,
+        replay: "not_replayed" });
+    } catch (error) {
+      emit({ status: "needs_reconcile", code: error.message || "REBOUND_STOP_UNCERTAIN",
+        project: paths.real }, 7);
+    }
+    return;
+  }
   if (!["active", "paused"].includes(record.phase) || !UUID.test(record.lease_id ?? "")) {
     emit({ status: "needs_reconcile", code: "COORDINATOR_NOT_ACTIVE" }, 7);
     return;
@@ -554,6 +612,118 @@ async function stop() {
     if (current.phase === "needs_reconcile") break;
   }
   emit({ status: "needs_reconcile", code: "STOP_UNCONFIRMED", project: paths.real }, 7);
+}
+
+async function rebind(expectedEvidence, decision) {
+  if (!/^[0-9a-f]{64}$/.test(expectedEvidence ?? "") ||
+      decision !== "verified-seats-no-replay") {
+    emit({ status: "not_ready", code: "REBIND_CONFIRMATION_REQUIRED" }, 2);
+    return;
+  }
+  const checked = call([process.execPath, path.join(root, "actions.mjs")], ["rebind-check"]);
+  const review = checked.value;
+  if (checked.code !== 0 || review?.status !== "review_required" ||
+      review.evidence_sha256 !== expectedEvidence ||
+      review.continuation_blockers?.length !== 0) {
+    emit({ status: "not_ready", code: review?.code || "REBIND_EVIDENCE_CHANGED" }, 4);
+    return;
+  }
+  const paths = files(review.project);
+  const old = readRecord(paths.record);
+  if (old.phase !== "needs_reconcile" || old.lease_id !== review.old_lease_id ||
+      old.session_id !== review.session_id || !UUID.test(old.owner_id ?? "")) {
+    emit({ status: "needs_reconcile", code: "OLD_COORDINATOR_CHANGED" }, 7);
+    return;
+  }
+  const plan = review.binding_plan;
+  const cli = config().cli;
+  const herdr = [process.env.HERDR_BIN_PATH || "herdr"];
+  const ownerId = crypto.randomUUID();
+  let lease = null;
+  try {
+    durableWrite(paths.rebind, { schema: 1, status: "intent", old_lease_id: old.lease_id,
+      recovery_id: review.recovery_id, expected_evidence: expectedEvidence,
+      owner_id: ownerId, replay: "not_replayed" }, true);
+    const before = call(cli, ["host", "snapshot", "--project", paths.real, "--json"]);
+    if (before.code !== 0 || before.value?.host_state !== "unclaimed" ||
+        before.value.session_id !== review.session_id ||
+        before.value.state_digest !== plan.expected_digest ||
+        before.value.generation !== review.generation ||
+        before.value.last_receipt_id !== review.last_receipt_id ||
+        before.value.turn !== review.turn)
+      throw new Error("REBIND_STATE_CHANGED");
+    for (const [role, kind] of [["ralph", "claude"], ["lisa", "codex"]])
+      verifySeat(herdr, plan, role, kind);
+    const claimed = call(cli, ["host", "claim", "--project", paths.real,
+      "--host", "herdr", "--owner-id", ownerId, "--json"]);
+    lease = claimed.value;
+    if (claimed.code !== 0 || lease?.status !== "claimed" ||
+        !UUID.test(lease.lease_id ?? "") || lease.session_id !== review.session_id)
+      throw new Error(claimed.value?.code || "REBIND_CLAIM_UNCERTAIN");
+    durableWrite(paths.rebind, { schema: 1, status: "claimed", old_lease_id: old.lease_id,
+      recovery_id: review.recovery_id, new_lease_id: lease.lease_id,
+      owner_id: ownerId, replay: "not_replayed" });
+    for (const [role, kind] of [["ralph", "claude"], ["lisa", "codex"]]) {
+      verifySeat(herdr, plan, role, kind);
+      const seat = plan.seats[role];
+      const bound = call(cli, ["host", "bind-seat", "--project", paths.real,
+        "--lease-id", lease.lease_id, "--role", role,
+        "--workspace-id", plan.workspace_id, "--pane-id", seat.pane_id,
+        "--agent-target", seat.agent_target, "--json"]);
+      if (bound.code !== 0 || bound.value?.status !== "bound" ||
+          bound.value.lease_id !== lease.lease_id)
+        throw new Error(bound.value?.code || "REBIND_BIND_UNCERTAIN");
+    }
+    const current = call(cli, ["host", "snapshot", "--project", paths.real, "--json"]);
+    if (current.code !== 0 || current.value?.host_state !== "claimed" ||
+        current.value.owner_id !== ownerId || current.value.binding_state !== "bound" ||
+        current.value.session_id !== review.session_id ||
+        current.value.state_digest !== plan.expected_digest ||
+        current.value.generation !== review.generation ||
+        current.value.last_receipt_id !== review.last_receipt_id ||
+        current.value.turn !== review.turn ||
+        current.value.workspace_id !== plan.workspace_id ||
+        current.value.seats?.ralph?.pane_id !== plan.seats.ralph.pane_id ||
+        current.value.seats?.lisa?.pane_id !== plan.seats.lisa.pane_id)
+      throw new Error("REBIND_SNAPSHOT_MISMATCH");
+    const prepared = call(cli, ["host", "prepare-generation", "--project", paths.real,
+      "--lease-id", lease.lease_id, "--expected-digest", current.value.state_digest,
+      "--json"]);
+    if (prepared.code !== 0 || prepared.value?.status !== "ready" ||
+        prepared.value.generation !== review.generation ||
+        prepared.value.last_receipt_id !== review.last_receipt_id ||
+        prepared.value.turn !== review.turn)
+      throw new Error(prepared.value?.code || "REBIND_GENERATION_MISMATCH");
+    for (const [role, kind] of [["ralph", "claude"], ["lisa", "codex"]])
+      verifySeat(herdr, plan, role, kind);
+    const priorFiles = priorDeliveryFiles(paths);
+    if (priorPluginDigest(paths, priorFiles) !== review.plugin_evidence_sha256)
+      throw new Error("PRIOR_DELIVERY_CHANGED");
+    const archive = path.join(paths.dir, `prior-${old.lease_id}`);
+    fs.mkdirSync(archive, { mode: 0o700 });
+    for (const name of priorFiles)
+      fs.renameSync(path.join(paths.dir, name), path.join(archive, name));
+    fs.renameSync(paths.record, path.join(archive, "record.json"));
+    const rebound = { schema: 1, phase: "rebound_paused", pid: process.pid,
+      owner_id: ownerId, lease_id: lease.lease_id, project_realpath: paths.real,
+      session_id: review.session_id, expected_digest: plan.expected_digest,
+      plan, binding_generation: current.value.binding_generation,
+      cursor_generation: review.generation, cursor_receipt_id: review.last_receipt_id,
+      cursor_turn: review.turn, pause_state_digest: plan.expected_digest,
+      pause_generation: review.generation, pause_receipt_id: review.last_receipt_id,
+      pause_turn: review.turn, prior_lease_id: old.lease_id,
+      prior_recovery_id: review.recovery_id, prior_archive: path.basename(archive),
+      initial_status: "inherited_accepted", replay: "not_replayed" };
+    durableWrite(paths.record, rebound, true);
+    fs.unlinkSync(paths.rebind);
+    emit({ status: "rebound_paused", project: paths.real, lease_id: lease.lease_id,
+      owner_id: ownerId, binding_generation: rebound.binding_generation,
+      generation: review.generation, replay: "not_replayed" });
+  } catch (error) {
+    emit({ status: "needs_reconcile", code: error.message || "REBIND_UNCERTAIN",
+      project: paths.real, lease_id: lease?.lease_id ?? null,
+      note: "The rebind intent remains for manual review; no Agent prompt was sent." }, 7);
+  }
 }
 
 async function control(action) {
@@ -605,6 +775,7 @@ async function control(action) {
 try {
   if (process.argv[2] === "start") await start();
   else if (process.argv[2] === "stop") await stop();
+  else if (process.argv[2] === "rebind") await rebind(process.argv[3], process.argv[4]);
   else if (["pause", "resume"].includes(process.argv[2])) await control(process.argv[2]);
   else emit({ status: "error", code: "UNKNOWN_ACTION" }, 2);
 } catch (error) {
