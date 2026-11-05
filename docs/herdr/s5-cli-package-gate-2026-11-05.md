@@ -11,7 +11,7 @@
 ## 后续发布门禁
 
 1. 插件已选择由 Herdr GitHub 安装构建并引用同一源码版本，详见 [同仓 CLI 构建方案](s5-same-checkout-cli-2026-11-05.md)。指定提交的真实安装与同仓构建已在[隔离环境验收](s5-real-github-install-2026-11-05.md)。
-2. 仍需验证跨提交实际升级和干净机器上的 Herdr、Node、Claude、Codex 与宿主契约。已钉住提交的 `plugin update` 只返回 `already up to date`，不能证明升级路径。
+2. 仍需按[跨提交更新验收清单](s5-cross-commit-update-acceptance-2026-11-05.md)验证实际升级，以及干净机器上的 Herdr、Node、Claude、Codex 与宿主契约。已钉住提交的 `plugin update` 只返回 `already up to date`，不能证明升级路径。
 3. 在发布前复查许可证、依赖、构建清单、README 示例、版本号和公开仓内容。Marketplace 收录还需要原仓默认分支上的清单及 `herdr-plugin` topic；开发 fork 的 CI 成功不等于上架。
 
 本切片补齐 CLI 包的许可证和自动打包门禁。npm 新版本仍未发布。
