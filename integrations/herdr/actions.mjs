@@ -102,14 +102,17 @@ function recoveryPluginState(projectRealpath, cliEvidence) {
   if (!root || !path.isAbsolute(root)) throw new Error("PLUGIN_STATE_DIR_REQUIRED");
   const key = crypto.createHash("sha256").update(projectRealpath).digest("hex");
   const dir = path.join(root, "sessions", key);
-  if (!fs.existsSync(dir)) return { record: null, deliveries: [], warning: "PLUGIN_RECORD_MISSING" };
+  if (!fs.existsSync(dir)) return { record: null, deliveries: [], warning: "PLUGIN_RECORD_MISSING",
+    evidence_sha256: null };
   const stat = fs.lstatSync(dir);
   if (!stat.isDirectory() || stat.isSymbolicLink())
     throw new Error("PLUGIN_RECORD_INVALID");
   const recordPath = path.join(dir, "record.json");
   if (!fs.existsSync(recordPath))
-    return { record: null, deliveries: [], warning: "PLUGIN_RECORD_MISSING" };
+    return { record: null, deliveries: [], warning: "PLUGIN_RECORD_MISSING",
+      evidence_sha256: null };
   const record = regularJson(recordPath);
+  const digest = crypto.createHash("sha256").update(JSON.stringify(record));
   if (record.project_realpath !== projectRealpath ||
       record.session_id !== cliEvidence.session_id ||
       record.lease_id !== cliEvidence.lease_id ||
@@ -139,13 +142,14 @@ function recoveryPluginState(projectRealpath, cliEvidence) {
       throw new Error("PLUGIN_BINDING_MISMATCH");
   }
   const names = fs.readdirSync(dir).filter((name) =>
-    name.startsWith("initial-") || name.startsWith("delivery-"));
+    name.startsWith("initial-") || name.startsWith("delivery-")).sort();
   if (names.length && (!plan || record.binding_generation !== cliEvidence.binding_generation))
     throw new Error("PLUGIN_BINDING_MISMATCH");
   const deliveries = names.map((name) => {
     if (!/^(?:initial|delivery)-[0-9a-f-]{36}\.json$/i.test(name))
       throw new Error("PLUGIN_DELIVERY_INVALID");
     const value = regularJson(path.join(dir, name), "PLUGIN_DELIVERY_INVALID");
+    digest.update(name).update(JSON.stringify(value));
     if (!UUID.test(name.slice(name.indexOf("-") + 1, -5)) ||
         !["intent", "accepted"].includes(value.status) ||
         value.owner_id !== record.owner_id || value.lease_id !== record.lease_id ||
@@ -173,7 +177,8 @@ function recoveryPluginState(projectRealpath, cliEvidence) {
     initial_status: record.initial_status ?? null,
     error: record.error ?? null }, deliveries,
     warning: deliveries.some((item) => item.status === "intent") ?
-      "DELIVERY_OUTCOME_UNCERTAIN" : null };
+      "DELIVERY_OUTCOME_UNCERTAIN" : null,
+    evidence_sha256: digest.digest("hex") };
 }
 
 function recoverySeats(herdr, projectRealpath, recordPlan) {
@@ -236,6 +241,16 @@ function recoveryAudit(diagnosis, project) {
           snapshot.seats?.lisa?.pane_id !== plan.seats.lisa.pane_id))
       throw new Error("PLUGIN_HOST_BINDING_MISMATCH");
     const seats = recoverySeats(diagnosis.herdr, evidence.project_realpath, plan);
+    const finalCheck = invoke(diagnosis.cli, ["host", "recovery-check", "--project",
+      evidence.project_realpath, "--json"]);
+    const finalEvidence = readJson(finalCheck);
+    if (finalCheck.code !== 0 || finalEvidence?.status !== "review_required" ||
+        finalEvidence.evidence_sha256 !== evidence.evidence_sha256)
+      throw new Error("RECOVERY_STATE_CHANGED");
+    const finalPlugin = recoveryPluginState(evidence.project_realpath, finalEvidence);
+    if (finalPlugin.evidence_sha256 !== plugin.evidence_sha256 ||
+        finalPlugin.warning !== plugin.warning)
+      throw new Error("RECOVERY_STATE_CHANGED");
     emit({ status: "review_required", project: evidence.project_realpath,
       cli: evidence, plugin: plugin.record, deliveries: plugin.deliveries,
       plugin_warning: plugin.warning,

@@ -135,3 +135,5 @@ S3 人工确认路径现有独立 `review` Pane：公开 CLI 先只读列出/读
 后续隔离 Herdr 0.9.4 运行试验已验证 `review` Pane 的候选全文、席位/摘要、预检与取消不提交；真人确认、正式提交和 Lisa 交接仍未验收。真实 Ralph 调用候选提议辅助命令遇到 `agent get=blocked` 与 `agent explain=working` 的状态分歧，按原门禁拒绝提议，后续须调查而不能将 `blocked` 当成 `working`。见 [S3 真实审阅窗格试验](s3-real-review-pane-trial-2026-11-04.md)。
 
 S3 Agent Pane 提议现对短暂 `blocked` 状态做有界重查，仍要求 `agent get` 实际返回 `working`；2026-11-05 在新的隔离 Herdr 会话里，由真实 Claude/Ralph 在自身 Pane 成功提议候选并核对持久记录。该结果不证明文件写入者，人工来源确认与 S4 重启恢复仍未完成，见 [S3 Agent Pane 短时重查实测](s3-agent-pane-retry-live-2026-11-05.md)。
+
+S4 恢复审查增加席位查询后的 CLI 租约证据与插件完整记录复核；审查期间发生变化会返回 `RECOVERY_STATE_CHANGED`，不输出过时的 `review_required` 结果。隔离测试已覆盖租约和插件记录并发变化；此复核仍非原子快照，也未完成重启后的自动重绑与租约接续，见 [S4 恢复核对稳定性](s4-recovery-audit-stability-2026-11-05.md)。

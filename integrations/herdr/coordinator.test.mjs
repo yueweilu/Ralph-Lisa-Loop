@@ -80,7 +80,7 @@ test("coordinator claims and binds observed seats, heartbeats, then releases on 
         { encoding: "utf8", ...options });
       let value;
       try { value = JSON.parse(result.stdout); } catch { /* Keep the original result. */ }
-      if (value?.code !== "HOST_BUSY") return result;
+      if (!["HOST_BUSY", "RECOVERY_STATE_CHANGED"].includes(value?.code)) return result;
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
     assert.fail(`command stayed HOST_BUSY after bounded retries: ${args.slice(1, 3).join(" ")}`);
@@ -348,7 +348,7 @@ for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commi
     `const a=process.argv.slice(2);` +
     `if(a[0]==='--version')console.log('herdr 0.9.4');` +
     `else if(a[0]==='integration')console.log('claude: current (v10)\\ncodex: current (v9)');` +
-    `else if(a[0]==='agent'&&a[1]==='get'){const role=a[2];const changed=require('node:fs').existsSync(process.env.FAKE_SERVER_RESTARTED);console.log(JSON.stringify({result:{agent:{name:role,agent:role==='ralph'?'claude':'codex',workspace_id:'w1',pane_id:role==='ralph'?'w1:p1':'w1:p2',terminal_id:(changed?'new-':'term-')+role,cwd:process.env.FAKE_PROJECT,interactive_ready:true,agent_status:'idle'}}}));}` +
+    `else if(a[0]==='agent'&&a[1]==='get'){const role=a[2];const fs=require('node:fs');const changed=fs.existsSync(process.env.FAKE_SERVER_RESTARTED);const marker=process.env.FAKE_AUDIT_MUTATION;if(role==='ralph'&&marker&&fs.existsSync(marker)){const target=fs.readFileSync(marker,'utf8').trim()==='lease'?process.env.FAKE_LEASE_PATH:process.env.FAKE_RECORD_PATH;const value=JSON.parse(fs.readFileSync(target,'utf8'));if(target===process.env.FAKE_LEASE_PATH)value.heartbeat_seq++;else value.error='changed-during-audit';fs.writeFileSync(target,JSON.stringify(value));fs.unlinkSync(marker);}console.log(JSON.stringify({result:{agent:{name:role,agent:role==='ralph'?'claude':'codex',workspace_id:'w1',pane_id:role==='ralph'?'w1:p1':'w1:p2',terminal_id:(changed?'new-':'term-')+role,cwd:process.env.FAKE_PROJECT,interactive_ready:true,agent_status:'idle'}}}));}` +
     `else if(a[0]==='agent'&&a[1]==='prompt'){require('node:fs').appendFileSync(process.env.FAKE_PROMPTS,a[2]+'\\n');if((a[2]==='ralph'&&process.env.FAKE_PROMPT_FAILURE==='initial-timeout')||(a[2]==='lisa'&&process.env.FAKE_PROMPT_FAILURE==='timeout')){console.error(JSON.stringify({error:{code:'timeout'}}));process.exitCode=1;}else if(a[2]==='ralph')console.log(JSON.stringify({result:{type:'agent_prompted',agent:{name:'ralph',agent:'claude',workspace_id:'w1',pane_id:'w1:p1',cwd:process.env.FAKE_PROJECT}}}));else console.log(JSON.stringify({result:{type:'agent_prompted',agent:{name:a[2],agent:'codex',workspace_id:'w1',pane_id:'w1:p9',cwd:process.env.FAKE_PROJECT}}}));}` +
     `else process.exitCode=2;\n`);
   fs.writeFileSync(fakeClaude, `#!${process.execPath}\nconsole.log('{"loggedIn":true}');\n`);
@@ -391,6 +391,22 @@ for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commi
       const originalInitial = fs.readFileSync(initialFile, "utf8");
       const audit = () => spawnSync(process.execPath,
         [path.join(root, "actions.mjs"), "recovery-check"], { env, encoding: "utf8" });
+      const mutationMarker = path.join(temp, "audit-mutation");
+      const leaseFile = path.join(project, ".dual-agent", "host", "lease", "record.json");
+      for (const [mutation, target] of [["plugin", recordFile], ["lease", leaseFile]]) {
+        const original = fs.readFileSync(target, "utf8");
+        fs.writeFileSync(mutationMarker, mutation);
+        const changedDuringAudit = spawnSync(process.execPath,
+          [path.join(root, "actions.mjs"), "recovery-check"], {
+            env: { ...env, FAKE_AUDIT_MUTATION: mutationMarker,
+              FAKE_RECORD_PATH: recordFile, FAKE_LEASE_PATH: leaseFile }, encoding: "utf8",
+          });
+        assert.equal(changedDuringAudit.status, 7,
+          changedDuringAudit.stdout + changedDuringAudit.stderr);
+        assert.equal(JSON.parse(changedDuringAudit.stdout).code, "RECOVERY_STATE_CHANGED");
+        assert.equal(fs.existsSync(mutationMarker), false);
+        fs.writeFileSync(target, original);
+      }
       for (const change of [
         { pane_id: "w1:other" }, { workspace_id: "other" },
         { message_sha256: "not-a-hash" }, { role: "lisa" },
