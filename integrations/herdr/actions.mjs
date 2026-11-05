@@ -174,6 +174,7 @@ function recoveryPluginState(projectRealpath, cliEvidence) {
     lease_id: record.lease_id, binding_generation: record.binding_generation ?? null,
     cursor_generation: record.cursor_generation ?? null,
     cursor_receipt_id: record.cursor_receipt_id ?? null,
+    cursor_turn: record.cursor_turn ?? null,
     initial_status: record.initial_status ?? null,
     error: record.error ?? null }, deliveries,
     warning: deliveries.some((item) => item.status === "intent") ?
@@ -210,6 +211,24 @@ function recoverySeats(herdr, projectRealpath, recordPlan) {
   return seats;
 }
 
+function coordinatorProcess(pid) {
+  if (!Number.isSafeInteger(pid) || pid < 1) return "unknown";
+  try { process.kill(pid, 0); return "pid_exists"; }
+  catch (error) {
+    if (error.code === "ESRCH") return "pid_absent";
+    if (error.code === "EPERM") return "pid_exists";
+    return "unknown";
+  }
+}
+
+function pendingPluginControl(dir) {
+  for (const name of ["stop.json", "control.json"]) {
+    try { fs.lstatSync(path.join(dir, name)); return true; }
+    catch (error) { if (error.code !== "ENOENT") return true; }
+  }
+  return false;
+}
+
 function recoveryAudit(diagnosis, project) {
   const checked = invoke(diagnosis.cli, ["host", "recovery-check", "--project", project, "--json"]);
   const evidence = readJson(checked);
@@ -241,6 +260,38 @@ function recoveryAudit(diagnosis, project) {
           snapshot.seats?.lisa?.pane_id !== plan.seats.lisa.pane_id))
       throw new Error("PLUGIN_HOST_BINDING_MISMATCH");
     const seats = recoverySeats(diagnosis.herdr, evidence.project_realpath, plan);
+    const processObservation = coordinatorProcess(plugin.record?.pid);
+    const blockers = [];
+    if (processObservation !== "pid_absent")
+      blockers.push(processObservation === "pid_exists" ?
+        "COORDINATOR_PID_PRESENT" : "COORDINATOR_PID_UNKNOWN");
+    if (!plugin.record) blockers.push("PLUGIN_RECORD_MISSING");
+    else {
+      if (plugin.record.initial_status !== "accepted" ||
+          plugin.deliveries.some((item) => item.status !== "accepted"))
+        blockers.push("DELIVERY_OUTCOME_UNCERTAIN");
+      const initial = plugin.deliveries.find((item) =>
+        item.kind === "initial" && item.id === evidence.session_id &&
+        item.status === "accepted");
+      const handoffs = plugin.deliveries.filter((item) => item.kind === "handoff");
+      const generations = new Set(handoffs.map((item) => item.generation));
+      if (!initial || handoffs.length !== snapshot.generation ||
+          generations.size !== handoffs.length ||
+          handoffs.some((item) => item.generation > snapshot.generation) ||
+          (snapshot.generation > 0 && !handoffs.some((item) =>
+            item.id === snapshot.last_receipt_id && item.generation === snapshot.generation &&
+            item.status === "accepted")))
+        blockers.push("DELIVERY_RECORD_MISSING");
+      if (plugin.record.cursor_generation !== snapshot.generation ||
+          plugin.record.cursor_receipt_id !== snapshot.last_receipt_id ||
+          plugin.record.cursor_turn !== snapshot.turn)
+        blockers.push("CURSOR_STATE_MISMATCH");
+      if (pendingPluginControl(path.dirname(recordPath))) blockers.push("CONTROL_PENDING");
+    }
+    if (!seats || Object.values(seats).some((seat) =>
+      seat.observation !== "matches_binding" ||
+      seat.native_session.continuity !== "matches_record"))
+      blockers.push("SEAT_REBIND_REQUIRED");
     const finalCheck = invoke(diagnosis.cli, ["host", "recovery-check", "--project",
       evidence.project_realpath, "--json"]);
     const finalEvidence = readJson(finalCheck);
@@ -254,6 +305,7 @@ function recoveryAudit(diagnosis, project) {
     emit({ status: "review_required", project: evidence.project_realpath,
       cli: evidence, plugin: plugin.record, deliveries: plugin.deliveries,
       plugin_warning: plugin.warning,
+      coordinator_process: processObservation, continuation_blockers: blockers,
       seats,
       restart_observation: !seats ? "binding_plan_unavailable" :
         Object.values(seats).every((seat) => seat.observation === "matches_binding" &&

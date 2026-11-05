@@ -137,3 +137,5 @@ S3 人工确认路径现有独立 `review` Pane：公开 CLI 先只读列出/读
 S3 Agent Pane 提议现对短暂 `blocked` 状态做有界重查，仍要求 `agent get` 实际返回 `working`；2026-11-05 在新的隔离 Herdr 会话里，由真实 Claude/Ralph 在自身 Pane 成功提议候选并核对持久记录。该结果不证明文件写入者，人工来源确认与 S4 重启恢复仍未完成，见 [S3 Agent Pane 短时重查实测](s3-agent-pane-retry-live-2026-11-05.md)。
 
 S4 恢复审查增加席位查询后的 CLI 租约证据与插件完整记录复核；审查期间发生变化会返回 `RECOVERY_STATE_CHANGED`，不输出过时的 `review_required` 结果。隔离测试已覆盖租约和插件记录并发变化；此复核仍非原子快照，也未完成重启后的自动重绑与租约接续，见 [S4 恢复核对稳定性](s4-recovery-audit-stability-2026-11-05.md)。
+
+S4 后续为恢复审查增加只读 `continuation_blockers`，明示旧协调器 PID、投递结果、回执游标、未处理控制请求和席位身份问题。它不调用租约恢复或重新投递，空阻断列表仍需人工核对，见 [S4 重启接续阻断项](s4-recovery-continuation-blockers-2026-11-05.md)。

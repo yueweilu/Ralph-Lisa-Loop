@@ -101,6 +101,11 @@ test("coordinator claims and binds observed seats, heartbeats, then releases on 
     assert.equal(audited.cli.lease_id, started.lease_id);
     assert.equal(audited.plugin.phase, "active");
     assert.equal(audited.plugin.initial_status, "accepted");
+    assert.equal(audited.coordinator_process, "pid_exists");
+    assert.ok(audited.continuation_blockers.includes("COORDINATOR_PID_PRESENT"));
+    assert.ok(audited.continuation_blockers.includes("SEAT_REBIND_REQUIRED"));
+    assert.equal(audited.continuation_blockers.includes("CURSOR_STATE_MISMATCH"), false);
+    assert.equal(audited.continuation_blockers.includes("DELIVERY_RECORD_MISSING"), false);
     assert.deepEqual(audited.deliveries.map((row) => [row.kind, row.status]),
       [["initial", "accepted"]]);
     assert.equal(audited.seats.ralph.observation, "matches_binding");
@@ -119,6 +124,7 @@ test("coordinator claims and binds observed seats, heartbeats, then releases on 
     assert.equal(changedAudit.seats.ralph.observation, "matches_binding");
     assert.equal(changedAudit.seats.ralph.native_session.continuity, "changed_or_missing");
     assert.equal(changedAudit.restart_observation, "manual_rebind_required");
+    assert.ok(changedAudit.continuation_blockers.includes("SEAT_REBIND_REQUIRED"));
     const claimed = JSON.parse((await runWithHostBusyRetry(
       [cli, "host", "snapshot", "--project", project, "--json"])).stdout);
     assert.equal(claimed.host_state, "claimed");
@@ -384,6 +390,7 @@ for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commi
       const audited = JSON.parse(recovery.stdout);
       assert.equal(audited.plugin_warning, "DELIVERY_OUTCOME_UNCERTAIN");
       assert.equal(audited.plugin.phase, "needs_reconcile");
+      assert.ok(audited.continuation_blockers.includes("DELIVERY_OUTCOME_UNCERTAIN"));
       assert.deepEqual(audited.deliveries.map((row) => [row.kind, row.status]),
         [["initial", "intent"]]);
       const recordFile = path.join(sessionDir, "record.json");
@@ -391,6 +398,22 @@ for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commi
       const originalInitial = fs.readFileSync(initialFile, "utf8");
       const audit = () => spawnSync(process.execPath,
         [path.join(root, "actions.mjs"), "recovery-check"], { env, encoding: "utf8" });
+      fs.unlinkSync(initialFile);
+      const missingDelivery = audit();
+      assert.equal(missingDelivery.status, 0, missingDelivery.stdout + missingDelivery.stderr);
+      assert.ok(JSON.parse(missingDelivery.stdout).continuation_blockers.includes("DELIVERY_RECORD_MISSING"));
+      fs.writeFileSync(initialFile, originalInitial);
+      fs.writeFileSync(recordFile, JSON.stringify({ ...record, cursor_generation: 3 }));
+      const wrongCursor = audit();
+      assert.equal(wrongCursor.status, 0, wrongCursor.stdout + wrongCursor.stderr);
+      assert.ok(JSON.parse(wrongCursor.stdout).continuation_blockers.includes("CURSOR_STATE_MISMATCH"));
+      fs.writeFileSync(recordFile, JSON.stringify(record));
+      const controlFile = path.join(sessionDir, "control.json");
+      fs.writeFileSync(controlFile, "pending");
+      const pendingControl = audit();
+      assert.equal(pendingControl.status, 0, pendingControl.stdout + pendingControl.stderr);
+      assert.ok(JSON.parse(pendingControl.stdout).continuation_blockers.includes("CONTROL_PENDING"));
+      fs.unlinkSync(controlFile);
       const mutationMarker = path.join(temp, "audit-mutation");
       const leaseFile = path.join(project, ".dual-agent", "host", "lease", "record.json");
       for (const [mutation, target] of [["plugin", recordFile], ["lease", leaseFile]]) {
