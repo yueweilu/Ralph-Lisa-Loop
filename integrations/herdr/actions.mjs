@@ -408,6 +408,8 @@ function rebindAudit(diagnosis, project) {
     if (entryExists(path.join(dir, "rebind.pending.json")))
       throw new Error("REBIND_PENDING_REVIEW");
     const old = regularJson(path.join(dir, "record.json"));
+    if (old.prior_archive !== undefined)
+      throw new Error("REPEATED_REBIND_UNSUPPORTED");
     if (old.project_realpath !== snapshot.project_realpath ||
         old.session_id !== snapshot.session_id || !UUID.test(old.lease_id ?? "") ||
         !UUID.test(old.owner_id ?? "") || old.phase !== "needs_reconcile")
