@@ -133,3 +133,5 @@ S3 后续来源归因试验发现：插件 action 上下文使用界面聚焦 Pa
 S3 人工确认路径现有独立 `review` Pane：公开 CLI 先只读列出/读取已保存候选，Pane 展示正文、席位和摘要，预检通过后要求用户键入候选 ID 与完整摘要，才调用人工声明和正式提交。隔离自动化测试覆盖取消、通过与篡改冻结；Herdr 0.9.4 manifest 注册已核验，真实 Pane 目视操作及真实用户审阅仍待验收。来源继续标记 `unverified`，见 [S3 人工候选审阅](s3-human-candidate-review-2026-11-04.md)。
 
 后续隔离 Herdr 0.9.4 运行试验已验证 `review` Pane 的候选全文、席位/摘要、预检与取消不提交；真人确认、正式提交和 Lisa 交接仍未验收。真实 Ralph 调用候选提议辅助命令遇到 `agent get=blocked` 与 `agent explain=working` 的状态分歧，按原门禁拒绝提议，后续须调查而不能将 `blocked` 当成 `working`。见 [S3 真实审阅窗格试验](s3-real-review-pane-trial-2026-11-04.md)。
+
+S3 Agent Pane 提议现对短暂 `blocked` 状态做有界重查，仍要求 `agent get` 实际返回 `working`；2026-11-05 在新的隔离 Herdr 会话里，由真实 Claude/Ralph 在自身 Pane 成功提议候选并核对持久记录。该结果不证明文件写入者，人工来源确认与 S4 重启恢复仍未完成，见 [S3 Agent Pane 短时重查实测](s3-agent-pane-retry-live-2026-11-05.md)。

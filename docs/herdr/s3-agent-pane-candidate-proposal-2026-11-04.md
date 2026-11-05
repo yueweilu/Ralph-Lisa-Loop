@@ -10,7 +10,9 @@
 
 真实试验中出现 `agent get` 尚报 `blocked` 而 `agent explain` 显示 `working` 的状态分歧，辅助命令按原门禁拒绝。后续诊断将“席位/Terminal 身份不匹配”与“`agent get` 未观察到 `working`”分开，后者返回 `CALLER_AGENT_NOT_WORKING` 及已观察到的状态；两种情况都不保存候选，也不把 `blocked` 视为 `working`。现场结果见[真实审阅窗格试验](s3-real-review-pane-trial-2026-11-04.md)。
 
-为处理刚退出权限提示时短暂的旧 `blocked` 观察，辅助命令现在对同一 Pane/Terminal/Agent 最多重查 8 次，每次间隔 250 毫秒；只有 `agent get` 实际返回 `working` 才继续。身份在任何一次读取中变化即拒绝；持续 `blocked`、`idle`、`done` 或 `unknown` 均不提议。隔离测试覆盖 `blocked → blocked → working` 的成功路径和持续 `blocked` 的拒绝路径；真实 Herdr 现场是否能在这个窗口内恢复为 `working` 尚待复测。
+为处理刚退出权限提示时短暂的旧 `blocked` 观察，辅助命令现在对同一 Pane/Terminal/Agent 最多重查 8 次，每次间隔 250 毫秒；只有 `agent get` 实际返回 `working` 才继续。身份在任何一次读取中变化即拒绝；持续 `blocked`、`idle`、`done` 或 `unknown` 均不提议。隔离测试覆盖 `blocked → blocked → working` 的成功路径和持续 `blocked` 的拒绝路径。
+
+后续[真实短时重查试验](s3-agent-pane-retry-live-2026-11-05.md)已从 Claude/Ralph 的 Herdr Pane 成功提议候选，CLI 持久记录匹配当前租约和代次；仍标记 `source_verification=unverified`，没有自动确认或提交。
 
 ## 验证
 
