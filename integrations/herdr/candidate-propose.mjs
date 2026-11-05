@@ -11,8 +11,8 @@ function output(value, code = 0) {
   process.exitCode = code;
 }
 
-function fail(code, exitCode = 4) {
-  output({ status: "not_ready", code, source_verification: "unverified" }, exitCode);
+function fail(code, exitCode = 4, details = {}) {
+  output({ status: "not_ready", code, source_verification: "unverified", ...details }, exitCode);
 }
 
 function call(argv, args) {
@@ -102,8 +102,13 @@ async function main() {
   try { cwd = fs.realpathSync.native(agent.cwd); } catch { /* Fail closed. */ }
   if (live.code !== 0 || !agent || cwd !== input.project ||
       agent.pane_id !== pane.pane_id || agent.workspace_id !== pane.workspace_id ||
-      agent.terminal_id !== pane.terminal_id || agent.agent_status !== "working")
+      agent.terminal_id !== pane.terminal_id)
     return fail("CALLER_AGENT_MISMATCH");
+  if (agent.agent_status !== "working")
+    return fail("CALLER_AGENT_NOT_WORKING", 4, {
+      observed_agent_status: ["idle", "done", "blocked", "unknown"].includes(agent.agent_status)
+        ? agent.agent_status : "unknown",
+    });
   const role = agent.name;
   const kind = role === "ralph" ? "claude" : role === "lisa" ? "codex" : null;
   if (!kind || agent.agent !== kind) return fail("CALLER_AGENT_MISMATCH");

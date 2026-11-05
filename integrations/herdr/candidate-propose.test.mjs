@@ -65,8 +65,14 @@ test("pane candidate proposal observes the bound Agent but keeps source unverifi
       "CALLER_AGENT_MISMATCH");
     assert.equal(runHelper({ ...env, FAKE_AGENT_NAME: "lisa", FAKE_AGENT_KIND: "codex" }).value.code,
       "SEAT_BINDING_MISMATCH");
-    assert.equal(runHelper({ ...env, FAKE_AGENT_STATUS: "idle" }).value.code,
-      "CALLER_AGENT_MISMATCH");
+    const idle = runHelper({ ...env, FAKE_AGENT_STATUS: "idle" });
+    assert.equal(idle.status, 4);
+    assert.equal(idle.value.code, "CALLER_AGENT_NOT_WORKING");
+    assert.equal(idle.value.observed_agent_status, "idle");
+    const blocked = runHelper({ ...env, FAKE_AGENT_STATUS: "blocked" });
+    assert.equal(blocked.status, 4);
+    assert.equal(blocked.value.code, "CALLER_AGENT_NOT_WORKING");
+    assert.equal(blocked.value.observed_agent_status, "blocked");
     assert.equal(runCli("snapshot").candidate_count, 0);
 
     const accepted = runHelper();

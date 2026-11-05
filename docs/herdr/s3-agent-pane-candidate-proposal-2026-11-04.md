@@ -8,6 +8,8 @@
 
 因此新增 `integrations/herdr/candidate-propose.mjs`，由 Agent 在**自己的 Herdr Pane**中作为工具命令执行。它要求 Herdr Pane 环境，向 Herdr 查询调用 Pane 和该 Pane 的实时 Agent，再与公开 CLI 的项目、当前轮次、Workspace、Pane 和绑定代次核对；只有 Ralph/Claude 或 Lisa/Codex 位于当前合法席位且状态为 `working` 时，才使用现有 `host propose` 保存候选。调用方提供稳定的候选 UUID，重复调用沿用 CLI 的幂等语义。它不调用 `confirm-candidate` 或 `commit`。
 
+真实试验中出现 `agent get` 尚报 `blocked` 而 `agent explain` 显示 `working` 的状态分歧，辅助命令按原门禁拒绝。后续诊断将“席位/Terminal 身份不匹配”与“`agent get` 未观察到 `working`”分开，后者返回 `CALLER_AGENT_NOT_WORKING` 及已观察到的状态；两种情况都不保存候选，也不把 `blocked` 视为 `working`。现场结果见[真实审阅窗格试验](s3-real-review-pane-trial-2026-11-04.md)。
+
 ## 验证
 
 - 隔离自动化测试使用真实公开 CLI、伪 Herdr，覆盖非 Herdr 环境、调用 Pane 不匹配、Terminal 不匹配、错席位、非工作状态的拒绝，以及正常提议、重复 UUID 幂等和候选计数。
