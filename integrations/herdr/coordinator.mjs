@@ -5,6 +5,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { nativeSessionReference } from "./native-session.mjs";
 import { requireActiveSnapshot } from "./snapshot-diagnostic.mjs";
+import { resolveCliArgv } from "./cli-command.mjs";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const stateRoot = process.env.HERDR_PLUGIN_STATE_DIR;
@@ -37,7 +38,7 @@ function config() {
     const file = path.join(dir, "settings.json");
     if (fs.existsSync(file)) value = JSON.parse(fs.readFileSync(file, "utf8"));
   }
-  return { cli: value.rll_cli_argv || ["ralph-lisa"], project: value.project };
+  return { cli: resolveCliArgv(value.rll_cli_argv), project: value.project };
 }
 
 function projectFromContext() {

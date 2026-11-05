@@ -5,6 +5,15 @@ min_herdr_version = "0.9.4"
 description = "Run Ralph-Lisa seats and host coordination inside Herdr"
 platforms = ["macos", "linux"]
 
+[[build]]
+command = ["npm", "ci", "--prefix", "../../cli", "--ignore-scripts", "--no-audit", "--no-fund"]
+
+[[build]]
+command = ["npm", "run", "build", "--prefix", "../../cli"]
+
+[[build]]
+command = ["node", "../../cli/scripts/verify-package.mjs"]
+
 [[actions]]
 id = "doctor"
 title = "Check Ralph-Lisa setup"

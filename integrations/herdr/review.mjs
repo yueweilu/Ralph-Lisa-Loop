@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
+import { resolveCliArgv } from "./cli-command.mjs";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -36,11 +37,11 @@ function cliSettings() {
   const dir = process.env.HERDR_PLUGIN_CONFIG_DIR;
   if (!dir || !path.isAbsolute(dir)) throw new Error("HERDR_PLUGIN_CONFIG_DIR_REQUIRED");
   const file = path.join(dir, "settings.json");
-  if (!fs.existsSync(file)) return ["ralph-lisa"];
+  if (!fs.existsSync(file)) return resolveCliArgv();
   const stat = fs.lstatSync(file);
   if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("INVALID_SETTINGS");
   const settings = JSON.parse(fs.readFileSync(file, "utf8"));
-  const argv = settings?.rll_cli_argv ?? ["ralph-lisa"];
+  const argv = resolveCliArgv(settings?.rll_cli_argv);
   if (!Array.isArray(argv) || argv.length < 1 || argv.length > 4 ||
       !argv.every((item) => typeof item === "string" && item.length > 0)) {
     throw new Error("INVALID_SETTINGS");

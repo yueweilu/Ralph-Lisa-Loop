@@ -10,7 +10,7 @@
 
 ## 后续发布门禁
 
-1. 确定插件所需 CLI 的分发方式：发布含 S1 宿主契约的新版 npm CLI，或由 Herdr GitHub 安装构建并引用同一源码版本。当前插件默认在 `PATH` 查找 `ralph-lisa`，也支持在插件配置中显式指定 `rll_cli_argv`；新机器安装流程必须选定并验证其中一条。
+1. 插件已选择由 Herdr GitHub 安装构建并引用同一源码版本，详见 [同仓 CLI 构建方案](s5-same-checkout-cli-2026-11-05.md)。本地构建门禁通过不等于 GitHub 安装验收；仍须在 Herdr 管理环境中验证。
 2. 在隔离用户目录中验证 GitHub 子目录安装、更新、卸载与配置保留；再用一台干净环境核对 Herdr、Node、Claude、Codex 和真实宿主契约。`plugin link` 仅证明本地清单可链接，不能代替 GitHub 安装验收。
 3. 在发布前复查许可证、依赖、构建清单、README 示例、版本号和公开仓内容。Marketplace 收录还需要原仓默认分支上的清单及 `herdr-plugin` topic；开发 fork 的 CI 成功不等于上架。
 

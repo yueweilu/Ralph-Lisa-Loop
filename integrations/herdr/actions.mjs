@@ -4,6 +4,7 @@ import * as crypto from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { nativeSessionReference } from "./native-session.mjs";
+import { resolveCliArgv } from "./cli-command.mjs";
 
 const pluginRoot = path.dirname(fileURLToPath(import.meta.url));
 const MIN_HERDR = [0, 9, 4];
@@ -666,7 +667,7 @@ function continuationAudit(diagnosis, project) {
 
 function diagnostics(config) {
   const herdr = [process.env.HERDR_BIN_PATH || "herdr"];
-  const cli = config.rll_cli_argv || ["ralph-lisa"];
+  const cli = resolveCliArgv(config.rll_cli_argv);
   const herdrVersion = invoke(herdr, ["--version"]);
   const parsedHerdr = herdrVersion.code === 0 ? version(herdrVersion.stdout) : null;
   const cliVersion = invoke(cli, ["--version"]);

@@ -25,9 +25,13 @@ This is the public-repository Herdr plugin, separate from the Claude Code plugin
 
 `ready` means the read-only preflight passed at that moment. Claude/Codex can be detected from their terminal screens without Herdr integrations. The `integrations` checks remain visible because they are needed to resume the same Agent sessions after a Herdr server restart. `started` means the host lease, bindings, generation baseline, and initial Ralph prompt are accepted; `handed_off` is emitted only after Herdr accepts a receipt-driven prompt. `status` includes the plugin coordinator phase and initial prompt status when a local record exists. RLL still labels seat verification `unverified`, because its CLI does not independently authenticate Herdr's returned IDs.
 
+## GitHub installation
+
+Install this repository's `integrations/herdr` subdirectory through Herdr's `plugin install` command. Herdr runs the manifest's build commands before registration: `npm ci` in the sibling `cli/` package, TypeScript build, then the package-content check. The plugin chooses that same checkout's built `cli/dist/cli.js` when no CLI override is configured. Installation fails if the source checkout does not include the sibling CLI or the build/check fails. A real GitHub installation, update, and uninstall still require Herdr runtime acceptance.
+
 ## Local setup
 
-Build the public CLI first (`cd cli && npm ci && npm run build`) or install a published CLI containing the S1 host commands. The npm release `ralph-lisa-loop@0.3.13` did not contain `host` when checked on 2026-11-05; use this checkout's built CLI for the current preview. From this checkout, link the plugin:
+Build the public CLI first (`cd cli && npm ci && npm run build`). Herdr does not run manifest build commands for a local `plugin link`. The npm release `ralph-lisa-loop@0.3.13` did not contain `host` when checked on 2026-11-05. From this checkout, link the plugin:
 
 ```sh
 herdr plugin link /absolute/path/to/Ralph-Lisa-Loop-herdr/integrations/herdr
@@ -43,7 +47,7 @@ The second command prints the per-plugin config directory. An optional `settings
 }
 ```
 
-Without `project`, a Herdr workspace action uses the absolute `workspace_cwd` from `HERDR_PLUGIN_CONTEXT_JSON`, checking it against `HERDR_WORKSPACE_ID` when both are provided. Without `rll_cli_argv`, the plugin resolves `ralph-lisa` on `PATH`. The project must already be initialized for `status` to return a snapshot. `settings.json` must be a regular file; malformed values return `INVALID_SETTINGS`.
+Without `project`, a Herdr workspace action uses the absolute `workspace_cwd` from `HERDR_PLUGIN_CONTEXT_JSON`, checking it against `HERDR_WORKSPACE_ID` when both are provided. Without `rll_cli_argv`, a source checkout uses its sibling `cli/dist/cli.js`; if it is unbuilt, it fails instead of falling back to a potentially stale global CLI. A standalone plugin directory without sibling CLI source resolves `ralph-lisa` on `PATH`. An explicit `rll_cli_argv` overrides either default. The project must already be initialized for `status` to return a snapshot. `settings.json` must be a regular file; malformed values return `INVALID_SETTINGS`.
 
 Then run `herdr plugin action invoke ralph-lisa.loop.doctor`, inspect `herdr plugin log list --plugin ralph-lisa.loop`, and open the read-only pane with `herdr plugin pane open --plugin ralph-lisa.loop --entrypoint control --placement tab` from a Herdr workspace. Action invocation is asynchronous; the command log carries the result. `herdr plugin unlink ralph-lisa.loop` unregisters the local link.
 

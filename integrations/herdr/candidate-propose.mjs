@@ -2,6 +2,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { spawnSync } from "node:child_process";
+import { resolveCliArgv } from "./cli-command.mjs";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -90,7 +91,7 @@ async function main() {
     catch { return fail("INVALID_SETTINGS", 2); }
     if (configuredProject !== input.project) return fail("PROJECT_MISMATCH");
   }
-  const cli = config.rll_cli_argv ?? ["ralph-lisa"];
+  const cli = resolveCliArgv(config.rll_cli_argv);
   const current = call(herdr, ["pane", "current", "--current"]);
   const pane = current.value?.result?.pane;
   if (current.code !== 0 || !pane || pane.pane_id !== process.env.HERDR_PANE_ID ||
