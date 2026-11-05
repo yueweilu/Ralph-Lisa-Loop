@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { nativeSessionReference } from "./native-session.mjs";
+import { requireActiveSnapshot } from "./snapshot-diagnostic.mjs";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const stateRoot = process.env.HERDR_PLUGIN_STATE_DIR;
@@ -115,27 +116,17 @@ function priorPluginDigest(paths, names) {
   return digest.digest("hex");
 }
 
-function failRecord(paths, record, code) {
-  durableWrite(paths.record, { ...record, phase: "needs_reconcile", error: code });
-  emit({ status: "needs_reconcile", code, project: paths.real }, 7);
+function failRecord(paths, record, error, fallback) {
+  const code = error.message || fallback;
+  const snapshotDiagnostic = error.snapshot_diagnostic;
+  durableWrite(paths.record, { ...record, phase: "needs_reconcile", error: code,
+    ...(snapshotDiagnostic ? { snapshot_diagnostic: snapshotDiagnostic } : {}) });
+  emit({ status: "needs_reconcile", code, project: paths.real,
+    ...(snapshotDiagnostic ? { snapshot_diagnostic: snapshotDiagnostic } : {}) }, 7);
 }
 
 function hostBusy(result) {
   return result.value?.code === "HOST_BUSY";
-}
-
-function requireActiveSnapshot(result, paths, record, plan) {
-  const value = result.value;
-  if (result.code !== 0 || value?.status !== "ok" ||
-      value.project_realpath !== paths.real || value.session_id !== record.session_id ||
-      value.host_state !== "claimed" || value.owner_id !== record.owner_id ||
-      value.binding_state !== "bound" || value.binding_generation !== record.binding_generation ||
-      value.workspace_id !== plan.workspace_id ||
-      value.seats?.ralph?.pane_id !== plan.seats.ralph.pane_id ||
-      value.seats?.lisa?.pane_id !== plan.seats.lisa.pane_id ||
-      !Number.isSafeInteger(value.generation) || value.generation < 0)
-    throw new Error(value?.code || "ACTIVE_SNAPSHOT_MISMATCH");
-  return value;
 }
 
 function deliveryFile(paths, requestId) {
@@ -594,7 +585,7 @@ async function start() {
   } catch (error) {
     let latest = record;
     try { latest = readRecord(paths.record); } catch { /* Keep the last in-memory intent. */ }
-    failRecord(paths, latest, error.message || "COORDINATOR_ERROR");
+    failRecord(paths, latest, error, "COORDINATOR_ERROR");
   }
 }
 
@@ -632,7 +623,9 @@ async function stop() {
         replay: "not_replayed" });
     } catch (error) {
       emit({ status: "needs_reconcile", code: error.message || "REBOUND_STOP_UNCERTAIN",
-        project: paths.real }, 7);
+        project: paths.real,
+        ...(error.snapshot_diagnostic ?
+          { snapshot_diagnostic: error.snapshot_diagnostic } : {}) }, 7);
     }
     return;
   }
@@ -728,7 +721,7 @@ async function continueRebound(expectedEvidence, decision) {
   } catch (error) {
     let latest = record;
     try { latest = readRecord(paths.record); } catch { /* Preserve latest known state. */ }
-    failRecord(paths, latest, error.message || "CONTINUATION_UNCERTAIN");
+    failRecord(paths, latest, error, "CONTINUATION_UNCERTAIN");
   }
 }
 

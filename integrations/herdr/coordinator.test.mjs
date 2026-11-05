@@ -6,10 +6,55 @@ import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { requireActiveSnapshot } from "./snapshot-diagnostic.mjs";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const cli = path.resolve(root, "../../cli/dist/cli.js");
 const coordinator = path.join(root, "coordinator.mjs");
+
+test("active snapshot failure names mismatched fields and CLI status without values", () => {
+  const paths = { real: "/tmp/private-task-project" };
+  const record = { session_id: "native-session-secret", owner_id: "owner-secret",
+    binding_generation: 3 };
+  const plan = { workspace_id: "w1", seats: {
+    ralph: { pane_id: "w1:p1" }, lisa: { pane_id: "w1:p2" },
+  } };
+  const valid = { status: "ok", project_realpath: paths.real,
+    session_id: record.session_id, host_state: "claimed", owner_id: record.owner_id,
+    binding_state: "bound", binding_generation: 3, workspace_id: "w1",
+    seats: { ralph: { pane_id: "w1:p1" }, lisa: { pane_id: "w1:p2" } },
+    generation: 1 };
+  assert.equal(requireActiveSnapshot({ code: 0, value: valid }, paths, record, plan), valid);
+  const changed = { ...valid, owner_id: "different-owner-secret",
+    seats: { ...valid.seats, lisa: { pane_id: "other-pane-secret" } } };
+  let failure;
+  try { requireActiveSnapshot({ code: 0, value: changed }, paths, record, plan); }
+  catch (error) { failure = error; }
+  assert.equal(failure?.message, "ACTIVE_SNAPSHOT_MISMATCH");
+  assert.deepEqual(failure.snapshot_diagnostic, { cli_exit_status: 0,
+    cli_result_status: "ok", cli_result_code: null, cli_spawn_error: null,
+    unmatched_fields: ["owner_id", "seats.lisa.pane_id"] });
+  assert.doesNotMatch(JSON.stringify(failure.snapshot_diagnostic),
+    /secret|private-task-project/);
+  assert.throws(() => requireActiveSnapshot({ code: null, value: null,
+    error: "ETIMEDOUT" }, paths, record, plan), (error) => {
+    assert.equal(error.message, "ACTIVE_SNAPSHOT_MISMATCH");
+    assert.equal(error.snapshot_diagnostic.cli_exit_status, null);
+    assert.equal(error.snapshot_diagnostic.cli_spawn_error, "ETIMEDOUT");
+    assert.ok(error.snapshot_diagnostic.unmatched_fields.includes("cli.exit_status"));
+    assert.ok(error.snapshot_diagnostic.unmatched_fields.includes("status"));
+    return true;
+  });
+  assert.throws(() => requireActiveSnapshot({ code: 7,
+    value: { status: "native-session-secret", code: "native-session-secret" },
+  }, paths, record, plan), (error) => {
+    assert.equal(error.message, "ACTIVE_SNAPSHOT_MISMATCH");
+    assert.equal(error.snapshot_diagnostic.cli_result_status, "unrecognized");
+    assert.equal(error.snapshot_diagnostic.cli_result_code, "unrecognized");
+    assert.doesNotMatch(JSON.stringify(error.snapshot_diagnostic), /secret/);
+    return true;
+  });
+});
 
 function waitForLine(child, predicate, timeoutMs = 15000) {
   return new Promise((resolve, reject) => {
