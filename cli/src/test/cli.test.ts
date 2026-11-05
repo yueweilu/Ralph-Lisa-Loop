@@ -2112,6 +2112,18 @@ describe("notifyUser", () => {
     }
     // The spawn is fire-and-forget + detached, so we just verify no crash
   });
+
+  it("does not crash when the notifier closes stdin before the write finishes", async () => {
+    const orig = process.env.RL_NOTIFY_CMD;
+    process.env.RL_NOTIFY_CMD = "exit 0";
+    try {
+      notifyUser("x".repeat(1024 * 1024));
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    } finally {
+      if (orig !== undefined) process.env.RL_NOTIFY_CMD = orig;
+      else delete process.env.RL_NOTIFY_CMD;
+    }
+  });
 });
 
 // ─── smoke-test and smoke-check command tests ─────

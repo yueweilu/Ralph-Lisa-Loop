@@ -53,7 +53,9 @@ export function notifyUser(message: string): void {
       detached: true,
       stdio: ["pipe", "ignore", "ignore"],
     });
+    child.on("error", () => { /* Notification failure does not block the main flow. */ });
     if (child.stdin) {
+      child.stdin.on("error", () => { /* A notifier may close stdin before the write completes. */ });
       child.stdin.write(message);
       child.stdin.end();
     }
