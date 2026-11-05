@@ -7,7 +7,7 @@ import { nativeSessionReference } from "./native-session.mjs";
 
 const pluginRoot = path.dirname(fileURLToPath(import.meta.url));
 const MIN_HERDR = [0, 9, 4];
-const ACTIONS = new Set(["doctor", "status", "seat-preflight", "recovery-check", "rebind-check"]);
+const ACTIONS = new Set(["doctor", "status", "seat-preflight", "recovery-check", "rebind-check", "continuation-check"]);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function emit(value, exitCode = 0) {
@@ -259,6 +259,7 @@ function recoverySeats(herdr, projectRealpath, recordPlan) {
             "terminal_changed" : "matches_binding") :
         "identity_changed",
       status: agent?.agent_status ?? null,
+      interactive_ready: agent?.interactive_ready === true,
       pane_id: agent?.pane_id ?? null,
       terminal_id: agent?.terminal_id ?? null,
       native_session: { ...nativeSession,
@@ -525,6 +526,100 @@ function rebindAudit(diagnosis, project) {
   }
 }
 
+function continuationAudit(diagnosis, project) {
+  const readSnapshot = () => {
+    const result = invoke(diagnosis.cli, ["host", "snapshot", "--project", project, "--json"]);
+    const value = readJson(result);
+    if (result.code !== 0 || value?.status !== "ok")
+      throw new Error(value?.code || "RLL_SNAPSHOT_FAILED");
+    return value;
+  };
+  try {
+    const snapshot = readSnapshot();
+    if (snapshot.host_state !== "claimed" || snapshot.binding_state !== "bound")
+      throw new Error("REBOUND_LEASE_REQUIRED");
+    const root = process.env.HERDR_PLUGIN_STATE_DIR;
+    if (!root || !path.isAbsolute(root)) throw new Error("PLUGIN_STATE_DIR_REQUIRED");
+    const key = crypto.createHash("sha256").update(snapshot.project_realpath).digest("hex");
+    const dir = path.join(root, "sessions", key);
+    if (entryExists(path.join(dir, "rebind.pending.json")))
+      throw new Error("REBIND_PENDING_REVIEW");
+    if (pendingPluginControl(dir)) throw new Error("CONTROL_PENDING");
+    const record = regularJson(path.join(dir, "record.json"));
+    const leaseFile = path.join(snapshot.state_realpath, "host", "lease", "record.json");
+    const lease = regularJson(leaseFile, "CONTINUATION_LEASE_INVALID");
+    if (lease.status !== "claimed" || lease.host !== "herdr" ||
+        lease.project_realpath !== snapshot.project_realpath ||
+        lease.state_realpath !== snapshot.state_realpath ||
+        lease.session_id !== snapshot.session_id ||
+        lease.owner_id !== snapshot.owner_id || lease.owner_id !== record.owner_id ||
+        lease.lease_id !== record.lease_id || !UUID.test(lease.lease_id ?? ""))
+      throw new Error("CONTINUATION_LEASE_MISMATCH");
+    const plugin = recoveryPluginState(snapshot.project_realpath, {
+      ...snapshot, lease_id: lease.lease_id,
+    });
+    if (record.phase !== "rebound_paused" || !plugin.inherited ||
+        record.pause_state_digest !== snapshot.state_digest ||
+        record.cursor_generation !== snapshot.generation ||
+        record.cursor_receipt_id !== snapshot.last_receipt_id ||
+        record.cursor_turn !== snapshot.turn ||
+        record.pause_generation !== snapshot.generation ||
+        record.pause_receipt_id !== snapshot.last_receipt_id ||
+        record.pause_turn !== snapshot.turn ||
+        snapshot.workspace_id !== record.plan.workspace_id ||
+        snapshot.seats?.ralph?.pane_id !== record.plan.seats.ralph.pane_id ||
+        snapshot.seats?.lisa?.pane_id !== record.plan.seats.lisa.pane_id)
+      throw new Error("CONTINUATION_CURSOR_MISMATCH");
+    const blockers = [];
+    if (plugin.warning || plugin.deliveries.some((item) => item.status !== "accepted"))
+      blockers.push("DELIVERY_OUTCOME_UNCERTAIN");
+    const initial = plugin.deliveries.find((item) => item.kind === "initial" &&
+      item.id === snapshot.session_id && item.status === "accepted");
+    const handoffs = plugin.deliveries.filter((item) => item.kind === "handoff");
+    const generations = new Set(handoffs.map((item) => item.generation));
+    if (!initial || handoffs.length !== snapshot.generation ||
+        generations.size !== handoffs.length ||
+        handoffs.some((item) => item.generation < 1 || item.generation > snapshot.generation) ||
+        (snapshot.generation > 0 && !handoffs.some((item) =>
+          item.id === snapshot.last_receipt_id && item.generation === snapshot.generation &&
+          item.status === "accepted")))
+      blockers.push("DELIVERY_RECORD_MISSING");
+    const seats = recoverySeats(diagnosis.herdr, snapshot.project_realpath, record.plan);
+    for (const role of ["ralph", "lisa"]) {
+      const seat = seats?.[role];
+      const prompted = role === "ralph" || handoffs.some((item) => item.role === role);
+      if (!seat || seat.observation !== "matches_binding" ||
+          !seat.interactive_ready || !["idle", "done"].includes(seat.status) ||
+          (prompted && seat.native_session.continuity !== "matches_record"))
+        blockers.push(`SEAT_NOT_READY_${role.toUpperCase()}`);
+    }
+    const finalSnapshot = readSnapshot();
+    const finalLease = regularJson(leaseFile, "CONTINUATION_LEASE_INVALID");
+    const finalPlugin = recoveryPluginState(snapshot.project_realpath, {
+      ...finalSnapshot, lease_id: finalLease.lease_id,
+    });
+    if (JSON.stringify(finalSnapshot) !== JSON.stringify(snapshot) ||
+        JSON.stringify(finalLease) !== JSON.stringify(lease) ||
+        finalPlugin.evidence_sha256 !== plugin.evidence_sha256)
+      throw new Error("CONTINUATION_STATE_CHANGED");
+    const evidence = crypto.createHash("sha256").update(JSON.stringify({
+      snapshot, lease, plugin_sha256: plugin.evidence_sha256, seats,
+    })).digest("hex");
+    emit({ status: blockers.length ? "not_ready" : "review_required",
+      code: blockers.length ? "CONTINUATION_BLOCKED" : null,
+      project: snapshot.project_realpath, session_id: snapshot.session_id,
+      lease_id: lease.lease_id, generation: snapshot.generation,
+      last_receipt_id: snapshot.last_receipt_id, turn: snapshot.turn,
+      binding_generation: snapshot.binding_generation,
+      continuation_blockers: blockers, seats, evidence_sha256: evidence,
+      note: "Read-only continuation preflight. It does not start heartbeats or deliver prompts." },
+    blockers.length ? 4 : 0);
+  } catch (error) {
+    emit({ status: "needs_reconcile", code: error.message || "CONTINUATION_CHECK_FAILED",
+      project }, 7);
+  }
+}
+
 function diagnostics(config) {
   const herdr = [process.env.HERDR_BIN_PATH || "herdr"];
   const cli = config.rll_cli_argv || ["ralph-lisa"];
@@ -657,6 +752,10 @@ function main() {
   }
   if (action === "rebind-check") {
     rebindAudit(diagnosis, project);
+    return;
+  }
+  if (action === "continuation-check") {
+    continuationAudit(diagnosis, project);
     return;
   }
   const observed = invoke(diagnosis.cli, ["host", "snapshot", "--project", project, "--json"]);

@@ -589,6 +589,41 @@ for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commi
         [["initial", "accepted"]]);
       assert.equal(reboundReview.continuation_blockers.includes("DELIVERY_RECORD_MISSING"), false);
       assert.equal(reboundReview.continuation_blockers.includes("DELIVERY_OUTCOME_UNCERTAIN"), false);
+      const continueCheck = (overrides = {}) => spawnSync(process.execPath,
+        [path.join(root, "actions.mjs"), "continuation-check"], {
+          env: { ...env, ...overrides }, encoding: "utf8",
+        });
+      const continuation = continueCheck();
+      assert.equal(continuation.status, 0, continuation.stdout + continuation.stderr);
+      const continuationPlan = JSON.parse(continuation.stdout);
+      assert.equal(continuationPlan.status, "review_required");
+      assert.deepEqual(continuationPlan.continuation_blockers, []);
+      assert.equal(continuationPlan.lease_id, reboundValue.lease_id);
+      assert.equal(continuationPlan.generation, 0);
+      assert.match(continuationPlan.evidence_sha256, /^[0-9a-f]{64}$/);
+      const changedAgent = continueCheck({ FAKE_RALPH_SESSION: "replacement-session" });
+      assert.equal(changedAgent.status, 4, changedAgent.stdout + changedAgent.stderr);
+      assert.ok(JSON.parse(changedAgent.stdout).continuation_blockers.includes(
+        "SEAT_NOT_READY_RALPH"));
+      fs.unlinkSync(restartedFile);
+      const changedTerminal = continueCheck();
+      fs.writeFileSync(restartedFile, "restarted");
+      assert.equal(changedTerminal.status, 4, changedTerminal.stdout + changedTerminal.stderr);
+      assert.ok(JSON.parse(changedTerminal.stdout).continuation_blockers.includes(
+        "SEAT_NOT_READY_RALPH"));
+      fs.writeFileSync(path.join(sessionDir, "stop.json"), "{}");
+      const pendingControl = continueCheck();
+      assert.equal(pendingControl.status, 7, pendingControl.stdout + pendingControl.stderr);
+      assert.equal(JSON.parse(pendingControl.stdout).code, "CONTROL_PENDING");
+      fs.unlinkSync(path.join(sessionDir, "stop.json"));
+      fs.writeFileSync(pluginRecordFile, JSON.stringify({ ...reboundRecord,
+        cursor_generation: 1 }));
+      const changedCursor = continueCheck();
+      assert.equal(changedCursor.status, 7, changedCursor.stdout + changedCursor.stderr);
+      assert.ok(["CONTINUATION_CURSOR_MISMATCH", "PLUGIN_LINEAGE_RECORD_INVALID"].includes(
+        JSON.parse(changedCursor.stdout).code));
+      fs.writeFileSync(pluginRecordFile, JSON.stringify(reboundRecord));
+      assert.equal(fs.readFileSync(prompts, "utf8"), "ralph\n");
       const duplicateRebind = spawnSync(process.execPath, [coordinator, "rebind",
         checked.evidence_sha256, "verified-seats-no-replay"], { env, encoding: "utf8" });
       assert.notEqual(duplicateRebind.status, 0);
