@@ -28,4 +28,4 @@ jobs:
       - run: npm run build
       - run: npm test
       - run: node scripts/verify-package.mjs
-      - run: node --test ../integrations/herdr/actions.test.mjs ../integrations/herdr/coordinator.test.mjs ../integrations/herdr/candidate-propose.test.mjs ../integrations/herdr/review.test.mjs ../integrations/herdr/rebind.test.mjs ../integrations/herdr/continue.test.mjs
+      - run: node --test ../integrations/herdr/*.test.mjs
