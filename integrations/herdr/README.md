@@ -27,7 +27,7 @@ This is the public-repository Herdr plugin, separate from the Claude Code plugin
 
 ## GitHub installation
 
-Install this repository's `integrations/herdr` subdirectory through Herdr's `plugin install` command. Herdr runs the manifest's build commands before registration: `npm ci` in the sibling `cli/` package, TypeScript build, then the package-content check. The plugin chooses that same checkout's built `cli/dist/cli.js` when no CLI override is configured. Installation fails if the source checkout does not include the sibling CLI or the build/check fails. A real GitHub installation, update, and uninstall still require Herdr runtime acceptance.
+Install this repository's `integrations/herdr` subdirectory through Herdr's `plugin install` command. Herdr runs the manifest's build commands before registration: `npm ci` in the sibling `cli/` package, TypeScript build, then the package-content check. The plugin chooses that same checkout's built `cli/dist/cli.js` when no CLI override is configured. Installation fails if the source checkout does not include the sibling CLI or the build/check fails. An [isolated Herdr 0.9.4 trial](../../docs/herdr/s5-real-github-install-2026-11-05.md) verified installation at commit `8d6f933`, same-checkout CLI, `doctor`, uninstall, and config preservation. The pinned-ref update was a no-op; upgrading across commits remains unverified.
 
 ## Local setup
 

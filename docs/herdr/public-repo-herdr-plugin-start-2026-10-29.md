@@ -152,4 +152,6 @@ S4 后续增加第 1 代非零游标的隔离重启组合测试：旧租约 Ralp
 
 S4 真实命名 Server 试验已通过第 0 代重启、显式重绑接续与一次 Ralph → Lisa 交接；第 1 代再次重启时，重复重绑及 Lisa/Codex 原生会话引用缺失阻断后续接续，见 [真实重启接续试验](s4-real-continuation-trial-2026-11-05.md)。后续本地切片为重复重绑增加多级归档和完整投递链校验，仍要求已受提示席位的原生会话指纹一致，见 [多级投递归档](s4-repeated-rebind-lineage-2026-11-05.md)。
 
-S5 发布准备已开始核对 CLI 实际 tarball：补入 MIT 许可证正文，并在 CI 增加真实 `npm pack` 文件清单检查。已发布的 npm `0.3.13` 缺少 `host` 命令，当前插件仍须使用此公开仓构建的 S1 CLI；新机器 GitHub 安装与新版 CLI 分发尚待验收，见 [S5 CLI 发布包检查](s5-cli-package-gate-2026-11-05.md)。
+后续[非零游标真实验收](s4-live-nonzero-continuation-2026-11-05.md)完成两次重启、显式重绑接续与一次交接。[活动快照诊断复验](s4-active-snapshot-diagnostic-2026-11-05.md)按同样顺序运行后未复现旧 `ACTIVE_SNAPSHOT_MISMATCH`，连续十分钟及交接后三分钟保持 `active`；旧错误根因和长期稳定性仍未验证，阻断条件未放宽。
+
+S5 发布准备已开始核对 CLI 实际 tarball：补入 MIT 许可证正文，并在 CI 增加真实 `npm pack` 文件清单检查。已发布的 npm `0.3.13` 缺少 `host` 命令；插件现通过 GitHub 安装构建并使用同仓 S1 CLI。隔离环境中的指定提交安装、`doctor`、卸载及配置保留已验收；跨提交升级、干净机器验收和新版 npm 分发仍未完成，见 [S5 CLI 发布包检查](s5-cli-package-gate-2026-11-05.md)和[真实安装验收](s5-real-github-install-2026-11-05.md)。

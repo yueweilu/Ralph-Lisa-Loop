@@ -10,10 +10,8 @@
 
 ## 后续发布门禁
 
-1. 插件已选择由 Herdr GitHub 安装构建并引用同一源码版本，详见 [同仓 CLI 构建方案](s5-same-checkout-cli-2026-11-05.md)。本地构建门禁通过不等于 GitHub 安装验收；仍须在 Herdr 管理环境中验证。
-2. 在隔离用户目录中验证 GitHub 子目录安装、更新、卸载与配置保留；再用一台干净环境核对 Herdr、Node、Claude、Codex 和真实宿主契约。`plugin link` 仅证明本地清单可链接，不能代替 GitHub 安装验收。
+1. 插件已选择由 Herdr GitHub 安装构建并引用同一源码版本，详见 [同仓 CLI 构建方案](s5-same-checkout-cli-2026-11-05.md)。指定提交的真实安装与同仓构建已在[隔离环境验收](s5-real-github-install-2026-11-05.md)。
+2. 仍需验证跨提交实际升级和干净机器上的 Herdr、Node、Claude、Codex 与宿主契约。已钉住提交的 `plugin update` 只返回 `already up to date`，不能证明升级路径。
 3. 在发布前复查许可证、依赖、构建清单、README 示例、版本号和公开仓内容。Marketplace 收录还需要原仓默认分支上的清单及 `herdr-plugin` topic；开发 fork 的 CI 成功不等于上架。
 
-本切片只补齐 CLI 包的许可证和自动打包门禁。尚未发布 npm 新版本，也未完成 Herdr GitHub 安装、更新或卸载验收。
-
-后续隔离环境的[真实 GitHub 安装验收](s5-real-github-install-2026-11-05.md)已通过指定提交的安装、构建、`doctor`、卸载和配置保留；更新只返回 `already up to date`，尚未验证跨提交升级，npm 新版本仍未发布。
+本切片补齐 CLI 包的许可证和自动打包门禁。npm 新版本仍未发布。
