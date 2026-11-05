@@ -81,3 +81,9 @@ id = "rebind"
 title = "Ralph-Lisa recovered lease rebind"
 placement = "tab"
 command = ["node", "rebind.mjs"]
+
+[[panes]]
+id = "continue"
+title = "Ralph-Lisa paused rebind continuation"
+placement = "tab"
+command = ["node", "continue.mjs"]

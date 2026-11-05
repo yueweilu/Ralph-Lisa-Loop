@@ -172,6 +172,8 @@ function recoveryPluginState(projectRealpath, cliEvidence) {
     throw new Error("PLUGIN_RECORD_INVALID");
   if (entryExists(path.join(dir, "rebind.pending.json")))
     throw new Error("REBIND_PENDING_REVIEW");
+  if (entryExists(path.join(dir, "continuation.pending.json")))
+    throw new Error("CONTINUATION_PENDING_REVIEW");
   const recordPath = path.join(dir, "record.json");
   if (!fs.existsSync(recordPath))
     return { record: null, deliveries: [], warning: "PLUGIN_RECORD_MISSING",
@@ -197,7 +199,15 @@ function recoveryPluginState(projectRealpath, cliEvidence) {
   let deliveries = currentNames.length ? readDeliveryRecords(dir, record, plan, digest) : [];
   let inherited = false;
   if (record.prior_archive !== undefined) {
-    if (record.phase !== "rebound_paused" || currentNames.length ||
+    const continued = record.inherited_cursor_generation !== undefined;
+    if (!(["rebound_paused", "active", "paused", "needs_reconcile"].includes(record.phase)) ||
+        (record.phase === "rebound_paused" && continued) ||
+        (record.phase !== "rebound_paused" && !continued) ||
+        (!continued && currentNames.length) ||
+        (continued && (!Number.isSafeInteger(record.inherited_cursor_generation) ||
+          record.inherited_cursor_generation < 0 ||
+          !["ralph", "lisa"].includes(record.inherited_cursor_turn) ||
+          !/^[0-9a-f]{64}$/.test(record.continuation_evidence_sha256 ?? ""))) ||
         !UUID.test(record.prior_lease_id ?? "") ||
         !UUID.test(record.prior_recovery_id ?? "") ||
         record.prior_archive !== `prior-${record.prior_lease_id}` ||
@@ -216,13 +226,14 @@ function recoveryPluginState(projectRealpath, cliEvidence) {
         prior.session_id !== record.session_id ||
         prior.lease_id !== record.prior_lease_id || !UUID.test(prior.owner_id ?? "") ||
         prior.initial_status !== "accepted" ||
-        prior.cursor_generation !== record.cursor_generation ||
-        prior.cursor_receipt_id !== record.cursor_receipt_id ||
-        prior.cursor_turn !== record.cursor_turn)
+        prior.cursor_generation !== (continued ? record.inherited_cursor_generation : record.cursor_generation) ||
+        prior.cursor_receipt_id !== (continued ? record.inherited_cursor_receipt_id : record.cursor_receipt_id) ||
+        prior.cursor_turn !== (continued ? record.inherited_cursor_turn : record.cursor_turn))
       throw new Error("PLUGIN_LINEAGE_RECORD_INVALID");
     validatePluginPlan(prior.plan, projectRealpath, record.session_id);
     digest.update(record.prior_archive).update(JSON.stringify(prior));
-    deliveries = readDeliveryRecords(archive, prior, prior.plan, digest);
+    deliveries = [...readDeliveryRecords(archive, prior, prior.plan, digest),
+      ...deliveries].sort((a, b) => a.generation - b.generation || a.id.localeCompare(b.id));
     inherited = true;
   }
   return { record: { phase: record.phase, pid: record.pid,
@@ -544,6 +555,8 @@ function continuationAudit(diagnosis, project) {
     const dir = path.join(root, "sessions", key);
     if (entryExists(path.join(dir, "rebind.pending.json")))
       throw new Error("REBIND_PENDING_REVIEW");
+    if (entryExists(path.join(dir, "continuation.pending.json")))
+      throw new Error("CONTINUATION_PENDING_REVIEW");
     if (pendingPluginControl(dir)) throw new Error("CONTROL_PENDING");
     const record = regularJson(path.join(dir, "record.json"));
     const leaseFile = path.join(snapshot.state_realpath, "host", "lease", "record.json");

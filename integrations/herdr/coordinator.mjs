@@ -57,7 +57,8 @@ function files(project) {
   const dir = path.join(stateRoot, "sessions", key);
   return { real, dir, record: path.join(dir, "record.json"),
     stop: path.join(dir, "stop.json"), control: path.join(dir, "control.json"),
-    rebind: path.join(dir, "rebind.pending.json") };
+    rebind: path.join(dir, "rebind.pending.json"),
+    continuation: path.join(dir, "continuation.pending.json") };
 }
 
 function durableWrite(file, value, exclusive = false) {
@@ -245,6 +246,51 @@ function checkDelivery(paths, record, cli, herdr, plan) {
   emit({ status: "handed_off", project: paths.real, request_id: receipt.request_id,
     generation: receipt.generation_after, role, pane_id: plan.seats[role].pane_id });
   return next;
+}
+
+async function runActiveLoop(paths, initialRecord, cli, herdr) {
+  let record = initialRecord;
+  const plan = record.plan;
+  const ownerId = record.owner_id;
+  const leaseId = record.lease_id;
+  let ticks = 0;
+  for (;;) {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    if (fs.existsSync(paths.stop) && fs.existsSync(paths.control))
+      throw new Error("CONCURRENT_CONTROL_REQUESTS");
+    if (fs.existsSync(paths.stop)) {
+      const request = readRecord(paths.stop);
+      if (request.owner_id !== ownerId || request.lease_id !== leaseId)
+        throw new Error("STOP_REQUEST_MISMATCH");
+      const stoppedRead = call(cli, ["host", "snapshot", "--project", paths.real, "--json"]);
+      if (hostBusy(stoppedRead)) continue;
+      const stoppedAt = requireActiveSnapshot(stoppedRead, paths, record, plan);
+      if (stoppedAt.generation !== record.cursor_generation ||
+          stoppedAt.last_receipt_id !== record.cursor_receipt_id)
+        throw new Error("UNDELIVERED_RECEIPT_ON_STOP");
+      const released = call(cli, ["host", "release", "--project", paths.real,
+        "--lease-id", leaseId, "--json"]);
+      if (released.code !== 0 || released.value?.status !== "released")
+        throw new Error(released.value?.code || "RELEASE_UNCERTAIN");
+      record = { ...record, phase: "released" };
+      durableWrite(paths.record, record);
+      fs.renameSync(paths.record, path.join(paths.dir, `finished-${ownerId}.json`));
+      fs.unlinkSync(paths.stop);
+      emit({ status: "stopped", project: paths.real, owner_id: ownerId });
+      return;
+    }
+    record = processControl(paths, record, cli, herdr, plan);
+    if (record.phase === "active") record = checkDelivery(paths, record, cli, herdr, plan);
+    if (++ticks % 5 === 0) {
+      for (const [role, kind] of [["ralph", "claude"], ["lisa", "codex"]])
+        observeSeat(herdr, plan, role, kind, false);
+      const heartbeat = call(cli, ["host", "heartbeat", "--project", paths.real,
+        "--lease-id", leaseId, "--owner-id", ownerId, "--json"]);
+      if (hostBusy(heartbeat)) continue;
+      if (heartbeat.code !== 0 || heartbeat.value?.lease_id !== leaseId)
+        throw new Error(heartbeat.value?.code || "HEARTBEAT_UNCERTAIN");
+    }
+  }
 }
 
 function processControl(paths, record, cli, herdr, plan) {
@@ -519,44 +565,7 @@ async function start() {
     record = deliverInitial(paths, record, cli, herdr, plan, taskFile);
     emit({ status: "started", project: paths.real, workspace_id: plan.workspace_id,
       binding_generation: record.binding_generation, owner_id: ownerId, lease_id: lease.lease_id });
-    let ticks = 0;
-    for (;;) {
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-      if (fs.existsSync(paths.stop) && fs.existsSync(paths.control))
-        throw new Error("CONCURRENT_CONTROL_REQUESTS");
-      if (fs.existsSync(paths.stop)) {
-        const request = readRecord(paths.stop);
-        if (request.owner_id !== ownerId || request.lease_id !== lease.lease_id)
-          throw new Error("STOP_REQUEST_MISMATCH");
-        const stoppedRead = call(cli, ["host", "snapshot", "--project", paths.real, "--json"]);
-        if (hostBusy(stoppedRead)) continue;
-        const stoppedAt = requireActiveSnapshot(stoppedRead, paths, record, plan);
-        if (stoppedAt.generation !== record.cursor_generation ||
-            stoppedAt.last_receipt_id !== record.cursor_receipt_id)
-          throw new Error("UNDELIVERED_RECEIPT_ON_STOP");
-        const released = call(cli, ["host", "release", "--project", paths.real,
-          "--lease-id", lease.lease_id, "--json"]);
-        if (released.code !== 0 || released.value?.status !== "released")
-          throw new Error(released.value?.code || "RELEASE_UNCERTAIN");
-        record = { ...record, phase: "released" };
-        durableWrite(paths.record, record);
-        fs.renameSync(paths.record, path.join(paths.dir, `finished-${ownerId}.json`));
-        fs.unlinkSync(paths.stop);
-        emit({ status: "stopped", project: paths.real, owner_id: ownerId });
-        return;
-      }
-      record = processControl(paths, record, cli, herdr, plan);
-      if (record.phase === "active") record = checkDelivery(paths, record, cli, herdr, plan);
-      if (++ticks % 5 === 0) {
-        for (const [role, kind] of [["ralph", "claude"], ["lisa", "codex"]])
-          observeSeat(herdr, plan, role, kind, false);
-        const heartbeat = call(cli, ["host", "heartbeat", "--project", paths.real,
-          "--lease-id", lease.lease_id, "--owner-id", ownerId, "--json"]);
-        if (hostBusy(heartbeat)) continue;
-        if (heartbeat.code !== 0 || heartbeat.value?.lease_id !== lease.lease_id)
-          throw new Error(heartbeat.value?.code || "HEARTBEAT_UNCERTAIN");
-      }
-    }
+    await runActiveLoop(paths, record, cli, herdr);
   } catch (error) {
     let latest = record;
     try { latest = readRecord(paths.record); } catch { /* Keep the last in-memory intent. */ }
@@ -571,6 +580,11 @@ async function stop() {
   let record;
   try { record = readRecord(paths.record); }
   catch { emit({ status: "not_ready", code: "COORDINATOR_NOT_RUNNING" }, 4); return; }
+  if (fs.existsSync(paths.continuation)) {
+    emit({ status: "needs_reconcile", code: "CONTINUATION_PENDING_REVIEW",
+      project: paths.real }, 7);
+    return;
+  }
   if (record.phase === "rebound_paused") {
     try {
       if (fs.existsSync(paths.rebind)) throw new Error("REBIND_PENDING_REVIEW");
@@ -612,6 +626,85 @@ async function stop() {
     if (current.phase === "needs_reconcile") break;
   }
   emit({ status: "needs_reconcile", code: "STOP_UNCONFIRMED", project: paths.real }, 7);
+}
+
+async function continueRebound(expectedEvidence, decision) {
+  if (!/^[0-9a-f]{64}$/.test(expectedEvidence ?? "") ||
+      decision !== "reviewed-cursor-no-replay") {
+    emit({ status: "not_ready", code: "CONTINUATION_CONFIRMATION_REQUIRED" }, 2);
+    return;
+  }
+  const checked = call([process.execPath, path.join(root, "actions.mjs")],
+    ["continuation-check"]);
+  const review = checked.value;
+  if (checked.code !== 0 || review?.status !== "review_required" ||
+      review.evidence_sha256 !== expectedEvidence ||
+      review.continuation_blockers?.length !== 0) {
+    emit({ status: "not_ready", code: review?.code || "CONTINUATION_EVIDENCE_CHANGED" }, 4);
+    return;
+  }
+  const paths = files(review.project);
+  let record = readRecord(paths.record);
+  if (record.phase !== "rebound_paused" || record.lease_id !== review.lease_id ||
+      record.session_id !== review.session_id ||
+      record.binding_generation !== review.binding_generation ||
+      record.cursor_generation !== review.generation ||
+      record.cursor_receipt_id !== review.last_receipt_id ||
+      record.cursor_turn !== review.turn || !UUID.test(record.owner_id ?? "")) {
+    emit({ status: "needs_reconcile", code: "REBOUND_RECORD_CHANGED",
+      project: paths.real }, 7);
+    return;
+  }
+  const originalRecord = JSON.stringify(record);
+  const cli = config().cli;
+  const herdr = [process.env.HERDR_BIN_PATH || "herdr"];
+  try {
+    durableWrite(paths.continuation, { schema: 1, status: "intent",
+      owner_id: record.owner_id, lease_id: record.lease_id,
+      expected_evidence: expectedEvidence, cursor_generation: record.cursor_generation,
+      cursor_receipt_id: record.cursor_receipt_id, replay: "not_replayed" }, true);
+  } catch (error) {
+    emit({ status: "not_ready", code: error.code === "EEXIST" ?
+      "CONTINUATION_PENDING_REVIEW" : "STATE_WRITE_FAILED", project: paths.real }, 4);
+    return;
+  }
+  try {
+    if (JSON.stringify(readRecord(paths.record)) !== originalRecord ||
+        fs.existsSync(paths.stop) || fs.existsSync(paths.control) ||
+        fs.existsSync(paths.rebind))
+      throw new Error("CONTINUATION_STATE_CHANGED");
+    const observed = call(cli, ["host", "snapshot", "--project", paths.real, "--json"]);
+    const snapshot = requireActiveSnapshot(observed, paths, record, record.plan);
+    if (snapshot.generation !== record.cursor_generation ||
+        snapshot.last_receipt_id !== record.cursor_receipt_id ||
+        snapshot.turn !== record.cursor_turn ||
+        snapshot.state_digest !== record.pause_state_digest)
+      throw new Error("CONTINUATION_STATE_CHANGED");
+    for (const [role, kind] of [["ralph", "claude"], ["lisa", "codex"]])
+      verifySeat(herdr, record.plan, role, kind);
+    const heartbeat = call(cli, ["host", "heartbeat", "--project", paths.real,
+      "--lease-id", record.lease_id, "--owner-id", record.owner_id, "--json"]);
+    if (heartbeat.code !== 0 || heartbeat.value?.lease_id !== record.lease_id)
+      throw new Error(heartbeat.value?.code || "CONTINUATION_HEARTBEAT_UNCERTAIN");
+    record = { ...record, phase: "active", pid: process.pid,
+      inherited_cursor_generation: record.cursor_generation,
+      inherited_cursor_receipt_id: record.cursor_receipt_id,
+      inherited_cursor_turn: record.cursor_turn,
+      continuation_evidence_sha256: expectedEvidence,
+      continued_at: new Date().toISOString(), paused_at: null,
+      pause_state_digest: null, pause_generation: null,
+      pause_receipt_id: null, pause_turn: null, pause_round: null, pause_step: null };
+    durableWrite(paths.record, record);
+    fs.unlinkSync(paths.continuation);
+    emit({ status: "continued", project: paths.real, lease_id: record.lease_id,
+      owner_id: record.owner_id, generation: record.cursor_generation,
+      replay: "not_replayed" });
+    await runActiveLoop(paths, record, cli, herdr);
+  } catch (error) {
+    let latest = record;
+    try { latest = readRecord(paths.record); } catch { /* Preserve latest known state. */ }
+    failRecord(paths, latest, error.message || "CONTINUATION_UNCERTAIN");
+  }
 }
 
 async function rebind(expectedEvidence, decision) {
@@ -776,6 +869,8 @@ try {
   if (process.argv[2] === "start") await start();
   else if (process.argv[2] === "stop") await stop();
   else if (process.argv[2] === "rebind") await rebind(process.argv[3], process.argv[4]);
+  else if (process.argv[2] === "continue")
+    await continueRebound(process.argv[3], process.argv[4]);
   else if (["pause", "resume"].includes(process.argv[2])) await control(process.argv[2]);
   else emit({ status: "error", code: "UNKNOWN_ACTION" }, 2);
 } catch (error) {

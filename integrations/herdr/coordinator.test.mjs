@@ -336,7 +336,8 @@ test("start creates both seats and waits for a blocked agent before claiming", a
 });
 
 for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commit",
-  "server-restart", "server-restart-bind-failure"]) test(
+  "server-restart", "server-restart-bind-failure", "server-restart-continue",
+  "server-restart-continue-failure", "server-restart-continue-uncertain"]) test(
   `${failure} Herdr prompt keeps one durable intent and stops without replay`, async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "rll-herdr-uncertain-"));
   const project = path.join(temp, "project");
@@ -355,8 +356,8 @@ for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commi
     `const a=process.argv.slice(2);` +
     `if(a[0]==='--version')console.log('herdr 0.9.4');` +
     `else if(a[0]==='integration')console.log('claude: current (v10)\\ncodex: current (v9)');` +
-    `else if(a[0]==='agent'&&a[1]==='get'){const role=a[2];const fs=require('node:fs');const changed=fs.existsSync(process.env.FAKE_SERVER_RESTARTED);const marker=process.env.FAKE_AUDIT_MUTATION;if(role==='ralph'&&marker&&fs.existsSync(marker)){const target=fs.readFileSync(marker,'utf8').trim()==='lease'?process.env.FAKE_LEASE_PATH:process.env.FAKE_RECORD_PATH;const value=JSON.parse(fs.readFileSync(target,'utf8'));if(target===process.env.FAKE_LEASE_PATH)value.heartbeat_seq++;else value.error='changed-during-audit';fs.writeFileSync(target,JSON.stringify(value));fs.unlinkSync(marker);}const rebindMarker=process.env.FAKE_REBIND_MARKER;const fail=rebindMarker&&fs.existsSync(rebindMarker)&&JSON.parse(fs.readFileSync(rebindMarker,'utf8')).status==='claimed';console.log(JSON.stringify({result:{agent:{name:role,agent:role==='ralph'?'claude':'codex',workspace_id:'w1',pane_id:role==='ralph'?'w1:p1':'w1:p2',terminal_id:(fail?'bad-':changed?'new-':'term-')+role,cwd:process.env.FAKE_PROJECT,agent_session:role==='ralph'?{agent:'claude',kind:'id',source:'herdr:claude',value:process.env.FAKE_RALPH_SESSION||'ralph-session-1'}:undefined,interactive_ready:true,agent_status:'idle'}}}));}` +
-    `else if(a[0]==='agent'&&a[1]==='prompt'){require('node:fs').appendFileSync(process.env.FAKE_PROMPTS,a[2]+'\\n');if((a[2]==='ralph'&&process.env.FAKE_PROMPT_FAILURE==='initial-timeout')||(a[2]==='lisa'&&process.env.FAKE_PROMPT_FAILURE==='timeout')){console.error(JSON.stringify({error:{code:'timeout'}}));process.exitCode=1;}else if(a[2]==='ralph')console.log(JSON.stringify({result:{type:'agent_prompted',agent:{name:'ralph',agent:'claude',workspace_id:'w1',pane_id:'w1:p1',cwd:process.env.FAKE_PROJECT}}}));else console.log(JSON.stringify({result:{type:'agent_prompted',agent:{name:a[2],agent:'codex',workspace_id:'w1',pane_id:'w1:p9',cwd:process.env.FAKE_PROJECT}}}));}` +
+    `else if(a[0]==='agent'&&a[1]==='get'){const role=a[2];const fs=require('node:fs');const changed=fs.existsSync(process.env.FAKE_SERVER_RESTARTED);const marker=process.env.FAKE_AUDIT_MUTATION;if(role==='ralph'&&marker&&fs.existsSync(marker)){const target=fs.readFileSync(marker,'utf8').trim()==='lease'?process.env.FAKE_LEASE_PATH:process.env.FAKE_RECORD_PATH;const value=JSON.parse(fs.readFileSync(target,'utf8'));if(target===process.env.FAKE_LEASE_PATH)value.heartbeat_seq++;else value.error='changed-during-audit';fs.writeFileSync(target,JSON.stringify(value));fs.unlinkSync(marker);}const rebindMarker=process.env.FAKE_REBIND_MARKER;const continuationMarker=process.env.FAKE_CONTINUATION_MARKER;const fail=(rebindMarker&&fs.existsSync(rebindMarker)&&JSON.parse(fs.readFileSync(rebindMarker,'utf8')).status==='claimed')||(continuationMarker&&fs.existsSync(continuationMarker));console.log(JSON.stringify({result:{agent:{name:role,agent:role==='ralph'?'claude':'codex',workspace_id:'w1',pane_id:role==='ralph'?'w1:p1':'w1:p2',terminal_id:(fail?'bad-':changed?'new-':'term-')+role,cwd:process.env.FAKE_PROJECT,agent_session:role==='ralph'?{agent:'claude',kind:'id',source:'herdr:claude',value:process.env.FAKE_RALPH_SESSION||'ralph-session-1'}:undefined,interactive_ready:true,agent_status:'idle'}}}));}` +
+    `else if(a[0]==='agent'&&a[1]==='prompt'){require('node:fs').appendFileSync(process.env.FAKE_PROMPTS,a[2]+'\\n');if((a[2]==='ralph'&&process.env.FAKE_PROMPT_FAILURE==='initial-timeout')||(a[2]==='lisa'&&process.env.FAKE_PROMPT_FAILURE==='timeout')){console.error(JSON.stringify({error:{code:'timeout'}}));process.exitCode=1;}else if(a[2]==='ralph')console.log(JSON.stringify({result:{type:'agent_prompted',agent:{name:'ralph',agent:'claude',workspace_id:'w1',pane_id:'w1:p1',cwd:process.env.FAKE_PROJECT}}}));else console.log(JSON.stringify({result:{type:'agent_prompted',agent:{name:a[2],agent:'codex',workspace_id:'w1',pane_id:process.env.FAKE_PROMPT_FAILURE==='server-restart-continue'?'w1:p2':'w1:p9',cwd:process.env.FAKE_PROJECT}}}));}` +
     `else process.exitCode=2;\n`);
   fs.writeFileSync(fakeClaude, `#!${process.execPath}\nconsole.log('{"loggedIn":true}');\n`);
   fs.writeFileSync(fakeCodex, `#!${process.execPath}\nconsole.log('Logged in using ChatGPT');\n`);
@@ -624,6 +625,117 @@ for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commi
         JSON.parse(changedCursor.stdout).code));
       fs.writeFileSync(pluginRecordFile, JSON.stringify(reboundRecord));
       assert.equal(fs.readFileSync(prompts, "utf8"), "ralph\n");
+      const staleContinuation = spawnSync(process.execPath, [coordinator, "continue",
+        "0".repeat(64), "reviewed-cursor-no-replay"], { env, encoding: "utf8" });
+      assert.equal(staleContinuation.status, 4, staleContinuation.stdout + staleContinuation.stderr);
+      assert.equal(JSON.parse(staleContinuation.stdout).code, "CONTINUATION_EVIDENCE_CHANGED");
+      if (failure === "server-restart-continue-failure") {
+        const marker = path.join(sessionDir, "continuation.pending.json");
+        const uncertain = spawnSync(process.execPath, [coordinator, "continue",
+          continuationPlan.evidence_sha256, "reviewed-cursor-no-replay"], {
+            env: { ...env, FAKE_CONTINUATION_MARKER: marker }, encoding: "utf8",
+          });
+        assert.equal(uncertain.status, 7, uncertain.stdout + uncertain.stderr);
+        assert.equal(JSON.parse(uncertain.stdout).code, "HERDR_TERMINAL_CHANGED");
+        assert.equal(fs.existsSync(marker), true);
+        const frozen = continueCheck();
+        assert.equal(frozen.status, 7, frozen.stdout + frozen.stderr);
+        assert.equal(JSON.parse(frozen.stdout).code, "CONTINUATION_PENDING_REVIEW");
+        const frozenAudit = spawnSync(process.execPath,
+          [path.join(root, "actions.mjs"), "recovery-check"],
+        { env, encoding: "utf8" });
+        assert.equal(frozenAudit.status, 7, frozenAudit.stdout + frozenAudit.stderr);
+        assert.equal(JSON.parse(frozenAudit.stdout).code, "CONTINUATION_PENDING_REVIEW");
+        const frozenStop = spawnSync(process.execPath, [coordinator, "stop"],
+          { env, encoding: "utf8" });
+        assert.equal(frozenStop.status, 7, frozenStop.stdout + frozenStop.stderr);
+        assert.equal(JSON.parse(frozenStop.stdout).code, "CONTINUATION_PENDING_REVIEW");
+        assert.equal(fs.readFileSync(prompts, "utf8"), "ralph\n");
+        return;
+      }
+      if (["server-restart-continue", "server-restart-continue-uncertain"].includes(failure)) {
+        const active = spawn(process.execPath, [coordinator, "continue",
+          continuationPlan.evidence_sha256, "reviewed-cursor-no-replay"], {
+            env: { ...env, FAKE_PROMPT_FAILURE:
+              failure === "server-restart-continue-uncertain" ? "timeout" : failure },
+            stdio: ["ignore", "pipe", "pipe"],
+          });
+        try {
+          const continued = await waitForLine(active, (value) =>
+            value.status === "continued" || value.status === "needs_reconcile");
+          assert.equal(continued.status, "continued", JSON.stringify(continued));
+          assert.equal(continued.lease_id, reboundValue.lease_id);
+          assert.equal(fs.readFileSync(prompts, "utf8"), "ralph\n");
+          const duplicateContinue = spawnSync(process.execPath, [coordinator, "continue",
+            continuationPlan.evidence_sha256, "reviewed-cursor-no-replay"],
+          { env, encoding: "utf8" });
+          assert.notEqual(duplicateContinue.status, 0);
+          const host = (action, args = []) => {
+            const result = spawnSync(process.execPath, [cli, "host", action,
+              "--project", project, ...args, "--json"], { env, encoding: "utf8" });
+            assert.equal(result.status, 0, result.stdout + result.stderr);
+            return JSON.parse(result.stdout);
+          };
+          const candidateId = randomUUID();
+          const requestId = randomUUID();
+          fs.writeFileSync(path.join(project, "candidate.md"),
+            "[PLAN] Continue after restart.\n\nTest Plan: npm test\n");
+          host("propose", ["--role", "ralph", "--file", "candidate.md",
+            "--candidate-id", candidateId]);
+          const args = ["--lease-id", reboundValue.lease_id,
+            "--request-id", requestId, "--candidate-id", candidateId,
+            "--expected-generation", "0", "--expected-binding-generation",
+            String(reboundValue.binding_generation)];
+          const checkedCommit = host("commit-check", args);
+          assert.equal(checkedCommit.status, "awaiting_source_confirmation");
+          host("confirm-candidate", [...args, "--expected-content-sha256",
+            checkedCommit.content_sha256, "--decision", "reviewed_candidate_source"]);
+          const handedOff = waitForLine(active, (value) =>
+            value.status === "handed_off" || value.status === "needs_reconcile");
+          const receipt = host("commit", args);
+          assert.equal(receipt.status, "committed");
+          assert.equal(receipt.lease_id, reboundValue.lease_id);
+          const delivery = await handedOff;
+          if (failure === "server-restart-continue-uncertain") {
+            assert.equal(delivery.status, "needs_reconcile", JSON.stringify(delivery));
+            assert.equal(delivery.code, "timeout");
+            assert.equal(fs.readFileSync(prompts, "utf8"), "ralph\nlisa\n");
+            const uncertainAudit = spawnSync(process.execPath,
+              [path.join(root, "actions.mjs"), "recovery-check"],
+            { env, encoding: "utf8" });
+            assert.equal(uncertainAudit.status, 0,
+              uncertainAudit.stdout + uncertainAudit.stderr);
+            const audit = JSON.parse(uncertainAudit.stdout);
+            assert.ok(audit.continuation_blockers.includes("DELIVERY_OUTCOME_UNCERTAIN"));
+            assert.deepEqual(audit.deliveries.map((item) => [item.kind, item.status]),
+              [["initial", "accepted"], ["handoff", "intent"]]);
+            return;
+          }
+          assert.equal(delivery.status, "handed_off", JSON.stringify(delivery));
+          assert.equal(delivery.request_id, requestId);
+          assert.equal(fs.readFileSync(prompts, "utf8"), "ralph\nlisa\n");
+          const after = spawnSync(process.execPath,
+            [path.join(root, "actions.mjs"), "recovery-check"],
+          { env, encoding: "utf8" });
+          assert.equal(after.status, 0, after.stdout + after.stderr);
+          const audit = JSON.parse(after.stdout);
+          assert.deepEqual(audit.deliveries.map((item) =>
+            [item.kind, item.status, item.generation]),
+          [["initial", "accepted", 0], ["handoff", "accepted", 1]]);
+          assert.equal(audit.continuation_blockers.includes("DELIVERY_RECORD_MISSING"), false);
+          await new Promise((resolve) => setTimeout(resolve, 1200));
+          assert.equal(fs.readFileSync(prompts, "utf8"), "ralph\nlisa\n");
+          const stoppedContinue = spawnSync(process.execPath, [coordinator, "stop"],
+            { env, encoding: "utf8", timeout: 25000 });
+          assert.equal(stoppedContinue.status, 0,
+            stoppedContinue.stdout + stoppedContinue.stderr);
+          if (active.exitCode === null)
+            await new Promise((resolve) => active.once("exit", resolve));
+        } finally {
+          if (active.exitCode === null) active.kill();
+        }
+        return;
+      }
       const duplicateRebind = spawnSync(process.execPath, [coordinator, "rebind",
         checked.evidence_sha256, "verified-seats-no-replay"], { env, encoding: "utf8" });
       assert.notEqual(duplicateRebind.status, 0);
