@@ -96,19 +96,26 @@ async function main() {
   if (current.code !== 0 || !pane || pane.pane_id !== process.env.HERDR_PANE_ID ||
       pane.workspace_id !== process.env.HERDR_WORKSPACE_ID || !pane.terminal_id)
     return fail("CALLER_PANE_MISMATCH");
-  const live = call(herdr, ["agent", "get", pane.pane_id]);
-  const agent = live.value?.result?.agent;
-  let cwd = null;
-  try { cwd = fs.realpathSync.native(agent.cwd); } catch { /* Fail closed. */ }
-  if (live.code !== 0 || !agent || cwd !== input.project ||
-      agent.pane_id !== pane.pane_id || agent.workspace_id !== pane.workspace_id ||
-      agent.terminal_id !== pane.terminal_id)
-    return fail("CALLER_AGENT_MISMATCH");
-  if (agent.agent_status !== "working")
-    return fail("CALLER_AGENT_NOT_WORKING", 4, {
-      observed_agent_status: ["idle", "done", "blocked", "unknown"].includes(agent.agent_status)
-        ? agent.agent_status : "unknown",
-    });
+  let agent;
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const live = call(herdr, ["agent", "get", pane.pane_id]);
+    agent = live.value?.result?.agent;
+    let cwd = null;
+    try { cwd = fs.realpathSync.native(agent.cwd); } catch { /* Fail closed. */ }
+    if (live.code !== 0 || !agent || cwd !== input.project ||
+        agent.pane_id !== pane.pane_id || agent.workspace_id !== pane.workspace_id ||
+        agent.terminal_id !== pane.terminal_id)
+      return fail("CALLER_AGENT_MISMATCH");
+    if (agent.agent_status === "working") break;
+    // A just-dismissed permission UI can leave the server's seen state at blocked.
+    // Wait only for a real working observation; explain/title text is not authority.
+    if (agent.agent_status !== "blocked" || attempt === 7)
+      return fail("CALLER_AGENT_NOT_WORKING", 4, {
+        observed_agent_status: ["idle", "done", "blocked", "unknown"].includes(agent.agent_status)
+          ? agent.agent_status : "unknown",
+      });
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
   const role = agent.name;
   const kind = role === "ralph" ? "claude" : role === "lisa" ? "codex" : null;
   if (!kind || agent.agent !== kind) return fail("CALLER_AGENT_MISMATCH");

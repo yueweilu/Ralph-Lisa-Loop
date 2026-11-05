@@ -10,6 +10,8 @@
 
 真实试验中出现 `agent get` 尚报 `blocked` 而 `agent explain` 显示 `working` 的状态分歧，辅助命令按原门禁拒绝。后续诊断将“席位/Terminal 身份不匹配”与“`agent get` 未观察到 `working`”分开，后者返回 `CALLER_AGENT_NOT_WORKING` 及已观察到的状态；两种情况都不保存候选，也不把 `blocked` 视为 `working`。现场结果见[真实审阅窗格试验](s3-real-review-pane-trial-2026-11-04.md)。
 
+为处理刚退出权限提示时短暂的旧 `blocked` 观察，辅助命令现在对同一 Pane/Terminal/Agent 最多重查 8 次，每次间隔 250 毫秒；只有 `agent get` 实际返回 `working` 才继续。身份在任何一次读取中变化即拒绝；持续 `blocked`、`idle`、`done` 或 `unknown` 均不提议。隔离测试覆盖 `blocked → blocked → working` 的成功路径和持续 `blocked` 的拒绝路径；真实 Herdr 现场是否能在这个窗口内恢复为 `working` 尚待复测。
+
 ## 验证
 
 - 隔离自动化测试使用真实公开 CLI、伪 Herdr，覆盖非 Herdr 环境、调用 Pane 不匹配、Terminal 不匹配、错席位、非工作状态的拒绝，以及正常提议、重复 UUID 幂等和候选计数。

@@ -20,10 +20,14 @@ test("pane candidate proposal observes the bound Agent but keeps source unverifi
     project, rll_cli_argv: [process.execPath, cli],
   }));
   fs.writeFileSync(fakeHerdr, `#!${process.execPath}\n` +
-    `const a=process.argv.slice(2),p=process.env.FAKE_PROJECT;` +
+    `const fs=require('node:fs'),a=process.argv.slice(2),p=process.env.FAKE_PROJECT;` +
     `if(a[0]==='plugin'&&a[1]==='config-dir')console.log(process.env.FAKE_CONFIG);` +
     `else if(a[0]==='pane'&&a[1]==='current')console.log(JSON.stringify({result:{pane:{pane_id:'w1:p1',workspace_id:'w1',terminal_id:process.env.FAKE_PANE_TERMINAL||'term-r'}}}));` +
-    `else if(a[0]==='agent'&&a[1]==='get')console.log(JSON.stringify({result:{agent:{name:process.env.FAKE_AGENT_NAME||'ralph',agent:process.env.FAKE_AGENT_KIND||'claude',agent_status:process.env.FAKE_AGENT_STATUS||'working',pane_id:'w1:p1',workspace_id:'w1',terminal_id:process.env.FAKE_AGENT_TERMINAL||'term-r',cwd:p}}}));` +
+    `else if(a[0]==='agent'&&a[1]==='get'){let status=process.env.FAKE_AGENT_STATUS||'working';` +
+    `if(process.env.FAKE_AGENT_STATUS_SEQUENCE){const seq=process.env.FAKE_AGENT_STATUS_SEQUENCE.split(',');` +
+    `const file=process.env.FAKE_AGENT_STATUS_FILE;const n=fs.existsSync(file)?Number(fs.readFileSync(file,'utf8')):0;` +
+    `fs.writeFileSync(file,String(n+1));status=seq[Math.min(n,seq.length-1)];}` +
+    `console.log(JSON.stringify({result:{agent:{name:process.env.FAKE_AGENT_NAME||'ralph',agent:process.env.FAKE_AGENT_KIND||'claude',agent_status:status,pane_id:'w1:p1',workspace_id:'w1',terminal_id:process.env.FAKE_AGENT_TERMINAL||'term-r',cwd:p}}}));}` +
     `else process.exit(2);\n`);
   fs.chmodSync(fakeHerdr, 0o700);
   const runCli = (action, args = []) => {
@@ -75,8 +79,10 @@ test("pane candidate proposal observes the bound Agent but keeps source unverifi
     assert.equal(blocked.value.observed_agent_status, "blocked");
     assert.equal(runCli("snapshot").candidate_count, 0);
 
-    const accepted = runHelper();
+    const accepted = runHelper({ ...env, FAKE_AGENT_STATUS_SEQUENCE: "blocked,blocked,working",
+      FAKE_AGENT_STATUS_FILE: path.join(temp, "status-attempts.txt") });
     assert.equal(accepted.status, 0);
+    assert.equal(fs.readFileSync(path.join(temp, "status-attempts.txt"), "utf8"), "3");
     assert.equal(accepted.value.status, "candidate_observed");
     assert.equal(accepted.value.role, "ralph");
     assert.equal(accepted.value.observed_pane_id, "w1:p1");
