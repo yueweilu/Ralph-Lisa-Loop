@@ -15,3 +15,5 @@
 真实 Herdr 的第 1 代重启接续仍未验收。已安装的 Codex v9 集成脚本会在继承的 `CODEX_THREAD_ID` 与自身 `session_id` 不同时跳过上报；当前试验尚未证明这就是 Lisa 缺少引用的原因。下一次命名会话须在受管 Pane 中核对启动环境、Codex hook 是否执行以及 Herdr 是否保存原生引用；不能手工伪造引用，也不能绕过指纹门禁。
 
 后续[原生会话引用诊断](s4-codex-session-diagnostic-2026-11-05.md)确认：控制端的线程 ID 没有进入测试 Pane；普通 Codex 两次提示后 Herdr 仍无引用；`--no-daemon` 的真实 Codex 可执行官方 hook 并让 Herdr 收到引用。第 1 代真实重启接续仍受新临时项目的 Claude 目录信任门禁约束。
+
+用户随后仅对新临时项目确认目录信任。[真实非零游标重复重绑验收](s4-live-nonzero-continuation-2026-11-05.md)通过了 generation 1 的两次显式重绑与接续，以及一次 Lisa → Ralph 交接；现场另外发现并修复已暂停协调器的重绑预检阻断。

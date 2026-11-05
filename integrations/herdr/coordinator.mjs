@@ -748,7 +748,9 @@ async function rebind(expectedEvidence, decision) {
   }
   const paths = files(review.project);
   const old = readRecord(paths.record);
-  if (old.phase !== "needs_reconcile" || old.lease_id !== review.old_lease_id ||
+  if (old.phase !== review.old_phase ||
+      !["needs_reconcile", "paused"].includes(old.phase) ||
+      old.lease_id !== review.old_lease_id ||
       old.session_id !== review.session_id || !UUID.test(old.owner_id ?? "")) {
     emit({ status: "needs_reconcile", code: "OLD_COORDINATOR_CHANGED" }, 7);
     return;

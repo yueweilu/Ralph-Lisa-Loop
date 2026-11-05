@@ -160,6 +160,20 @@ function readDeliveryRecords(dir, record, plan, digest) {
   return deliveries.sort((a, b) => a.generation - b.generation || a.id.localeCompare(b.id));
 }
 
+function recoverableCoordinatorPhase(record, stateDigest, generation,
+  receiptId, turn) {
+  if (record.phase === "needs_reconcile") return true;
+  return record.phase === "paused" &&
+    typeof record.paused_at === "string" && !!record.paused_at &&
+    record.pause_state_digest === stateDigest &&
+    record.pause_generation === generation &&
+    record.pause_receipt_id === receiptId &&
+    record.pause_turn === turn &&
+    record.cursor_generation === generation &&
+    record.cursor_receipt_id === receiptId &&
+    record.cursor_turn === turn;
+}
+
 function readLineageDeliveries(dir, record, projectRealpath, digest, depth = 0) {
   if (depth > 32) throw new Error("PLUGIN_LINEAGE_DEPTH_EXCEEDED");
   const plan = record.plan;
@@ -199,7 +213,10 @@ function readLineageDeliveries(dir, record, projectRealpath, digest, depth = 0) 
       throw new Error("invalid archive");
   } catch { throw new Error("PLUGIN_LINEAGE_INVALID"); }
   const prior = regularJson(path.join(archive, "record.json"), "PLUGIN_LINEAGE_INVALID");
-  if (prior.phase !== "needs_reconcile" ||
+  if (!recoverableCoordinatorPhase(prior, record.expected_digest,
+      continued ? record.inherited_cursor_generation : record.cursor_generation,
+      continued ? record.inherited_cursor_receipt_id : record.cursor_receipt_id,
+      continued ? record.inherited_cursor_turn : record.cursor_turn) ||
       prior.project_realpath !== projectRealpath ||
       prior.session_id !== record.session_id ||
       prior.lease_id !== record.prior_lease_id || !UUID.test(prior.owner_id ?? "") ||
@@ -419,7 +436,9 @@ function rebindAudit(diagnosis, project) {
     const old = regularJson(path.join(dir, "record.json"));
     if (old.project_realpath !== snapshot.project_realpath ||
         old.session_id !== snapshot.session_id || !UUID.test(old.lease_id ?? "") ||
-        !UUID.test(old.owner_id ?? "") || old.phase !== "needs_reconcile")
+        !UUID.test(old.owner_id ?? "") ||
+        !recoverableCoordinatorPhase(old, snapshot.state_digest,
+          snapshot.generation, snapshot.last_receipt_id, snapshot.turn))
       throw new Error("PLUGIN_RECORD_INVALID");
     const oldEvidence = { session_id: old.session_id, lease_id: old.lease_id,
       owner_id: old.owner_id, binding_generation: old.binding_generation };
@@ -527,13 +546,15 @@ function rebindAudit(diagnosis, project) {
     const evidenceSha = crypto.createHash("sha256").update(JSON.stringify({
       session_id: snapshot.session_id, state_digest: snapshot.state_digest,
       generation: snapshot.generation, last_receipt_id: snapshot.last_receipt_id,
-      old_lease_id: old.lease_id, recovery_id: recovery.recovery_id,
+      old_lease_id: old.lease_id, old_phase: old.phase,
+      recovery_id: recovery.recovery_id,
       plugin_digest: plugin.evidence_sha256, plan,
     })).digest("hex");
     emit({ status: blockers.length ? "not_ready" : "review_required",
       code: blockers.length ? "REBIND_BLOCKED" : null,
       project: snapshot.project_realpath, session_id: snapshot.session_id,
-      old_lease_id: old.lease_id, recovery_id: recovery.recovery_id,
+      old_lease_id: old.lease_id, old_phase: old.phase,
+      recovery_id: recovery.recovery_id,
       generation: snapshot.generation, last_receipt_id: snapshot.last_receipt_id,
       turn: snapshot.turn, coordinator_process: processObservation,
       continuation_blockers: blockers, binding_plan: plan,

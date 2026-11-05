@@ -338,7 +338,8 @@ test("start creates both seats and waits for a blocked agent before claiming", a
 for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commit",
   "server-restart", "server-restart-bind-failure", "server-restart-continue",
   "server-restart-continue-failure", "server-restart-continue-uncertain",
-  "server-restart-nonzero-continue", "server-restart-nonzero-rebind-twice"]) test(
+  "server-restart-nonzero-continue", "server-restart-nonzero-paused",
+  "server-restart-nonzero-rebind-twice"]) test(
   `${failure} Herdr prompt keeps one durable intent and stops without replay`, async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "rll-herdr-uncertain-"));
   const project = path.join(temp, "project");
@@ -370,7 +371,8 @@ for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commi
     HERDR_PLUGIN_CONFIG_DIR: configDir, HERDR_PLUGIN_STATE_DIR: stateDir,
     HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({ workspace_id: "w1", workspace_cwd: project }),
     FAKE_PROJECT: project, FAKE_PROMPTS: prompts,
-    FAKE_PROMPT_FAILURE: failure === "server-restart-nonzero-rebind-twice" ?
+    FAKE_PROMPT_FAILURE: ["server-restart-nonzero-paused",
+      "server-restart-nonzero-rebind-twice"].includes(failure) ?
       "server-restart-nonzero-continue" : failure,
     FAKE_SERVER_RESTARTED: restartedFile,
     ...(failure === "server-restart-nonzero-rebind-twice" ?
@@ -477,6 +479,7 @@ for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commi
     assert.equal(started.status, "started");
     if (failure.startsWith("server-restart")) {
       const nonzero = ["server-restart-nonzero-continue",
+        "server-restart-nonzero-paused",
         "server-restart-nonzero-rebind-twice"].includes(failure);
       let priorReceipt = null;
       if (nonzero) {
@@ -520,11 +523,23 @@ for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commi
       }
       const expectedBefore = nonzero ? "ralph\nlisa\n" : "ralph\n";
       const expectedGeneration = nonzero ? 1 : 0;
-      const failed = waitForLine(child, (value) => value.status === "needs_reconcile");
-      fs.writeFileSync(restartedFile, "restarted");
-      const fenced = await failed;
-      assert.equal(fenced.code, "HERDR_TERMINAL_CHANGED");
-      if (child.exitCode === null) await new Promise((resolve) => child.once("exit", resolve));
+      if (failure === "server-restart-nonzero-paused") {
+        const paused = spawnSync(process.execPath, [coordinator, "pause"],
+          { env, encoding: "utf8", timeout: 15000 });
+        assert.equal(paused.status, 0, paused.stdout + paused.stderr);
+        assert.equal(JSON.parse(paused.stdout).status, "paused");
+        child.kill("SIGTERM");
+        if (child.exitCode === null)
+          await new Promise((resolve) => child.once("exit", resolve));
+        fs.writeFileSync(restartedFile, "restarted");
+      } else {
+        const failed = waitForLine(child, (value) => value.status === "needs_reconcile");
+        fs.writeFileSync(restartedFile, "restarted");
+        const fenced = await failed;
+        assert.equal(fenced.code, "HERDR_TERMINAL_CHANGED");
+        if (child.exitCode === null)
+          await new Promise((resolve) => child.once("exit", resolve));
+      }
       assert.equal(fs.readFileSync(prompts, "utf8"), expectedBefore);
       const snapshot = JSON.parse(spawnSync(process.execPath,
         [cli, "host", "snapshot", "--project", project, "--json"], {
@@ -536,7 +551,8 @@ for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commi
       const sessionDir = path.join(stateDir, "sessions",
         fs.readdirSync(path.join(stateDir, "sessions"))[0]);
       const record = JSON.parse(fs.readFileSync(path.join(sessionDir, "record.json"), "utf8"));
-      assert.equal(record.phase, "needs_reconcile");
+      assert.equal(record.phase, failure === "server-restart-nonzero-paused" ?
+        "paused" : "needs_reconcile");
       assert.equal(record.cursor_generation, expectedGeneration);
       const audit = spawnSync(process.execPath,
         [path.join(root, "actions.mjs"), "recovery-check"], { env, encoding: "utf8" });
@@ -559,6 +575,17 @@ for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commi
       assert.equal(recovered.status, 0, recovered.stdout + recovered.stderr);
       const pluginRecordFile = path.join(sessionDir, "record.json");
       const pluginRecordBefore = fs.readFileSync(pluginRecordFile, "utf8");
+      if (failure === "server-restart-nonzero-paused") {
+        fs.writeFileSync(pluginRecordFile, JSON.stringify({
+          ...JSON.parse(pluginRecordBefore), pause_state_digest: "0".repeat(64),
+        }));
+        const stalePause = spawnSync(process.execPath,
+          [path.join(root, "actions.mjs"), "rebind-check"],
+        { env, encoding: "utf8" });
+        assert.equal(stalePause.status, 7, stalePause.stdout + stalePause.stderr);
+        assert.equal(JSON.parse(stalePause.stdout).code, "PLUGIN_RECORD_INVALID");
+        fs.writeFileSync(pluginRecordFile, pluginRecordBefore);
+      }
       const rebind = spawnSync(process.execPath,
         [path.join(root, "actions.mjs"), "rebind-check"], { env, encoding: "utf8" });
       assert.equal(rebind.status, 0, rebind.stdout + rebind.stderr);
@@ -719,6 +746,7 @@ for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commi
       }
       if (["server-restart-continue", "server-restart-continue-uncertain",
         "server-restart-nonzero-continue",
+        "server-restart-nonzero-paused",
         "server-restart-nonzero-rebind-twice"].includes(failure)) {
         const active = spawn(process.execPath, [coordinator, "continue",
           continuationPlan.evidence_sha256, "reviewed-cursor-no-replay"], {

@@ -21,3 +21,5 @@
 真实 Herdr Server 重启后，仍须在受管 Herdr Pane 中验证替代租约接续、真实 Claude/Codex 原生会话、一次交接和异常阻断。人工候选来源确认仍是公开 CLI 的门禁；本功能不实现无人值守候选提交。
 
 后续实测见[真实 Server 重启接续试验](s4-real-continuation-trial-2026-11-05.md)：0 游标的显式重绑和接续、一次真实 Ralph→Lisa 交接通过；再次重启时 generation 1 的接续因重复重绑未实现及 Lisa 原生会话引用缺失而被阻断。
+
+再后续的[真实非零游标重复重绑验收](s4-live-nonzero-continuation-2026-11-05.md)使用独立命名 Server 和两席有效原生引用，通过 generation 1 的两次重启、显式重绑和接续，以及一次 Lisa→Ralph 交接。现场修复了暂停态记录的重绑预检阻断；另保留一次 `ACTIVE_SNAPSHOT_MISMATCH` 的运行时限制。
