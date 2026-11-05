@@ -338,7 +338,7 @@ test("start creates both seats and waits for a blocked agent before claiming", a
 for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commit",
   "server-restart", "server-restart-bind-failure", "server-restart-continue",
   "server-restart-continue-failure", "server-restart-continue-uncertain",
-  "server-restart-nonzero-continue"]) test(
+  "server-restart-nonzero-continue", "server-restart-nonzero-rebind-twice"]) test(
   `${failure} Herdr prompt keeps one durable intent and stops without replay`, async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "rll-herdr-uncertain-"));
   const project = path.join(temp, "project");
@@ -369,8 +369,12 @@ for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commi
     CLAUDE_BIN_PATH: fakeClaude, CODEX_BIN_PATH: fakeCodex,
     HERDR_PLUGIN_CONFIG_DIR: configDir, HERDR_PLUGIN_STATE_DIR: stateDir,
     HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({ workspace_id: "w1", workspace_cwd: project }),
-    FAKE_PROJECT: project, FAKE_PROMPTS: prompts, FAKE_PROMPT_FAILURE: failure,
-    FAKE_SERVER_RESTARTED: restartedFile };
+    FAKE_PROJECT: project, FAKE_PROMPTS: prompts,
+    FAKE_PROMPT_FAILURE: failure === "server-restart-nonzero-rebind-twice" ?
+      "server-restart-nonzero-continue" : failure,
+    FAKE_SERVER_RESTARTED: restartedFile,
+    ...(failure === "server-restart-nonzero-rebind-twice" ?
+      { FAKE_REBIND_MARKER: path.join(temp, "second-server-restarted") } : {}) };
   const child = spawn(process.execPath, [coordinator, "start"],
     { env, stdio: ["ignore", "pipe", "pipe"] });
   try {
@@ -472,7 +476,8 @@ for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commi
     }
     assert.equal(started.status, "started");
     if (failure.startsWith("server-restart")) {
-      const nonzero = failure === "server-restart-nonzero-continue";
+      const nonzero = ["server-restart-nonzero-continue",
+        "server-restart-nonzero-rebind-twice"].includes(failure);
       let priorReceipt = null;
       if (nonzero) {
         const hostBeforeRestart = async (action, args = []) => {
@@ -713,11 +718,13 @@ for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commi
         return;
       }
       if (["server-restart-continue", "server-restart-continue-uncertain",
-        "server-restart-nonzero-continue"].includes(failure)) {
+        "server-restart-nonzero-continue",
+        "server-restart-nonzero-rebind-twice"].includes(failure)) {
         const active = spawn(process.execPath, [coordinator, "continue",
           continuationPlan.evidence_sha256, "reviewed-cursor-no-replay"], {
             env: { ...env, FAKE_PROMPT_FAILURE:
-              failure === "server-restart-continue-uncertain" ? "timeout" : failure },
+              failure === "server-restart-continue-uncertain" ? "timeout" :
+                env.FAKE_PROMPT_FAILURE },
             stdio: ["ignore", "pipe", "pipe"],
           });
         try {
@@ -796,6 +803,93 @@ for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commi
           assert.equal(audit.continuation_blockers.includes("DELIVERY_RECORD_MISSING"), false);
           await new Promise((resolve) => setTimeout(resolve, 1200));
           assert.equal(fs.readFileSync(prompts, "utf8"), expectedAfter);
+          if (failure === "server-restart-nonzero-rebind-twice") {
+            const secondFence = waitForLine(active, (value) =>
+              value.status === "needs_reconcile");
+            fs.writeFileSync(env.FAKE_REBIND_MARKER, '{"status":"claimed"}');
+            const fenced = await secondFence;
+            assert.equal(fenced.code, "HERDR_TERMINAL_CHANGED");
+            if (active.exitCode === null)
+              await new Promise((resolve) => active.once("exit", resolve));
+            const secondEvidence = host("recovery-check");
+            assert.equal(secondEvidence.status, "review_required");
+            assert.equal(secondEvidence.lease_id, reboundValue.lease_id);
+            host("recover-lease", ["--lease-id", secondEvidence.lease_id,
+              "--expected-evidence", secondEvidence.evidence_sha256,
+              "--decision", "verified-stopped-no-replay"]);
+            const hiddenLisa = spawnSync(process.execPath,
+              [path.join(root, "actions.mjs"), "rebind-check"], {
+                env: { ...env, FAKE_PROMPT_FAILURE: "server-restart-continue" },
+                encoding: "utf8",
+              });
+            assert.equal(hiddenLisa.status, 4, hiddenLisa.stdout + hiddenLisa.stderr);
+            assert.ok(JSON.parse(hiddenLisa.stdout).continuation_blockers.includes(
+              "AGENT_SESSION_UNVERIFIED_LISA"));
+            const secondCheck = spawnSync(process.execPath,
+              [path.join(root, "actions.mjs"), "rebind-check"],
+            { env, encoding: "utf8" });
+            assert.equal(secondCheck.status, 0, secondCheck.stdout + secondCheck.stderr);
+            const secondPlan = JSON.parse(secondCheck.stdout);
+            assert.equal(secondPlan.generation, 2);
+            assert.deepEqual(secondPlan.continuation_blockers, []);
+            assert.equal(secondPlan.binding_plan.seats.lisa.terminal_id, "bad-lisa");
+            const secondRebound = spawnSync(process.execPath, [coordinator, "rebind",
+              secondPlan.evidence_sha256, "verified-seats-no-replay"],
+            { env, encoding: "utf8" });
+            assert.equal(secondRebound.status, 0,
+              secondRebound.stdout + secondRebound.stderr);
+            const secondValue = JSON.parse(secondRebound.stdout);
+            assert.equal(secondValue.status, "rebound_paused");
+            const nestedArchive = path.join(sessionDir,
+              `prior-${reboundValue.lease_id}`, `prior-${evidence.lease_id}`);
+            const nestedInitial = path.join(nestedArchive,
+              `initial-${reboundRecord.session_id}.json`);
+            assert.equal(fs.existsSync(nestedInitial), true);
+            assert.equal(fs.existsSync(path.join(sessionDir,
+              `prior-${reboundValue.lease_id}`, `delivery-${requestId}.json`)), true);
+            const secondAudit = spawnSync(process.execPath,
+              [path.join(root, "actions.mjs"), "recovery-check"],
+            { env, encoding: "utf8" });
+            assert.equal(secondAudit.status, 0, secondAudit.stdout + secondAudit.stderr);
+            assert.deepEqual(JSON.parse(secondAudit.stdout).deliveries.map((item) =>
+              [item.kind, item.generation]),
+            [["initial", 0], ["handoff", 1], ["handoff", 2]]);
+            const acceptedInitial = fs.readFileSync(nestedInitial, "utf8");
+            fs.writeFileSync(nestedInitial, JSON.stringify({
+              ...JSON.parse(acceptedInitial), status: "intent",
+            }));
+            const tampered = continueCheck();
+            assert.equal(tampered.status, 4, tampered.stdout + tampered.stderr);
+            assert.ok(JSON.parse(tampered.stdout).continuation_blockers.includes(
+              "DELIVERY_OUTCOME_UNCERTAIN"));
+            fs.writeFileSync(nestedInitial, acceptedInitial);
+            const secondContinuation = continueCheck();
+            assert.equal(secondContinuation.status, 0,
+              secondContinuation.stdout + secondContinuation.stderr);
+            const secondContinuationPlan = JSON.parse(secondContinuation.stdout);
+            assert.equal(secondContinuationPlan.generation, 2);
+            assert.equal(secondContinuationPlan.turn, "ralph");
+            const resumed = spawn(process.execPath, [coordinator, "continue",
+              secondContinuationPlan.evidence_sha256,
+              "reviewed-cursor-no-replay"],
+            { env, stdio: ["ignore", "pipe", "pipe"] });
+            try {
+              const secondContinued = await waitForLine(resumed, (value) =>
+                value.status === "continued" || value.status === "needs_reconcile");
+              assert.equal(secondContinued.status, "continued",
+                JSON.stringify(secondContinued));
+              assert.equal(fs.readFileSync(prompts, "utf8"), expectedAfter);
+              const stopped = spawnSync(process.execPath, [coordinator, "stop"],
+                { env, encoding: "utf8", timeout: 25000 });
+              assert.equal(stopped.status, 0, stopped.stdout + stopped.stderr);
+              if (resumed.exitCode === null)
+                await new Promise((resolve) => resumed.once("exit", resolve));
+              assert.equal(fs.readFileSync(prompts, "utf8"), expectedAfter);
+            } finally {
+              if (resumed.exitCode === null) resumed.kill();
+            }
+            return;
+          }
           const stoppedContinue = spawnSync(process.execPath, [coordinator, "stop"],
             { env, encoding: "utf8", timeout: 25000 });
           assert.equal(stoppedContinue.status, 0,

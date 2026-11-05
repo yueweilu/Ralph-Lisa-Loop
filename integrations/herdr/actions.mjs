@@ -160,6 +160,59 @@ function readDeliveryRecords(dir, record, plan, digest) {
   return deliveries.sort((a, b) => a.generation - b.generation || a.id.localeCompare(b.id));
 }
 
+function readLineageDeliveries(dir, record, projectRealpath, digest, depth = 0) {
+  if (depth > 32) throw new Error("PLUGIN_LINEAGE_DEPTH_EXCEEDED");
+  const plan = record.plan;
+  if (plan) validatePluginPlan(plan, projectRealpath, record.session_id);
+  const names = fs.readdirSync(dir).filter((name) =>
+    name.startsWith("initial-") || name.startsWith("delivery-"));
+  if (names.length && (!plan || !Number.isSafeInteger(record.binding_generation)))
+    throw new Error("PLUGIN_BINDING_MISMATCH");
+  const current = names.length ? readDeliveryRecords(dir, record, plan, digest) : [];
+  const archives = fs.readdirSync(dir).filter((name) => name.startsWith("prior-"));
+  if (record.prior_archive === undefined) {
+    if (archives.length || (depth > 0 && record.initial_status !== "accepted"))
+      throw new Error("PLUGIN_LINEAGE_HEADER_INVALID");
+    return current;
+  }
+  const continued = record.inherited_cursor_generation !== undefined;
+  if (depth === 32 || archives.length !== 1 || archives[0] !== record.prior_archive ||
+      !["rebound_paused", "active", "paused", "needs_reconcile"].includes(record.phase) ||
+      (record.phase === "rebound_paused" && continued) ||
+      (record.phase !== "rebound_paused" && !continued) ||
+      (!continued && names.length) ||
+      (continued && (!Number.isSafeInteger(record.inherited_cursor_generation) ||
+        record.inherited_cursor_generation < 0 ||
+        !["ralph", "lisa"].includes(record.inherited_cursor_turn) ||
+        !/^[0-9a-f]{64}$/.test(record.continuation_evidence_sha256 ?? ""))) ||
+      !UUID.test(record.prior_lease_id ?? "") ||
+      !UUID.test(record.prior_recovery_id ?? "") ||
+      record.prior_lease_id === record.lease_id ||
+      record.prior_archive !== `prior-${record.prior_lease_id}` ||
+      record.replay !== "not_replayed" ||
+      record.initial_status !== "inherited_accepted")
+    throw new Error("PLUGIN_LINEAGE_HEADER_INVALID");
+  const archive = path.join(dir, record.prior_archive);
+  try {
+    const stat = fs.lstatSync(archive);
+    if (!stat.isDirectory() || stat.isSymbolicLink())
+      throw new Error("invalid archive");
+  } catch { throw new Error("PLUGIN_LINEAGE_INVALID"); }
+  const prior = regularJson(path.join(archive, "record.json"), "PLUGIN_LINEAGE_INVALID");
+  if (prior.phase !== "needs_reconcile" ||
+      prior.project_realpath !== projectRealpath ||
+      prior.session_id !== record.session_id ||
+      prior.lease_id !== record.prior_lease_id || !UUID.test(prior.owner_id ?? "") ||
+      prior.initial_status !== (prior.prior_archive ? "inherited_accepted" : "accepted") ||
+      prior.cursor_generation !== (continued ? record.inherited_cursor_generation : record.cursor_generation) ||
+      prior.cursor_receipt_id !== (continued ? record.inherited_cursor_receipt_id : record.cursor_receipt_id) ||
+      prior.cursor_turn !== (continued ? record.inherited_cursor_turn : record.cursor_turn))
+    throw new Error("PLUGIN_LINEAGE_RECORD_INVALID");
+  digest.update(record.prior_archive).update(JSON.stringify(prior));
+  return [...readLineageDeliveries(archive, prior, projectRealpath, digest, depth + 1),
+    ...current].sort((a, b) => a.generation - b.generation || a.id.localeCompare(b.id));
+}
+
 function recoveryPluginState(projectRealpath, cliEvidence) {
   const root = process.env.HERDR_PLUGIN_STATE_DIR;
   if (!root || !path.isAbsolute(root)) throw new Error("PLUGIN_STATE_DIR_REQUIRED");
@@ -190,52 +243,8 @@ function recoveryPluginState(projectRealpath, cliEvidence) {
   if (record.binding_generation !== undefined &&
       record.binding_generation !== cliEvidence.binding_generation)
     throw new Error("PLUGIN_BINDING_MISMATCH");
-  const plan = record.plan;
-  if (plan) validatePluginPlan(plan, projectRealpath, record.session_id);
-  const currentNames = fs.readdirSync(dir).filter((name) =>
-    name.startsWith("initial-") || name.startsWith("delivery-"));
-  if (currentNames.length && (!plan || record.binding_generation !== cliEvidence.binding_generation))
-    throw new Error("PLUGIN_BINDING_MISMATCH");
-  let deliveries = currentNames.length ? readDeliveryRecords(dir, record, plan, digest) : [];
-  let inherited = false;
-  if (record.prior_archive !== undefined) {
-    const continued = record.inherited_cursor_generation !== undefined;
-    if (!(["rebound_paused", "active", "paused", "needs_reconcile"].includes(record.phase)) ||
-        (record.phase === "rebound_paused" && continued) ||
-        (record.phase !== "rebound_paused" && !continued) ||
-        (!continued && currentNames.length) ||
-        (continued && (!Number.isSafeInteger(record.inherited_cursor_generation) ||
-          record.inherited_cursor_generation < 0 ||
-          !["ralph", "lisa"].includes(record.inherited_cursor_turn) ||
-          !/^[0-9a-f]{64}$/.test(record.continuation_evidence_sha256 ?? ""))) ||
-        !UUID.test(record.prior_lease_id ?? "") ||
-        !UUID.test(record.prior_recovery_id ?? "") ||
-        record.prior_archive !== `prior-${record.prior_lease_id}` ||
-        record.replay !== "not_replayed" ||
-        record.initial_status !== "inherited_accepted")
-      throw new Error("PLUGIN_LINEAGE_HEADER_INVALID");
-    const archive = path.join(dir, record.prior_archive);
-    try {
-      const archiveStat = fs.lstatSync(archive);
-      if (!archiveStat.isDirectory() || archiveStat.isSymbolicLink())
-        throw new Error("invalid archive");
-    } catch { throw new Error("PLUGIN_LINEAGE_INVALID"); }
-    const prior = regularJson(path.join(archive, "record.json"), "PLUGIN_LINEAGE_INVALID");
-    if (prior.phase !== "needs_reconcile" ||
-        prior.project_realpath !== projectRealpath ||
-        prior.session_id !== record.session_id ||
-        prior.lease_id !== record.prior_lease_id || !UUID.test(prior.owner_id ?? "") ||
-        prior.initial_status !== "accepted" ||
-        prior.cursor_generation !== (continued ? record.inherited_cursor_generation : record.cursor_generation) ||
-        prior.cursor_receipt_id !== (continued ? record.inherited_cursor_receipt_id : record.cursor_receipt_id) ||
-        prior.cursor_turn !== (continued ? record.inherited_cursor_turn : record.cursor_turn))
-      throw new Error("PLUGIN_LINEAGE_RECORD_INVALID");
-    validatePluginPlan(prior.plan, projectRealpath, record.session_id);
-    digest.update(record.prior_archive).update(JSON.stringify(prior));
-    deliveries = [...readDeliveryRecords(archive, prior, prior.plan, digest),
-      ...deliveries].sort((a, b) => a.generation - b.generation || a.id.localeCompare(b.id));
-    inherited = true;
-  }
+  const deliveries = readLineageDeliveries(dir, record, projectRealpath, digest);
+  const inherited = record.prior_archive !== undefined;
   return { record: { phase: record.phase, pid: record.pid,
     session_id: record.session_id, owner_id: record.owner_id,
     lease_id: record.lease_id, binding_generation: record.binding_generation ?? null,
@@ -408,8 +417,6 @@ function rebindAudit(diagnosis, project) {
     if (entryExists(path.join(dir, "rebind.pending.json")))
       throw new Error("REBIND_PENDING_REVIEW");
     const old = regularJson(path.join(dir, "record.json"));
-    if (old.prior_archive !== undefined)
-      throw new Error("REPEATED_REBIND_UNSUPPORTED");
     if (old.project_realpath !== snapshot.project_realpath ||
         old.session_id !== snapshot.session_id || !UUID.test(old.lease_id ?? "") ||
         !UUID.test(old.owner_id ?? "") || old.phase !== "needs_reconcile")
@@ -465,7 +472,8 @@ function rebindAudit(diagnosis, project) {
       blockers.push(processObservation === "pid_exists" ?
         "COORDINATOR_PID_PRESENT" : "COORDINATOR_PID_UNKNOWN");
     if (pendingPluginControl(dir)) blockers.push("CONTROL_PENDING");
-    if (old.initial_status !== "accepted" ||
+    if ((old.initial_status !== "accepted" &&
+        !(plugin.inherited && old.initial_status === "inherited_accepted")) ||
         plugin.deliveries.some((item) => item.status !== "accepted"))
       blockers.push("DELIVERY_OUTCOME_UNCERTAIN");
     const initial = plugin.deliveries.find((item) => item.kind === "initial" &&

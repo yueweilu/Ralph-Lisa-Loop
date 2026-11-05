@@ -79,8 +79,8 @@ function readRecord(file) {
   return JSON.parse(fs.readFileSync(file, "utf8"));
 }
 
-function priorDeliveryFiles(paths) {
-  const names = fs.readdirSync(paths.dir).filter((name) =>
+function priorDeliveryFiles(dir) {
+  const names = fs.readdirSync(dir).filter((name) =>
     name.startsWith("initial-") || name.startsWith("delivery-")).sort();
   for (const name of names) {
     if (!/^(?:initial|delivery)-[0-9a-f-]{36}\.json$/i.test(name))
@@ -91,8 +91,27 @@ function priorDeliveryFiles(paths) {
 
 function priorPluginDigest(paths, names) {
   const digest = crypto.createHash("sha256").update(JSON.stringify(readRecord(paths.record)));
-  for (const name of names)
-    digest.update(name).update(JSON.stringify(readRecord(path.join(paths.dir, name))));
+  const add = (dir, record, files, depth) => {
+    if (depth > 32) throw new Error("PRIOR_LINEAGE_DEPTH_EXCEEDED");
+    for (const name of files)
+      digest.update(name).update(JSON.stringify(readRecord(path.join(dir, name))));
+    const archives = fs.readdirSync(dir).filter((name) => name.startsWith("prior-"));
+    if (archives.length !== (record.prior_archive ? 1 : 0) ||
+        (record.prior_archive && archives[0] !== record.prior_archive))
+      throw new Error("PRIOR_LINEAGE_INVALID");
+    if (record.prior_archive) {
+      if (depth === 32 || record.prior_archive !== `prior-${record.prior_lease_id}`)
+        throw new Error("PRIOR_LINEAGE_INVALID");
+      const archive = path.join(dir, record.prior_archive);
+      const stat = fs.lstatSync(archive);
+      if (!stat.isDirectory() || stat.isSymbolicLink())
+        throw new Error("PRIOR_LINEAGE_INVALID");
+      const prior = readRecord(path.join(archive, "record.json"));
+      digest.update(record.prior_archive).update(JSON.stringify(prior));
+      add(archive, prior, priorDeliveryFiles(archive), depth + 1);
+    }
+  };
+  add(paths.dir, readRecord(paths.record), names, 0);
   return digest.digest("hex");
 }
 
@@ -131,16 +150,22 @@ function initialFile(paths, sessionId) {
 
 function initialPromptExists(paths, sessionId) {
   const name = path.basename(initialFile(paths, sessionId));
-  if (fs.existsSync(path.join(paths.dir, name))) return true;
-  for (const entry of fs.readdirSync(paths.dir)) {
-    if (!/^prior-[0-9a-f-]{36}$/i.test(entry)) continue;
-    const dir = path.join(paths.dir, entry);
-    const stat = fs.lstatSync(dir);
-    if (!stat.isDirectory() || stat.isSymbolicLink())
-      throw new Error("PRIOR_DELIVERY_ARCHIVE_INVALID");
+  const contains = (dir, depth) => {
+    if (depth > 32) throw new Error("PRIOR_LINEAGE_DEPTH_EXCEEDED");
     if (fs.existsSync(path.join(dir, name))) return true;
-  }
-  return false;
+    const archives = fs.readdirSync(dir).filter((entry) => entry.startsWith("prior-"));
+    for (const entry of archives) {
+      if (!/^prior-[0-9a-f-]{36}$/i.test(entry))
+        throw new Error("PRIOR_DELIVERY_ARCHIVE_INVALID");
+      const archive = path.join(dir, entry);
+      const stat = fs.lstatSync(archive);
+      if (!stat.isDirectory() || stat.isSymbolicLink())
+        throw new Error("PRIOR_DELIVERY_ARCHIVE_INVALID");
+      if (contains(archive, depth + 1)) return true;
+    }
+    return false;
+  };
+  return contains(paths.dir, 0);
 }
 
 function submitPrompt(paths, record, herdr, plan, role, message, file, details) {
@@ -789,13 +814,16 @@ async function rebind(expectedEvidence, decision) {
       throw new Error(prepared.value?.code || "REBIND_GENERATION_MISMATCH");
     for (const [role, kind] of [["ralph", "claude"], ["lisa", "codex"]])
       verifySeat(herdr, plan, role, kind);
-    const priorFiles = priorDeliveryFiles(paths);
+    const priorFiles = priorDeliveryFiles(paths.dir);
     if (priorPluginDigest(paths, priorFiles) !== review.plugin_evidence_sha256)
       throw new Error("PRIOR_DELIVERY_CHANGED");
     const archive = path.join(paths.dir, `prior-${old.lease_id}`);
     fs.mkdirSync(archive, { mode: 0o700 });
     for (const name of priorFiles)
       fs.renameSync(path.join(paths.dir, name), path.join(archive, name));
+    if (old.prior_archive)
+      fs.renameSync(path.join(paths.dir, old.prior_archive),
+        path.join(archive, old.prior_archive));
     fs.renameSync(paths.record, path.join(archive, "record.json"));
     const rebound = { schema: 1, phase: "rebound_paused", pid: process.pid,
       owner_id: ownerId, lease_id: lease.lease_id, project_realpath: paths.real,

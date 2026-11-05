@@ -149,3 +149,5 @@ S4 接续前新增只读 `continuation-check`，核对替代租约、归档投�
 S4 显式接续切片增加 `continue` Pane、独占意图和替代租约的协调循环。它从保存游标启动心跳，不重发旧提示；新回执只按替代租约和一次投递意图交接。伪 Herdr 回归已覆盖成功交接、重复拒绝、身份变化和结果不明冻结；真实 Server 重启验收仍待完成，见 [S4 显式接续](s4-explicit-continuation-2026-11-05.md)。
 
 S4 后续增加第 1 代非零游标的隔离重启组合测试：旧租约 Ralph → Lisa 的已接受提示保留在归档，重绑接续后 Lisa 的 `NEEDS_WORK` 回执只向 Ralph 投递一次，恢复审查合并两条租约的投递链。真实 Herdr Server 重启接续仍需单独验收，详见 [S4 显式接续](s4-explicit-continuation-2026-11-05.md)。
+
+S4 真实命名 Server 试验已通过第 0 代重启、显式重绑接续与一次 Ralph → Lisa 交接；第 1 代再次重启时，重复重绑及 Lisa/Codex 原生会话引用缺失阻断后续接续，见 [真实重启接续试验](s4-real-continuation-trial-2026-11-05.md)。后续本地切片为重复重绑增加多级归档和完整投递链校验，仍要求已受提示席位的原生会话指纹一致，见 [多级投递归档](s4-repeated-rebind-lineage-2026-11-05.md)。
