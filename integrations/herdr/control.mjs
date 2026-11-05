@@ -27,8 +27,16 @@ function show(action) {
       console.log(JSON.stringify({ lease_id: response.cli?.lease_id,
         plugin: response.plugin, plugin_warning: response.plugin_warning,
         deliveries: response.deliveries, seats: response.seats,
+        coordinator_process: response.coordinator_process,
+        continuation_blockers: response.continuation_blockers,
         restart_observation: response.restart_observation }, null, 2));
     }
+    if (action === "rebind-check" && response.project)
+      console.log(JSON.stringify({ old_lease_id: response.old_lease_id,
+        recovery_id: response.recovery_id, generation: response.generation,
+        coordinator_process: response.coordinator_process,
+        continuation_blockers: response.continuation_blockers,
+        binding_plan: response.binding_plan }, null, 2));
   } catch {
     console.log(`${action}: probe failed (${result.error?.code ?? result.status ?? "unknown"})`);
   }
@@ -49,6 +57,7 @@ if (process.stdin.isTTY) {
     show("status");
     show("seat-preflight");
     show("recovery-check");
+    show("rebind-check");
   }
   input.close();
 }

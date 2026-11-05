@@ -139,3 +139,5 @@ S3 Agent Pane 提议现对短暂 `blocked` 状态做有界重查，仍要求 `ag
 S4 恢复审查增加席位查询后的 CLI 租约证据与插件完整记录复核；审查期间发生变化会返回 `RECOVERY_STATE_CHANGED`，不输出过时的 `review_required` 结果。隔离测试已覆盖租约和插件记录并发变化；此复核仍非原子快照，也未完成重启后的自动重绑与租约接续，见 [S4 恢复核对稳定性](s4-recovery-audit-stability-2026-11-05.md)。
 
 S4 后续为恢复审查增加只读 `continuation_blockers`，明示旧协调器 PID、投递结果、回执游标、未处理控制请求和席位身份问题。它不调用租约恢复或重新投递，空阻断列表仍需人工核对，见 [S4 重启接续阻断项](s4-recovery-continuation-blockers-2026-11-05.md)。
+
+S4 增加已回收租约后的只读 `rebind-check`，核验旧租约归档与恢复回执、完整投递链、当前代次及恢复后的 Herdr 原生会话，再给出新绑定计划。隔离重启测试已通过；尚未领取替代租约或恢复投递，见 [S4 重绑预检](s4-rebind-preflight-2026-11-05.md)。

@@ -7,7 +7,7 @@ import { nativeSessionReference } from "./native-session.mjs";
 
 const pluginRoot = path.dirname(fileURLToPath(import.meta.url));
 const MIN_HERDR = [0, 9, 4];
-const ACTIONS = new Set(["doctor", "status", "seat-preflight", "recovery-check"]);
+const ACTIONS = new Set(["doctor", "status", "seat-preflight", "recovery-check", "rebind-check"]);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function emit(value, exitCode = 0) {
@@ -94,6 +94,14 @@ function regularJson(file, code = "PLUGIN_RECORD_INVALID") {
     if (!value || typeof value !== "object" || Array.isArray(value))
       throw new Error("invalid JSON object");
     return value;
+  } catch { throw new Error(code); }
+}
+
+function regularDirectory(dir, code) {
+  try {
+    const stat = fs.lstatSync(dir);
+    if (!stat.isDirectory() || stat.isSymbolicLink() ||
+        fs.realpathSync.native(dir) !== dir) throw new Error("invalid directory");
   } catch { throw new Error(code); }
 }
 
@@ -318,6 +326,150 @@ function recoveryAudit(diagnosis, project) {
   }
 }
 
+function rebindAudit(diagnosis, project) {
+  const observed = invoke(diagnosis.cli, ["host", "snapshot", "--project", project, "--json"]);
+  const snapshot = readJson(observed);
+  if (observed.code !== 0 || snapshot?.status !== "ok") {
+    emit({ status: "not_ready", code: snapshot?.code || "RLL_SNAPSHOT_FAILED", project }, 4);
+    return;
+  }
+  try {
+    if (snapshot.host_state !== "unclaimed" || snapshot.binding_state !== "stale" ||
+        !Number.isSafeInteger(snapshot.generation) || snapshot.generation < 0)
+      throw new Error("RECOVERED_LEASE_REQUIRED");
+    if (!process.env.HERDR_PLUGIN_STATE_DIR ||
+        !path.isAbsolute(process.env.HERDR_PLUGIN_STATE_DIR))
+      throw new Error("PLUGIN_STATE_DIR_REQUIRED");
+    const key = crypto.createHash("sha256").update(snapshot.project_realpath).digest("hex");
+    const dir = path.join(process.env.HERDR_PLUGIN_STATE_DIR, "sessions", key);
+    const old = regularJson(path.join(dir, "record.json"));
+    if (old.project_realpath !== snapshot.project_realpath ||
+        old.session_id !== snapshot.session_id || !UUID.test(old.lease_id ?? "") ||
+        !UUID.test(old.owner_id ?? "") || old.phase !== "needs_reconcile")
+      throw new Error("PLUGIN_RECORD_INVALID");
+    const oldEvidence = { session_id: old.session_id, lease_id: old.lease_id,
+      owner_id: old.owner_id, binding_generation: old.binding_generation };
+    const plugin = recoveryPluginState(snapshot.project_realpath, oldEvidence);
+    const host = path.join(snapshot.state_realpath, "host");
+    const binding = regularJson(path.join(host, "binding.json"), "RECOVERY_PROOF_INVALID");
+    if (binding.lease_id !== old.lease_id ||
+        binding.binding_generation !== old.binding_generation ||
+        binding.workspace_id !== old.plan?.workspace_id ||
+        binding.seats?.ralph?.pane_id !== old.plan?.seats?.ralph?.pane_id ||
+        binding.seats?.lisa?.pane_id !== old.plan?.seats?.lisa?.pane_id)
+      throw new Error("RECOVERY_PROOF_INVALID");
+    const archiveDir = path.join(host, "retired-leases", old.lease_id);
+    regularDirectory(path.join(host, "retired-leases"), "RECOVERY_PROOF_INVALID");
+    regularDirectory(archiveDir, "RECOVERY_PROOF_INVALID");
+    const archived = regularJson(path.join(archiveDir, "record.json"),
+      "RECOVERY_PROOF_INVALID");
+    if (archived.status !== "claimed" || archived.host !== "herdr" ||
+        archived.lease_id !== old.lease_id || archived.owner_id !== old.owner_id ||
+        archived.session_id !== snapshot.session_id ||
+        archived.project_realpath !== snapshot.project_realpath ||
+        archived.state_realpath !== snapshot.state_realpath)
+      throw new Error("RECOVERY_PROOF_INVALID");
+    const recoveryDir = path.join(host, "recoveries");
+    regularDirectory(recoveryDir, "RECOVERY_PROOF_INVALID");
+    const receipts = fs.readdirSync(recoveryDir).filter((name) => UUID.test(name.slice(0, -5)) &&
+      name.endsWith(".json")).map((name) => ({ name, value: regularJson(path.join(recoveryDir, name),
+      "RECOVERY_PROOF_INVALID") })).filter((item) => item.value.lease_id === old.lease_id);
+    const recovery = receipts.length === 1 ? receipts[0].value : null;
+    if (recovery?.status !== "recovered" || recovery.replay !== "not_replayed" ||
+        recovery.decision !== "verified-stopped-no-replay" ||
+        recovery.owner_id !== old.owner_id || recovery.session_id !== snapshot.session_id ||
+        recovery.state_digest !== snapshot.state_digest ||
+        recovery.generation !== snapshot.generation ||
+        recovery.binding_generation !== old.binding_generation ||
+        recovery.candidate_count !== snapshot.candidate_count ||
+        receipts[0].name !== `${recovery.recovery_id}.json` ||
+        recovery.last_heartbeat_seq !== archived.heartbeat_seq ||
+        recovery.last_heartbeat_at !== archived.heartbeat_at ||
+        !/^[0-9a-f]{64}$/.test(recovery.evidence_sha256 ?? ""))
+      throw new Error("RECOVERY_PROOF_INVALID");
+    const preflight = invoke([process.execPath, path.join(pluginRoot, "actions.mjs")],
+      ["seat-preflight"]);
+    const proposed = readJson(preflight);
+    const plan = preflight.code === 0 && proposed?.status === "ready" ?
+      proposed.binding_plan : null;
+    const blockers = [];
+    const processObservation = coordinatorProcess(old.pid);
+    if (processObservation !== "pid_absent")
+      blockers.push(processObservation === "pid_exists" ?
+        "COORDINATOR_PID_PRESENT" : "COORDINATOR_PID_UNKNOWN");
+    if (pendingPluginControl(dir)) blockers.push("CONTROL_PENDING");
+    if (old.initial_status !== "accepted" ||
+        plugin.deliveries.some((item) => item.status !== "accepted"))
+      blockers.push("DELIVERY_OUTCOME_UNCERTAIN");
+    const initial = plugin.deliveries.find((item) => item.kind === "initial" &&
+      item.id === snapshot.session_id && item.status === "accepted");
+    const handoffs = plugin.deliveries.filter((item) => item.kind === "handoff");
+    const generations = new Set(handoffs.map((item) => item.generation));
+    if (!initial || handoffs.length !== snapshot.generation ||
+        generations.size !== handoffs.length ||
+        handoffs.some((item) => item.generation > snapshot.generation) ||
+        (snapshot.generation > 0 && !handoffs.some((item) =>
+          item.id === snapshot.last_receipt_id && item.generation === snapshot.generation &&
+          item.status === "accepted")))
+      blockers.push("DELIVERY_RECORD_MISSING");
+    if (old.cursor_generation !== snapshot.generation ||
+        old.cursor_receipt_id !== snapshot.last_receipt_id ||
+        old.cursor_turn !== snapshot.turn)
+      blockers.push("CURSOR_STATE_MISMATCH");
+    if (!plan || plan.project_realpath !== snapshot.project_realpath ||
+        plan.session_id !== snapshot.session_id || plan.expected_digest !== snapshot.state_digest)
+      blockers.push(proposed?.code || "SEAT_PREFLIGHT_FAILED");
+    else for (const role of ["ralph", "lisa"]) {
+      const fingerprint = old.plan?.seats?.[role]?.native_session_fingerprint_sha256;
+      const everPrompted = role === "ralph" || handoffs.some((item) => item.role === role);
+      if (everPrompted && (!fingerprint ||
+          plan.seats[role]?.native_session_fingerprint_sha256 !== fingerprint))
+        blockers.push(`AGENT_SESSION_UNVERIFIED_${role.toUpperCase()}`);
+    }
+    const reread = invoke(diagnosis.cli, ["host", "snapshot", "--project",
+      snapshot.project_realpath, "--json"]);
+    const finalSnapshot = readJson(reread);
+    const finalPlugin = recoveryPluginState(snapshot.project_realpath, oldEvidence);
+    const finalRecovery = regularJson(path.join(recoveryDir, receipts[0].name),
+      "RECOVERY_PROOF_INVALID");
+    const finalArchive = regularJson(path.join(archiveDir, "record.json"),
+      "RECOVERY_PROOF_INVALID");
+    const finalBinding = regularJson(path.join(host, "binding.json"),
+      "RECOVERY_PROOF_INVALID");
+    if (reread.code !== 0 || finalSnapshot?.status !== "ok" ||
+        finalSnapshot.host_state !== "unclaimed" ||
+        finalSnapshot.session_id !== snapshot.session_id ||
+        finalSnapshot.binding_generation !== snapshot.binding_generation ||
+        finalSnapshot.generation !== snapshot.generation ||
+        finalSnapshot.last_receipt_id !== snapshot.last_receipt_id ||
+        finalSnapshot.state_digest !== snapshot.state_digest ||
+        finalSnapshot.candidate_count !== snapshot.candidate_count ||
+        finalPlugin.evidence_sha256 !== plugin.evidence_sha256 ||
+        JSON.stringify(finalRecovery) !== JSON.stringify(recovery) ||
+        JSON.stringify(finalArchive) !== JSON.stringify(archived) ||
+        JSON.stringify(finalBinding) !== JSON.stringify(binding))
+      throw new Error("RECOVERY_STATE_CHANGED");
+    const evidenceSha = crypto.createHash("sha256").update(JSON.stringify({
+      session_id: snapshot.session_id, state_digest: snapshot.state_digest,
+      generation: snapshot.generation, last_receipt_id: snapshot.last_receipt_id,
+      old_lease_id: old.lease_id, recovery_id: recovery.recovery_id,
+      plugin_digest: plugin.evidence_sha256, plan,
+    })).digest("hex");
+    emit({ status: blockers.length ? "not_ready" : "review_required",
+      code: blockers.length ? "REBIND_BLOCKED" : null,
+      project: snapshot.project_realpath, session_id: snapshot.session_id,
+      old_lease_id: old.lease_id, recovery_id: recovery.recovery_id,
+      generation: snapshot.generation, coordinator_process: processObservation,
+      continuation_blockers: blockers, binding_plan: plan,
+      evidence_sha256: evidenceSha,
+      note: "Read-only rebind preflight. Human confirmation and a separate guarded rebind action are still required; this never claims a lease or prompts an Agent." },
+    blockers.length ? 4 : 0);
+  } catch (error) {
+    emit({ status: "needs_reconcile", code: error.message || "REBIND_CHECK_FAILED",
+      project: snapshot.project_realpath }, 7);
+  }
+}
+
 function diagnostics(config) {
   const herdr = [process.env.HERDR_BIN_PATH || "herdr"];
   const cli = config.rll_cli_argv || ["ralph-lisa"];
@@ -446,6 +598,10 @@ function main() {
   }
   if (action === "recovery-check") {
     recoveryAudit(diagnosis, project);
+    return;
+  }
+  if (action === "rebind-check") {
+    rebindAudit(diagnosis, project);
     return;
   }
   const observed = invoke(diagnosis.cli, ["host", "snapshot", "--project", project, "--json"]);

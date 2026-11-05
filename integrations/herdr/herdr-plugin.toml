@@ -47,6 +47,12 @@ contexts = ["workspace"]
 command = ["node", "actions.mjs", "recovery-check"]
 
 [[actions]]
+id = "rebind-check"
+title = "Review recovered lease and Herdr seats"
+contexts = ["workspace"]
+command = ["node", "actions.mjs", "rebind-check"]
+
+[[actions]]
 id = "stop"
 title = "Stop Ralph-Lisa workflow"
 contexts = ["workspace"]

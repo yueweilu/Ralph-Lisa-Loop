@@ -354,7 +354,7 @@ for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commi
     `const a=process.argv.slice(2);` +
     `if(a[0]==='--version')console.log('herdr 0.9.4');` +
     `else if(a[0]==='integration')console.log('claude: current (v10)\\ncodex: current (v9)');` +
-    `else if(a[0]==='agent'&&a[1]==='get'){const role=a[2];const fs=require('node:fs');const changed=fs.existsSync(process.env.FAKE_SERVER_RESTARTED);const marker=process.env.FAKE_AUDIT_MUTATION;if(role==='ralph'&&marker&&fs.existsSync(marker)){const target=fs.readFileSync(marker,'utf8').trim()==='lease'?process.env.FAKE_LEASE_PATH:process.env.FAKE_RECORD_PATH;const value=JSON.parse(fs.readFileSync(target,'utf8'));if(target===process.env.FAKE_LEASE_PATH)value.heartbeat_seq++;else value.error='changed-during-audit';fs.writeFileSync(target,JSON.stringify(value));fs.unlinkSync(marker);}console.log(JSON.stringify({result:{agent:{name:role,agent:role==='ralph'?'claude':'codex',workspace_id:'w1',pane_id:role==='ralph'?'w1:p1':'w1:p2',terminal_id:(changed?'new-':'term-')+role,cwd:process.env.FAKE_PROJECT,interactive_ready:true,agent_status:'idle'}}}));}` +
+    `else if(a[0]==='agent'&&a[1]==='get'){const role=a[2];const fs=require('node:fs');const changed=fs.existsSync(process.env.FAKE_SERVER_RESTARTED);const marker=process.env.FAKE_AUDIT_MUTATION;if(role==='ralph'&&marker&&fs.existsSync(marker)){const target=fs.readFileSync(marker,'utf8').trim()==='lease'?process.env.FAKE_LEASE_PATH:process.env.FAKE_RECORD_PATH;const value=JSON.parse(fs.readFileSync(target,'utf8'));if(target===process.env.FAKE_LEASE_PATH)value.heartbeat_seq++;else value.error='changed-during-audit';fs.writeFileSync(target,JSON.stringify(value));fs.unlinkSync(marker);}console.log(JSON.stringify({result:{agent:{name:role,agent:role==='ralph'?'claude':'codex',workspace_id:'w1',pane_id:role==='ralph'?'w1:p1':'w1:p2',terminal_id:(changed?'new-':'term-')+role,cwd:process.env.FAKE_PROJECT,agent_session:role==='ralph'?{agent:'claude',kind:'id',source:'herdr:claude',value:process.env.FAKE_RALPH_SESSION||'ralph-session-1'}:undefined,interactive_ready:true,agent_status:'idle'}}}));}` +
     `else if(a[0]==='agent'&&a[1]==='prompt'){require('node:fs').appendFileSync(process.env.FAKE_PROMPTS,a[2]+'\\n');if((a[2]==='ralph'&&process.env.FAKE_PROMPT_FAILURE==='initial-timeout')||(a[2]==='lisa'&&process.env.FAKE_PROMPT_FAILURE==='timeout')){console.error(JSON.stringify({error:{code:'timeout'}}));process.exitCode=1;}else if(a[2]==='ralph')console.log(JSON.stringify({result:{type:'agent_prompted',agent:{name:'ralph',agent:'claude',workspace_id:'w1',pane_id:'w1:p1',cwd:process.env.FAKE_PROJECT}}}));else console.log(JSON.stringify({result:{type:'agent_prompted',agent:{name:a[2],agent:'codex',workspace_id:'w1',pane_id:'w1:p9',cwd:process.env.FAKE_PROJECT}}}));}` +
     `else process.exitCode=2;\n`);
   fs.writeFileSync(fakeClaude, `#!${process.execPath}\nconsole.log('{"loggedIn":true}');\n`);
@@ -473,6 +473,7 @@ for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commi
       fs.writeFileSync(restartedFile, "restarted");
       const fenced = await failed;
       assert.equal(fenced.code, "HERDR_TERMINAL_CHANGED");
+      if (child.exitCode === null) await new Promise((resolve) => child.once("exit", resolve));
       assert.equal(fs.readFileSync(prompts, "utf8"), "ralph\n");
       const snapshot = JSON.parse(spawnSync(process.execPath,
         [cli, "host", "snapshot", "--project", project, "--json"], {
@@ -487,6 +488,52 @@ for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commi
         [path.join(root, "actions.mjs"), "recovery-check"], { env, encoding: "utf8" });
       assert.equal(audit.status, 0, audit.stdout + audit.stderr);
       assert.equal(JSON.parse(audit.stdout).seats.ralph.observation, "terminal_changed");
+      const tooEarly = spawnSync(process.execPath,
+        [path.join(root, "actions.mjs"), "rebind-check"], { env, encoding: "utf8" });
+      assert.equal(tooEarly.status, 7, tooEarly.stdout + tooEarly.stderr);
+      assert.equal(JSON.parse(tooEarly.stdout).code, "RECOVERED_LEASE_REQUIRED");
+      const reviewed = spawnSync(process.execPath, [cli, "host", "recovery-check",
+        "--project", project, "--json"], { env, encoding: "utf8" });
+      assert.equal(reviewed.status, 0, reviewed.stdout + reviewed.stderr);
+      const evidence = JSON.parse(reviewed.stdout);
+      const recovered = spawnSync(process.execPath, [cli, "host", "recover-lease",
+        "--project", project, "--lease-id", evidence.lease_id,
+        "--expected-evidence", evidence.evidence_sha256,
+        "--decision", "verified-stopped-no-replay", "--json"],
+      { env, encoding: "utf8" });
+      assert.equal(recovered.status, 0, recovered.stdout + recovered.stderr);
+      const pluginRecordFile = path.join(sessionDir, "record.json");
+      const pluginRecordBefore = fs.readFileSync(pluginRecordFile, "utf8");
+      const rebind = spawnSync(process.execPath,
+        [path.join(root, "actions.mjs"), "rebind-check"], { env, encoding: "utf8" });
+      assert.equal(rebind.status, 0, rebind.stdout + rebind.stderr);
+      const checked = JSON.parse(rebind.stdout);
+      assert.equal(checked.status, "review_required");
+      assert.deepEqual(checked.continuation_blockers, []);
+      assert.equal(checked.old_lease_id, evidence.lease_id);
+      assert.equal(checked.binding_plan.seats.ralph.terminal_id, "new-ralph");
+      const recoveries = path.join(project, ".dual-agent", "host", "recoveries");
+      const recoveryFile = path.join(recoveries, `${checked.recovery_id}.json`);
+      const originalRecovery = fs.readFileSync(recoveryFile, "utf8");
+      fs.writeFileSync(recoveryFile, JSON.stringify({ ...JSON.parse(originalRecovery),
+        decision: "unreviewed" }));
+      const invalidProof = spawnSync(process.execPath,
+        [path.join(root, "actions.mjs"), "rebind-check"], { env, encoding: "utf8" });
+      assert.equal(invalidProof.status, 7, invalidProof.stdout + invalidProof.stderr);
+      assert.equal(JSON.parse(invalidProof.stdout).code, "RECOVERY_PROOF_INVALID");
+      fs.writeFileSync(recoveryFile, originalRecovery);
+      const wrongSession = spawnSync(process.execPath,
+        [path.join(root, "actions.mjs"), "rebind-check"], {
+          env: { ...env, FAKE_RALPH_SESSION: "replacement-session" }, encoding: "utf8",
+        });
+      assert.equal(wrongSession.status, 4, wrongSession.stdout + wrongSession.stderr);
+      assert.ok(JSON.parse(wrongSession.stdout).continuation_blockers.includes(
+        "AGENT_SESSION_UNVERIFIED_RALPH"));
+      assert.equal(fs.readFileSync(prompts, "utf8"), "ralph\n");
+      assert.equal(fs.readFileSync(pluginRecordFile, "utf8"), pluginRecordBefore);
+      assert.equal(JSON.parse(spawnSync(process.execPath, [cli, "host", "snapshot",
+        "--project", project, "--json"], { env, encoding: "utf8" }).stdout).host_state,
+      "unclaimed");
       return;
     }
     if (failure === "paused-commit") {
