@@ -17,3 +17,5 @@ Herdr 的 GitHub 插件安装支持从公开仓子目录读取清单，并在注
 从公开 fork 的 `feat/herdr-s4-server-epoch-fence` 克隆提交 `5947e431e17f33ba112336eaab1bbbba0ff04f70` 到独立临时目录。克隆中的 `integrations/herdr` 与 `cli/` 保持了清单要求的相对位置。从插件目录依次执行清单中的 `npm ci --prefix ../../cli --ignore-scripts --no-audit --no-fund`、`npm run build --prefix ../../cli`、`node ../../cli/scripts/verify-package.mjs`，均返回成功；校验包含 72 个发布文件。解析函数指向该克隆的 `cli/dist/cli.js`，它的 `host inspect --project /private/tmp --json` 返回 `status=ok`。
 
 预检使用临时 npm 缓存以避开当前沙箱对用户缓存的写入限制。它验证了 GitHub 源码和构建命令，不验证 Herdr 安装器实际的工作目录或插件注册结果。
+
+后续[真实 GitHub 安装验收](s5-real-github-install-2026-11-05.md)已在隔离命名 Server 中确认 `8d6f933` 的安装、同仓构建、注册、`doctor`、已钉住版本的更新无操作检查、卸载及配置保留；跨提交实际升级仍未验收。
