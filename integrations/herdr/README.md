@@ -27,7 +27,7 @@ This is the public-repository Herdr plugin, separate from the Claude Code plugin
 
 ## Local setup
 
-Build the public CLI first (`cd cli && npm ci && npm run build`) or install a published CLI containing the S1 host commands. From this checkout, link the plugin:
+Build the public CLI first (`cd cli && npm ci && npm run build`) or install a published CLI containing the S1 host commands. The npm release `ralph-lisa-loop@0.3.13` did not contain `host` when checked on 2026-11-05; use this checkout's built CLI for the current preview. From this checkout, link the plugin:
 
 ```sh
 herdr plugin link /absolute/path/to/Ralph-Lisa-Loop-herdr/integrations/herdr
