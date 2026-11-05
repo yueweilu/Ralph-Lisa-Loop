@@ -9,3 +9,5 @@ Herdr 插件新增独立 `review` Pane。它从插件 `status` 定位当前项�
 候选来源继续标为 `unverified`；人工声明仅表示用户核对了显示的正文和身份，**不证明文件由绑定 Agent 写入**。Plugin Pane 的交互测试用预设输入模拟人工操作，不能代替真实 Herdr 目视审阅验收。
 
 验证范围：CLI 构建及 490 项回归通过；`host-candidate` 测试证明读取持久化原文、摘要篡改冻结和业务状态不变；Pane 测试覆盖取消、确认后正式提交、篡改候选在提示前停止。真实 Herdr Pane 操作和无人工来源归因另行验证。
+
+后续已在[真实 Herdr 审阅窗格试验](s3-real-review-pane-trial-2026-11-04.md)中验证运行中 Pane 的完整候选展示、预检和取消不提交；真人确认后的正式提交与 Lisa 交接尚未验收。试验同时发现 Herdr `agent get` 与 `agent explain` 的状态分歧，候选提议辅助命令按原门禁拒绝，未放宽 `working` 要求。
