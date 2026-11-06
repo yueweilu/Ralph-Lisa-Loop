@@ -22,7 +22,8 @@ const packed = packages[0];
 assert.equal(packed.name, manifest.name);
 assert.equal(packed.version, manifest.version);
 const files = new Set(packed.files.map((entry) => entry.path));
-for (const required of ["LICENSE", "README.md", "package.json", manifest.bin?.["ralph-lisa"]]) {
+for (const required of ["LICENSE", "README.md", "package.json",
+  manifest.bin?.["ralph-lisa"], manifest.bin?.["herdr-rll"]]) {
   assert.ok(required && files.has(required), `missing release file: ${required}`);
 }
 assert.ok([...files].some((file) => file.startsWith("templates/")),

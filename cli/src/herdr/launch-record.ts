@@ -22,6 +22,9 @@ export type LaunchWorkspace = {
   root_terminal_id: string;
 };
 
+export type LaunchPane = { schema: 1; request_id: string; coordinator_pane_id: string };
+export type LaunchResult = { schema: 1; request_id: string; status: "started" | "needs_input" | "needs_reconcile" | "not_ready"; code?: string };
+
 function stateFile(project: string, name: string): string {
   return path.join(fs.realpathSync.native(project), ".dual-agent", name);
 }
@@ -84,4 +87,23 @@ export function readLaunchWorkspace(project: string, requestId: string): LaunchW
       !record.workspace_id || !record.root_pane_id || !record.root_terminal_id)
     throw new Error("LAUNCH_WORKSPACE_MISMATCH");
   return record;
+}
+
+export function recordLaunchPane(project: string, requestId: string, paneId: string): LaunchPane {
+  readLaunchWorkspace(project, requestId);
+  if (!paneId) throw new Error("COORDINATOR_PANE_ID_REQUIRED");
+  const record: LaunchPane = { schema: 1, request_id: requestId, coordinator_pane_id: paneId };
+  writeExclusive(stateFile(project, "herdr-launch-pane.json"), record);
+  return record;
+}
+
+export function readLaunchResult(project: string, requestId: string): LaunchResult | null {
+  readLaunchWorkspace(project, requestId);
+  const file = stateFile(project, "herdr-launch-result.json");
+  if (!fs.existsSync(file)) return null;
+  const value = readRegular<LaunchResult>(file);
+  if (value.schema !== 1 || value.request_id !== requestId ||
+      !["started", "needs_input", "needs_reconcile", "not_ready"].includes(value.status))
+    throw new Error("LAUNCH_RESULT_INVALID");
+  return value;
 }

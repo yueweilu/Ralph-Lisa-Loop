@@ -41,12 +41,25 @@ import {
 } from "./commands.js";
 import { cmdHost } from "./host/cli.js";
 import { guardCliMutation } from "./host/guard.js";
+import { routeAutoArgs } from "./herdr/options.js";
+import { reportHerdrLaunch } from "./herdr/launch.js";
 
 const args = process.argv.slice(2);
 const cmd = args[0] || "";
 const rest = args.slice(1);
 
-guardCliMutation(cmd, rest);
+let autoRoute: ReturnType<typeof routeAutoArgs> | null = null;
+try {
+  if (cmd === "auto") autoRoute = routeAutoArgs(rest);
+} catch (error) {
+  console.error(`Error: ${error instanceof Error ? error.message : "INVALID_AUTO_OPTIONS"}`);
+  process.exit(2);
+}
+
+if (autoRoute?.host === "herdr") {
+  reportHerdrLaunch(autoRoute.options);
+} else {
+guardCliMutation(cmd, autoRoute?.host === "tmux" ? autoRoute.args : rest);
 
 switch (cmd) {
   case "host":
@@ -114,7 +127,7 @@ switch (cmd) {
     break;
 
   case "auto":
-    cmdAuto(rest);
+    cmdAuto(autoRoute?.host === "tmux" ? autoRoute.args : rest);
     break;
 
   case "policy":
@@ -195,6 +208,7 @@ switch (cmd) {
     console.error('Run "ralph-lisa --help" for usage.');
     process.exit(1);
 }
+}
 
 function showHelp(): void {
   console.log("Ralph Lisa Dual-Agent Loop - CLI");
@@ -207,6 +221,8 @@ function showHelp(): void {
   console.log('  ralph-lisa start --full-auto "task" Launch without permission prompts');
   console.log('  ralph-lisa auto "task"              Auto mode (tmux)');
   console.log('  ralph-lisa auto --full-auto "task"  Auto mode without permission prompts');
+  console.log('  ralph-lisa auto --host herdr "task" Launch a new task in Herdr');
+  console.log('  herdr-rll "task"                   Same Herdr launcher');
   console.log("  ralph-lisa stop                    Graceful stop (archive + cleanup)");
   console.log("  ralph-lisa stop --force            Force stop (SIGKILL)");
   console.log("  ralph-lisa stop --no-archive       Stop without archiving");
