@@ -55,6 +55,26 @@ Herdr 内提供“启动 Ralph-Lisa 任务”的短暂终端弹窗，输入同�
 
 证据边界：Herdr 0.9.4 插件 v1 能声明 action、Pane 和事件；`plugin action invoke` 不接受任务正文参数，`plugin pane open` 支持 `--cwd`、`--workspace`、`--env` 和 `popup`。Popup 没有持久 Pane ID，不能充当协调器宿主。Herdr `agent.prompt` 成功只说明输入被接受；超时也不能证明输入未送达。详见 [Herdr Plugins](https://herdr.dev/tui/docs/plugins/)、[CLI reference](https://herdr.dev/tui/docs/cli-reference/) 与 [Agent automation](https://herdr.dev/tui/docs/agent-automation/)。
 
+### 2.1 原 tmux 自动模式逐项迁移
+
+这张表是开发验收清单，不能只完成“创建两个窗格”就称为替换 tmux。旧实现主要在 `cmdAuto()` 生成的 `watcher.sh` 和 `cmdStop()` 中。
+
+| 旧 `cmdAuto` / watcher 职责 | Herdr 版如何实现 | 业务责任与验收 |
+|---|---|---|
+| `tmux new-session/split-window` 建双席 | Herdr `workspace create`、`pane split`、`agent start --kind claude/codex`；保存实际返回 ID | Herdr 管 Pane/Agent；RLL 核对项目、会话和绑定。一个项目只建一个 Workspace |
+| `send-keys` 送首条任务和轮次提醒 | `agent prompt`，送前持久化 intent，送后校验 `agent_prompted` | RLL 正式回执决定目标席位；提示超时不得假设未送达 |
+| 读 `turn.txt/round.txt`、`.turn_changed`、`fswatch/inotifywait` | 协调器定时读 `host snapshot/receipt`；Herdr 事件只能加速刷新 | RLL 状态/回执是轮次真源，不能用 Agent `done` 代替提交 |
+| `.watcher_state`、`MAX_SENDS_PER_ROUND` 防洪泛 | 每个首投/交接固定唯一键与持久投递记录；未知结果进入核对 | 不靠“最多重发两次”保证一次性；重复启动、断线后也不得重投 |
+| `capture-pane`、`pipe-pane`、pane 日志观察 | Herdr `agent get/read/wait` 与插件命令日志；业务结论仍查 CLI | 只显示活动、阻塞和诊断，不根据屏幕文本写业务状态 |
+| 检查交互提示，暂停相应 Pane | Herdr `blocked/unknown` 加显式 pause；用户在原 Agent Pane 处理 | 不自动接受信任、登录或权限提示；恢复前复核原席位与游标 |
+| `control.txt` 的 pause/resume/msg/scope-update | 复用插件 pause/resume/stop；消息与范围变更改为受控宿主事件 | 任务变更优先由 Ralph 聊天提出，控制 Pane 是备用入口 |
+| `deadlock.txt`、checkpoint、通知升级 | 逐项迁移成可查询的 RLL/插件暂停原因和提醒；P0 固定哪些属于首版 | 既有 checkpoint 不因换终端而被静默丢弃；`--full-auto` 不自动跨越业务检查点 |
+| watcher wrapper/PID/重启 | Herdr Agent/Pane 实时身份 + RLL lease/heartbeat + S4 显式恢复 | 旧进程孤儿必须被围栏阻断；不能单靠 PID 存活判定归属 |
+| `cmdStop()` 终止 watcher、退出 Agent、销毁 tmux | 插件 stop 先停投递并释放 lease；是否关闭 Agent/Workspace 为单独用户动作 | 停止不删除任务、回执或用户工作；不会误杀其他项目席位 |
+| `cmdInit` 建任务、`update-task` 追加方向 | 新入口安全初始化；宿主任务更新事件维护摘要链 | CLI 持有业务真源；不能直接改 task.md 或重新 `init` 覆盖会话 |
+
+这里不是逐行翻译 watcher。旧 watcher 的“读屏、限次数重发”和 shell PID 管理要由**持久回执 + Herdr 身份核查**替代；RLL 的任务、轮次、策略、测试、共识和人工授权规则保持由 RLL 判定。P0 逐项标注“直接复用、已替换、待验证”，任何待验证项不能写成已验收。
+
 ## 3. 用户体验与命令契约
 
 ### 3.1 CLI 用法
@@ -126,7 +146,7 @@ auto_authorization = {
 }
 ```
 
-调用 `auto --host herdr` 或插件中明确显示的“自动提交合格候选”即为本会话授权；记录不得被普通 Agent 命令创建或扩大。授权只覆盖本项目、本 RLL session、本租约及经绑定的两席；停止/换任务周期、换宿主、换项目或撤销后必须重新评估。自动提交回执写 `source_confirmation = session_authorized_auto`、`source_verification = bound_pane_observed`（最终字段名在 P0 冻结），**不得写 `human_asserted` 或宣称已证明人/模型作者**。没有该授权的候选仍停在现有人审 Pane。
+调用 `auto --host herdr` 或插件中明确显示的“自动提交合格候选”即为本会话授权；记录不得被普通 Agent 命令创建或扩大。授权只覆盖本项目、本 RLL session、本租约及经绑定的两席；停止/换任务周期、换宿主、换项目或撤销后必须重新评估。自动提交回执写 `source_confirmation = session_authorized_auto`、`source_verification = unverified`，另记 `origin_observation = bound_pane_observed`（最终字段名在 P0 冻结），**不得写 `human_asserted` 或宣称已证明人/模型作者**。没有该授权的候选仍停在现有人审 Pane。
 
 这会改变现有宿主提交契约，必须先做兼容版本和审计；旧回执及旧会话保持原解释。与当前 `host-task-update-design` 中“候选仍须独立人类确认”的历史口径有冲突：实施前应在同一分支提交修订决策，清楚写明自动模式的新授权类型及人工模式保持不变，不能悄悄更改旧文档或用假人审绕过门禁。
 
@@ -168,6 +188,85 @@ auto_authorization = {
 | `docs/herdr/` 与 `README.md` | 三入口用法、权限语义、自动授权、恢复操作、发布说明 | 不把单测或 CI 写成真实双席验收 |
 
 内部仓 `super-rll` 不作为本次实现位置；如需引用其产品资料，只提炼公开仓可实现的需求和验收标准，不搬运私有源码、凭证或未经确认的能力宣称。
+
+### 6.1 CLI 分流与安全初始化：按什么顺序改
+
+当前 `cli/src/cli.ts` 在 `switch (cmd)` **之前**调用 `guardCliMutation(cmd, rest)`；现有 `cmdAuto` 随后会调用可能删除 `.dual-agent` 的 `cmdInit`。所以不能只在 `cmdAuto` 末尾加一个 Herdr 分支：命令锁、项目目录与重建行为都已发生。建议按下列顺序实施：
+
+1. 从 `rest` 严格解析 `--host`、`--project`、`--full-auto` 和一个完整的任务参数；未知选项、重复选项、缺值均在任何写入前返回用法错误。无 `--host` 时继续调用旧 `cmdAuto`，并保持原 CLI 回归用例。
+2. 在 `cli.ts` 的分发入口识别 `auto --host herdr`，转入 `cmdAutoHerdr`。此路径内部显式调用 `acquireSessionCommandLock(stateDir(project))`，**只在安全初始化的临界区持锁**；调用 Herdr CLI 和等待 Agent 就绪之前释放短锁。原 `guardCliMutation` 仍保护所有传统命令，不能因早分流而让 Herdr 路径裸写状态。检查 `cli/src/host/guard.ts` 中 `auto`、`init` 的项目路径解析，保证 `--project` 指向目标项目而非启动 shell 的 cwd。
+3. 从 `cmdInit` 抽出纯函数式的初始文件写入逻辑，新增 `initSessionIfAbsent(project, task, requestId)`。先核对目标目录真实路径、符号链接和 `.dual-agent` 是否存在；在项目内独占创建临时初始化目录，写完 `task.md`、轮次、历史和 `session.json` 后 fsync 并原子改名为 `.dual-agent`。目标已存在就返回 `SESSION_EXISTS`，绝不 `rmSync`；临时目录残留返回 `INIT_REQUIRES_REVIEW`，不能自动覆盖。
+4. 初始化前先读 `host inspect` 和 tmux watcher/PID、插件旧记录；若项目已有 identified session、待处理命令锁或未决投递，返回明确状态。调用方再选择查看、恢复或显式新任务流程，不由 `TASK` 字符串触发隐含重置。
+5. 将启动请求 ID、规范项目、session ID、任务 SHA-256、权限配置写为独立启动意图；不复制任务全文。重复同一请求 ID 返回已知阶段，ID 相同而任务摘要不同返回 `DUPLICATE_CONFLICT`。插件启动前后都回读 `host snapshot`，防止初始化与领租约之间被其他进程改写。
+6. `cli/package.json` 的 `bin` 增加 `herdr-rll`，其小入口只转发到同一个 `cmdAutoHerdr`。不要根据 `process.argv[1]` 的文件名暗中改变 `ralph-lisa` 主命令语义。
+
+建议的内部输入与成功回执（**拟定契约，P0 固定字段后编码**）：
+
+```ts
+type HerdrLaunchRequest = {
+  request_id: string;              // UUID，重复请求的唯一键
+  project_realpath: string;
+  task_sha256: string;             // 正文以正式 task.md 为准
+  rll_session_id: string;
+  permission_profile: "interactive" | "full_auto";
+  auto_commit: true;              // 本次 auto 会话的显式授权选择
+};
+
+type HerdrLaunchResult = {
+  status: "started" | "needs_input" | "needs_reconcile" | "not_ready";
+  request_id: string;
+  project_realpath: string;
+  rll_session_id: string;
+  workspace_id?: string;
+  ralph_pane_id?: string;
+  lisa_pane_id?: string;
+  code?: string;
+};
+```
+
+### 6.2 CLI 与插件接线：先验证，随后只保留一条路径
+
+`herdr plugin action invoke` 当前仅接受 action ID，没有 `--workspace` 或正文参数；启动命令返回的是**异步 command log**，不是协调器完成回执。外部 CLI 不能仅看它退出码 0 就宣布任务开始。`plugin pane open` 能传目标 Workspace、`--cwd` 和启动参数，但 popup 退出后不能留下无主后台进程。P0 在临时项目验证两种接线，优先选择 A；B 只在 A 不满足时使用：
+
+| 路径 | 实现步骤 | 必须现场证明 |
+|---|---|---|
+| A：现有 action 承载协调器 | 外部 CLI 创建或选择**一个**项目 Workspace；在该 Workspace 启动声明式短时 helper Pane，由 helper 把启动 request ID 和 Workspace 上下文交给现有 `start` action；action 回读正式任务和启动意图，继续运行既有协调器 | action 收到正确 `workspace_id`、项目真实路径和 request ID；helper 退出后 action 持续心跳；Server 重启时旧 action 被身份围栏阻断；无第二个同项目 Workspace |
+| B：受管理普通 Pane 承载协调器 | CLI 在项目 Workspace 打开标为“RLL 控制”的普通 tab，前台运行 `coordinator.mjs start`；同 Workspace 的另一个 tab 建 Ralph/Lisa 分屏 | 关闭控制 Pane 会可靠停止自动投递并保留可核对状态；S4 非零游标重绑/接续和 stop/pause/resume 均重新通过；Agents 列表只有两席 |
+
+不要先实现 A 和 B 两套协调器。选定后，把插件内 popup 也接到相同的 `launchTask(request)`。`coordinator.mjs` 的 `projectFromContext()` 应检查启动意图中的真实项目、插件 `settings.json` 的 project 和 Herdr Workspace cwd 是否一致；当前配置优先级可能让旧 `settings.json` 把新启动指到另一个项目，必须改为**不一致即拒绝**。`bootstrapSeats()` 目前总是 `workspace create`，需按选定路径改成“目标 Workspace 已由启动器创建则复用并验证其 root pane / tab；否则只创建一次”，并继续记录真实返回的 Pane/Terminal ID，不能推算 ID。
+
+`launchAgent()` 当前没有权限配置参数；为 `interactive/full_auto` 增加经验证的 Claude/Codex 启动 argv，放在 Herdr `agent start ... --` 后，持久记录配置摘要。启动重试只能复用同一配置、同一 Workspace/Pane/Terminal；Claude 信任、Codex 更新/登录提示报 `needs_input`，由用户在原 Pane 处理。`start()` 目前只允许 generation 0，已有会话的恢复仍走现有 S4 显式路径，不拿新任务启动命令绕过它。
+
+启动 CLI 轮询**插件记录 + RLL `host snapshot` + Herdr 两席快照**，直到 `initial_prompted/started` 证据齐全或确定阻断；超时只返回 `START_OUTCOME_UNKNOWN` 和 request ID，随后只读检查，不能再发一次任务。为避免 UI 里出现两个相同项目，A/B 都要求一个项目 Workspace；控制 tab 是流程状态，不创建第三个 Agent。
+
+### 6.3 自动提交：需要穿过哪些现有校验点
+
+现在的检查并非只在 `commit.ts` 一处：`candidate.ts` 固定候选 `source_verification=unverified`，`commit-check.ts` 读取 `confirmation.ts` 的人工记录，`commit.ts` 要求人审，`receipt-store.ts` 校验回执及确认文件，`receipt.ts` 和 `recovery.ts` 又验证完整链，`coordinator.mjs` 的 `checkDelivery` 只接受 `human_asserted`。因此实施 D3/D4 要以**新授权路径与旧人审路径并列**修改下列点：
+
+1. 新增 `cli/src/host/auto-authorization.ts`：在会话初始化/领租约后，由启动器写一次 `session_authorized_auto` 记录，绑定项目、session、授权配置、允许席位、创建入口、状态摘要及撤销状态。Ralph/Lisa Pane 内命令不能自己创建或扩大该授权。`host snapshot` 只显示授权状态和摘要，不打印私有任务。
+2. 新增 `cli/src/host/origin-observation.ts`：持久记录候选 ID、提交请求 ID、真实 Workspace/Pane/Terminal、Agent kind/name、session、lease、binding generation、观察时间和候选 SHA-256。记录由插件适配器在调用 `candidate-propose.mjs` 时取得实时 Herdr 查询后写入，来源类别为 `bound_pane_observed`；仍保留 `source_verification=unverified`。P0 必须验证观测链在 Agent 工作/阻塞、Pane 移动及 Server 重启时是否可靠。
+3. 扩展 `host commit-check` 返回 `source_gate = human_required | auto_authorized | blocked`，并给出命中的授权 ID/摘要。它仍是只读的；没有完整观察、过期授权、内容/轮次/任务版本不一致时为 `blocked` 或退回人审，绝不能标自动可提交。
+4. 在 `commitHostCandidate` 持有宿主锁后重新核对授权与观察；人工分支继续要求 `readHumanConfirmation()`，自动分支要求匹配 `readAutoAuthorization()` 和 `readOriginObservation()`。两分支共用现有 `checkAndPersistBlockedSubmission()`、意图、业务写入、generation 和 receipt 代码。自动分支的回执为 `source_confirmation=session_authorized_auto`、`source_verification=unverified`、`origin_observation=bound_pane_observed`；人工分支保持原字段。检查失败不得尝试写入人工确认文件。
+5. 修改 `receipt-store.ts` 的回执类型、写入和全账本校验，新增自动授权/观察记录的交叉引用；同步更新 `receipt.ts`、`recovery.ts`、`snapshot.ts` 对两种回执的读取。旧记录无自动字段时按原有人审 schema 解析，**不迁移或改写旧回执**。`coordinator.mjs` 的 `checkDelivery` 只接受经 CLI 校验的 `committed` 且来源为合法人审或自动授权的回执，不能接受单独的 Pane 文本。
+6. 在同一套 host/transaction 故障注入中覆盖“写授权后崩溃、观察记录后崩溃、写意图后崩溃、业务文件写中崩溃、回执持久化后断线”。每个点只允许已知结果、幂等同 ID 返回，或 `NEEDS_RECONCILE`；禁止用另一个 request ID 绕过旧意图。
+
+会话授权是产品政策，不是 Herdr 的来源证明。若产品负责人不接受“用户在启动时授权本会话自动提交绑定 Pane 候选”的语义，D3 不可交付为无人值守；可继续保留现有人审版，但必须在产品说明和验收中如实标注。
+
+### 6.4 自动循环、完成状态和聊天改任务
+
+`coordinator.mjs` 的 `runActiveLoop()` 目前每秒检查控制与投递，每五秒心跳；`checkDelivery()` 从正式回执驱动交接。D4 在这里**只增加自动候选提交流程的观察和回执校验**，不另写一个读取 `turn.txt` 然后直接 `agent prompt` 的 watcher。先验证候选由 Agent Pane 结构化提议，再等 `host commit` 的持久结果，最后复用 `deliveryFile()/submitPrompt()` 的一次性交接。`HOST_BUSY` 只有限次只读退避，超过界限进入待核对；`agent.prompt` 模糊结果维持原 `needs_reconcile`，不自动重发。
+
+完成/停止条件不能从 Herdr `done` 猜测。P0 应核对 RLL 公开 CLI 的 `PASS/CONSENSUS/NEEDS_WORK` 轮次语义和正式回执，定义 `consensus_reached`、`awaiting_user`、`active` 三种可观察业务状态；协调器只在 RLL 正式共识成立且无未投递回执时停止自动提示。`NEEDS_WORK` 继续给 Ralph，策略或测试失败则留在当前席位并显示阻断。控制 Pane 显示“Agent 正在工作”和“RLL 是否已完成”两个不同字段。
+
+D5 按 [任务更新设计](host-task-update-design-2026-11-06.md)新增独立事件，不在宿主租约期间调用旧 `update-task`。具体切入点是 `cli/src/host/cli.ts` 新增 `task-update-check/task-update` 分支；业务层新增任务更新意图与回执；`business.ts`、`generation.ts`、`snapshot.ts` 和回执链要能识别该事件，`coordinator.mjs` 增加对应的一次性任务更新投递。Ralph 角色指令要求：用户明确变更任务时先调用受控任务更新命令，拿到正式回执后再提交下一份候选。旧候选在新任务版本下由 `commit-check` 拒绝。已有 `host-task-update-design` 的人工候选门禁表述要在 D3 决策落定后同步修订，避免文档互相矛盾。
+
+### 6.5 代码审查时的不可退让检查
+
+- `--host herdr` 的任何失败路径都不得调用 `cmdInit` 的删除分支、旧 tmux watcher 或传统 `submit-*` 写入口。
+- 临时项目、持久 request ID、候选 ID、receipt ID、generation、binding generation 在日志和诊断中能对应；任务正文与原生 Agent Session ID 不进入普通日志。
+- 自动回执绝不出现 `human_asserted`，人工回执仍必须有逐份人工确认记录。GitHub CI 与模拟 Herdr 通过不等于真实两席验收。
+- 一个项目最多一个活跃 RLL 宿主协调器；一个 Herdr Workspace 中只有 Ralph、Lisa 两个 Agent 席位。插件控制 tab 不进入 Agents 列表。
+- 更新/卸载插件、关闭 popup、关闭客户端、重启 Server、关闭控制 Pane 是不同生命周期事件；每种场景都要明确协调器和租约结果，不能从 PID 或界面消失猜测已停止。
 
 ## 7. 分支、提交、推送与回滚
 
