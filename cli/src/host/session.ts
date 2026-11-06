@@ -3,13 +3,13 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 /** Create identity only after init has populated its normal business files. */
-export function writeSessionIdentity(projectDir: string, stateDir: string): string {
+export function writeSessionIdentity(projectDir: string, stateDir: string, finalStatePath?: string): string {
   const sessionId = crypto.randomUUID();
   const identity = {
     schema: 1,
     session_id: sessionId,
     project_realpath: fs.realpathSync.native(projectDir),
-    state_realpath: fs.realpathSync.native(stateDir),
+    state_realpath: finalStatePath ?? fs.realpathSync.native(stateDir),
     created_at: new Date().toISOString(),
   };
   const identityPath = path.join(stateDir, "session.json");

@@ -34,7 +34,7 @@ import { checkRalph, checkLisa } from "./policy.js";
 import { checkSubmission, extractLastTag } from "./submission.js";
 import { evaluateGate } from "./gate.js";
 import { applyRalphSubmission, applyLisaSubmission } from "./submission-write.js";
-import { writeSessionIdentity } from "./host/session.js";
+import { writeInitialSessionFiles } from "./herdr/session-init.js";
 import { assertHostMutationAllowed, releaseSessionCommandLock } from "./host/guard.js";
 
 function line(ch = "=", len = 40): string {
@@ -169,34 +169,7 @@ export function cmdInit(args: string[]): void {
   fs.rmSync(dir, { recursive: true, force: true });
   fs.mkdirSync(dir, { recursive: true });
 
-  const ts = timestamp();
-
-  writeFile(
-    path.join(dir, "task.md"),
-    `# Task\n\n${task}\n\n---\nCreated: ${ts}\n`
-  );
-  writeFile(path.join(dir, "round.txt"), "1");
-  writeFile(path.join(dir, "step.txt"), "planning");
-  writeFile(path.join(dir, "turn.txt"), "ralph");
-  writeFile(path.join(dir, ".project_root"), process.cwd()); // persist project root for smoke-test cwd
-  writeFile(path.join(dir, "last_action.txt"), "(No action yet)");
-  writeFile(
-    path.join(dir, "plan.md"),
-    "# Plan\n\n(To be drafted by Ralph and reviewed by Lisa)\n"
-  );
-  writeFile(
-    path.join(dir, "work.md"),
-    "# Ralph Work\n\n(Waiting for Ralph to submit)\n"
-  );
-  writeFile(
-    path.join(dir, "review.md"),
-    "# Lisa Review\n\n(Waiting for Lisa to respond)\n"
-  );
-  writeFile(
-    path.join(dir, "history.md"),
-    `# Collaboration History\n\n**Task**: ${task}\n**Started**: ${ts}\n`
-  );
-  writeSessionIdentity(process.cwd(), dir);
+  writeInitialSessionFiles(process.cwd(), dir, task);
 
   console.log(line());
   console.log("Session Initialized");
