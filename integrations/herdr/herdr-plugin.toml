@@ -1,9 +1,9 @@
 id = "ralph-lisa.loop"
 name = "Ralph-Lisa Loop"
-version = "0.1.1"
+version = "0.1.2"
 min_herdr_version = "0.9.4"
 description = "Run Ralph-Lisa seats and host coordination inside Herdr"
-platforms = ["macos", "linux"]
+platforms = ["macos"]
 
 [[build]]
 command = ["npm", "ci", "--prefix", "../../cli", "--ignore-scripts", "--no-audit", "--no-fund"]
