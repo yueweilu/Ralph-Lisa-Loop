@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { nativeSessionReference } from "./native-session.mjs";
 import { requireActiveSnapshot } from "./snapshot-diagnostic.mjs";
-import { resolveCliArgv } from "./cli-command.mjs";
+import { agentCliGuidance, resolveCliArgv } from "./cli-command.mjs";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const stateRoot = process.env.HERDR_PLUGIN_STATE_DIR;
@@ -210,6 +210,7 @@ function deliverInitial(paths, record, cli, herdr, plan, taskFile) {
   const message = `Initial Ralph-Lisa task. Project: ${paths.real}. Session: ${record.session_id}. ` +
     `You are Ralph in round ${snapshot.round}. Read ${taskFile} and the current RLL state, ` +
     "then work in the project. Prepare a candidate file and follow the RLL host contract. " +
+    `${agentCliGuidance(cli)} ` +
     "The current source gate requires a human to review and confirm each candidate before commit; do not bypass it.";
   submitPrompt(paths, record, herdr, plan, "ralph", message,
     initialFile(paths, record.session_id), { session_id: record.session_id, generation: 0 });
@@ -254,7 +255,8 @@ function checkDelivery(paths, record, cli, herdr, plan) {
   const message = `Ralph-Lisa committed handoff. Project: ${paths.real}. Session: ${record.session_id}. ` +
     `Receipt: ${receipt.request_id}. Generation: ${receipt.generation_after}. ` +
     `It is your ${role} turn in round ${receipt.round_after}. Read the current RLL state and ` +
-    "work/review files before acting. Submit through the RLL host contract; preserve its human source confirmation gate.";
+    `work/review files before acting. ${agentCliGuidance(cli)} ` +
+    "Submit through the RLL host contract; preserve its human source confirmation gate.";
   const file = deliveryFile(paths, receipt.request_id);
   submitPrompt(paths, record, herdr, plan, role, message, file,
     { request_id: receipt.request_id, generation: receipt.generation_after });

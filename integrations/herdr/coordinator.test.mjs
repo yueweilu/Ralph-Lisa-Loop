@@ -138,7 +138,9 @@ test("coordinator claims and binds observed seats, heartbeats, then releases on 
     const started = await waitForLine(child, (value) => value.status === "started" || value.status === "needs_reconcile");
     assert.equal(started.status, "started", JSON.stringify(started));
     assert.equal(fs.readFileSync(prompts, "utf8").trim().split("\n").length, 1);
-    assert.match(JSON.parse(fs.readFileSync(prompts, "utf8").trim()).message, /task\.md/);
+    const initialPrompt = JSON.parse(fs.readFileSync(prompts, "utf8").trim()).message;
+    assert.match(initialPrompt, /task\.md/);
+    assert.ok(initialPrompt.includes(cli));
     const recovery = await runWithHostBusyRetry([path.join(root, "actions.mjs"), "recovery-check"]);
     assert.equal(recovery.status, 0, recovery.stdout + recovery.stderr);
     const audited = JSON.parse(recovery.stdout);
@@ -252,6 +254,7 @@ test("coordinator claims and binds observed seats, heartbeats, then releases on 
     }
     const first = await submit("ralph", 0, "[PLAN] Define the change.\n\nTest Plan: npm test\n");
     assert.equal((await waitForPrompts(2))[1].role, "lisa");
+    assert.ok(promptRows()[1].message.includes(cli));
     assert.equal((await host("receipt", ["--request-id", first.request_id])).request_id, first.request_id);
     await new Promise((resolve) => setTimeout(resolve, 1500));
     assert.equal(promptRows().length, 2, "polling must not replay a committed receipt");

@@ -14,3 +14,12 @@ export function resolveCliArgv(configured, root = pluginRoot) {
   }
   return ["ralph-lisa"];
 }
+
+export function agentCliGuidance(argv, root = pluginRoot) {
+  const ownCli = path.resolve(root, "../../cli/dist/cli.js");
+  if (argv.length !== 2 || argv[0] !== process.execPath || argv[1] !== ownCli)
+    return "Use the RLL CLI configured for this Herdr plugin when running host commands.";
+  const quote = (part) => "'" + part.replaceAll("'", "'\\''") + "'";
+  return `Run RLL host commands with ${quote(argv[0])} ${quote(ownCli)} ` +
+    "from this plugin's checkout. Use this command for snapshot, propose, and other host checks.";
+}
