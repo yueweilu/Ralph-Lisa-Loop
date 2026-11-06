@@ -14,8 +14,21 @@ describe("Herdr CLI entry points", () => {
     const root = fs.mkdtempSync("/tmp/rll-entry-");
     const project = path.join(root, "project");
     fs.mkdirSync(project);
+    const fakeHerdr = path.join(root, "herdr-stub.js");
+    fs.writeFileSync(fakeHerdr, `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args.length === 1 && args[0] === "--version") {
+  console.log("herdr 0.9.4");
+} else if (args.slice(-3).join(" ") === "status server --json") {
+  console.log(JSON.stringify({ status: "not_running", running: false }));
+} else {
+  process.exitCode = 2;
+}
+`);
+    fs.chmodSync(fakeHerdr, 0o700);
     const env = { ...process.env, XDG_CONFIG_HOME: path.join(root, "config"),
-      XDG_STATE_HOME: path.join(root, "state"), RLL_HERDR_SESSION: `rll-test-${crypto.randomUUID().slice(0, 8)}` };
+      XDG_STATE_HOME: path.join(root, "state"), HERDR_BIN_PATH: fakeHerdr,
+      RLL_HERDR_SESSION: `rll-test-${crypto.randomUUID().slice(0, 8)}` };
     try {
       const long = spawnSync(process.execPath, [cli, "auto", "--host", "herdr", "--project", project, "Write a README"],
         { cwd: root, env, encoding: "utf8", timeout: 15000 });
