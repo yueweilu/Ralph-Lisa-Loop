@@ -4,8 +4,9 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { prepareLisaSubmission, prepareRalphSubmission } from "../submission-write.js";
+import { acquireSessionCommandLock } from "../host/guard.js";
 
 const cli = path.join(__dirname, "..", "cli.js");
 const commitModule = path.join(__dirname, "..", "host", "commit.js");
@@ -212,4 +213,76 @@ function runMatrix(role: "ralph" | "lisa") {
 describe("host commit process crash matrix", () => {
   it("freezes Ralph write cut points and safely recognizes durable receipts", () => runMatrix("ralph"));
   it("freezes Lisa write cut points and safely recognizes durable receipts", () => runMatrix("lisa"));
+});
+
+describe("Lisa commit short-lock contention", () => {
+  it("waits only before lock acquisition, then commits once after the lock clears", async () => {
+    const item = fixture("lisa");
+    const release = acquireSessionCommandLock(item.state);
+    let held = true;
+    let child: ReturnType<typeof spawn> | null = null;
+    try {
+      const script = `
+        const fs = require('node:fs');
+        const path = require('node:path');
+        const original = fs.mkdirSync;
+        let announced = false;
+        fs.mkdirSync = function(dir, ...args) {
+          if (!announced && path.basename(dir) === '.rll-host-command-lock') {
+            announced = true;
+            process.send('lock-attempt');
+          }
+          return original.call(this, dir, ...args);
+        };
+        process.argv = [process.execPath, process.argv[1], ...process.argv.slice(2)];
+        require(process.argv[1]);
+      `;
+      const spawned = spawn(process.execPath, ["-e", script, cli, ...item.commitArgs],
+        { cwd: item.project, stdio: ["ignore", "pipe", "pipe", "ipc"] });
+      child = spawned;
+      let stdout = "";
+      let stderr = "";
+      spawned.stdout!.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
+      spawned.stderr!.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+      const finished = new Promise<number | null>((resolve, reject) => {
+        spawned.on("error", reject);
+        spawned.on("close", resolve);
+      });
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("Child did not try the command lock")), 5000);
+        spawned.once("message", (message) => {
+          clearTimeout(timer);
+          if (message !== "lock-attempt") reject(new Error("Unexpected child message"));
+          else resolve();
+        });
+      });
+      await new Promise((resolve) => setTimeout(resolve, 75));
+      release();
+      held = false;
+      assert.equal(await finished, 0, stderr || stdout);
+      assert.equal(JSON.parse(stdout).status, "committed");
+      assert.equal(JSON.parse(item.run("host", "snapshot", "--project", item.project,
+        "--json").stdout as string).generation, 2);
+      assert.equal(fs.readdirSync(path.join(item.host, "receipts"))
+        .filter((name) => name.endsWith(".json")).length, 2);
+    } finally {
+      if (held) release();
+      child?.kill();
+      fs.rmSync(item.project, { recursive: true, force: true });
+    }
+  });
+
+  it("returns HOST_BUSY without a Lisa receipt when the lock stays held", () => {
+    const item = fixture("lisa");
+    const release = acquireSessionCommandLock(item.state);
+    try {
+      const result = item.run(...item.commitArgs);
+      assert.equal(result.status, 4, String(result.stdout));
+      assert.equal(JSON.parse(result.stdout as string).code, "HOST_BUSY");
+      assert.equal(fs.existsSync(path.join(item.host, "receipts", `${item.requestId}.json`)), false);
+    } finally {
+      release();
+      fs.rmSync(item.project, { recursive: true, force: true });
+    }
+  });
 });

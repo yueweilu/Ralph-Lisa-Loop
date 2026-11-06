@@ -21,8 +21,25 @@ import {
 import { persistHostIntent, readHostIntent } from "./transaction.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const COMMIT_LOCK_WAIT_MS = 500;
+const COMMIT_LOCK_RETRY_MS = 25;
+const commitLockWaiter = new Int32Array(new SharedArrayBuffer(4));
 
 export type HostCommitOutcome = CommittedHostReceipt | RejectedHostReceipt;
+
+function acquireCommitLock(state: string): () => void {
+  const deadline = Date.now() + COMMIT_LOCK_WAIT_MS;
+  for (;;) {
+    try { return acquireHostLock(state); }
+    catch (error) {
+      if (!(error instanceof HostContractError) || error.code !== "HOST_BUSY" || Date.now() >= deadline)
+        throw error;
+      // The lock was not acquired and no commit write has begun. Wait briefly
+      // for a heartbeat or other short command, then validate everything anew.
+      Atomics.wait(commitLockWaiter, 0, 0, Math.min(COMMIT_LOCK_RETRY_MS, deadline - Date.now()));
+    }
+  }
+}
 
 function matchesRequest(
   outcome: HostCommitOutcome, leaseId: string, requestId: string, candidateId: string,
@@ -89,7 +106,7 @@ export function commitHostCandidate(
     throw new HostContractError("ADOPT_REQUIRED", 3, "An identified session is required for commit");
   }
   const state = initial.state_realpath;
-  const release = acquireHostLock(state);
+  const release = acquireCommitLock(state);
   try {
     const current = inspectProject(root);
     if (current.state_realpath !== state || current.session_id !== initial.session_id) {
