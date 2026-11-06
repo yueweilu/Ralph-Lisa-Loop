@@ -58,6 +58,7 @@ function files(project) {
   const key = crypto.createHash("sha256").update(real).digest("hex");
   const dir = path.join(stateRoot, "sessions", key);
   return { real, dir, record: path.join(dir, "record.json"),
+    retryLock: path.join(dir, "preclaim-retry.lock"),
     stop: path.join(dir, "stop.json"), control: path.join(dir, "control.json"),
     rebind: path.join(dir, "rebind.pending.json"),
     continuation: path.join(dir, "continuation.pending.json") };
@@ -417,7 +418,18 @@ function missingAgent(herdr, role) {
   return result.code !== 0 && result.value?.error?.code === "agent_not_found";
 }
 
-async function waitForAgent(herdr, role, kind, workspaceId, paneId, project) {
+function requireSavedPane(herdr, workspaceId, paneId, terminalId, project) {
+  const result = call(herdr, ["pane", "get", paneId]);
+  const pane = result.value?.result?.pane;
+  let cwd = null;
+  try { cwd = fs.realpathSync.native(pane.cwd); } catch { /* Fail closed. */ }
+  if (result.code !== 0 || pane?.workspace_id !== workspaceId ||
+      pane?.pane_id !== paneId || pane?.terminal_id !== terminalId ||
+      cwd !== project) throw new Error("PRECLAIM_PANE_CHANGED");
+  return pane;
+}
+
+async function waitForAgent(herdr, role, kind, workspaceId, paneId, project, terminalId) {
   let announced = false;
   for (let attempt = 0; attempt < 120; attempt++) {
     const result = call(herdr, ["agent", "get", role]);
@@ -425,7 +437,8 @@ async function waitForAgent(herdr, role, kind, workspaceId, paneId, project) {
     let cwd = null;
     try { cwd = fs.realpathSync.native(agent.cwd); } catch { /* Fail closed. */ }
     if (result.code !== 0 || agent?.name !== role || agent?.agent !== kind ||
-        agent?.workspace_id !== workspaceId || agent?.pane_id !== paneId || cwd !== project)
+        agent?.workspace_id !== workspaceId || agent?.pane_id !== paneId || cwd !== project ||
+        (terminalId && agent?.terminal_id !== terminalId))
       throw new Error("AGENT_START_MISMATCH");
     if (agent.interactive_ready && ["idle", "done"].includes(agent.agent_status)) return;
     if (!announced && agent.agent_status === "blocked") {
@@ -438,12 +451,28 @@ async function waitForAgent(herdr, role, kind, workspaceId, paneId, project) {
   throw new Error("AGENT_READY_TIMEOUT");
 }
 
-async function launchAgent(herdr, role, kind, workspaceId, paneId, project) {
-  const launched = call(herdr, ["agent", "start", role, "--kind", kind,
-    "--pane", paneId, "--timeout", "60000"], { timeoutMs: 70000 });
-  if (launched.code !== 0 && launched.value?.error?.code !== "agent_not_ready")
-    throw new Error(launched.value?.error?.code || launched.error || "AGENT_START_FAILED");
-  await waitForAgent(herdr, role, kind, workspaceId, paneId, project);
+async function launchAgent(herdr, role, kind, workspaceId, paneId, project, terminalId) {
+  for (let attempt = 0; attempt < 12; attempt++) {
+    const launched = call(herdr, ["agent", "start", role, "--kind", kind,
+      "--pane", paneId, "--timeout", "60000"], { timeoutMs: 70000 });
+    const code = launched.value?.error?.code;
+    if (launched.code === 0 || code === "agent_not_ready") {
+      await waitForAgent(herdr, role, kind, workspaceId, paneId, project, terminalId);
+      return;
+    }
+    if (code !== "agent_pane_busy" || !terminalId)
+      throw new Error(code || launched.error || "AGENT_START_FAILED");
+    const pane = requireSavedPane(herdr, workspaceId, paneId, terminalId, project);
+    const observed = call(herdr, ["agent", "get", role]);
+    if (observed.code === 0) {
+      await waitForAgent(herdr, role, kind, workspaceId, paneId, project, terminalId);
+      return;
+    }
+    if (observed.value?.error?.code !== "agent_not_found" || pane.agent)
+      throw new Error("AGENT_PANE_BUSY_UNCERTAIN");
+    if (attempt === 11) throw new Error("agent_pane_busy");
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
 }
 
 async function bootstrapSeats(paths, record, herdr) {
@@ -457,9 +486,13 @@ async function bootstrapSeats(paths, record, herdr) {
       created.value?.result?.root_pane?.workspace_id !== workspaceId)
     throw new Error("WORKSPACE_CREATE_UNCERTAIN");
   record = { ...record, phase: "workspace_created", workspace_id: workspaceId,
-    ralph_pane_id: rootPaneId };
+    ralph_pane_id: rootPaneId,
+    ralph_terminal_id: created.value.result.root_pane.terminal_id ?? null };
   durableWrite(paths.record, record);
-  await launchAgent(herdr, "ralph", "claude", workspaceId, rootPaneId, paths.real);
+  record = { ...record, phase: "ralph_start_pending", ralph_start_attempted: true };
+  durableWrite(paths.record, record);
+  await launchAgent(herdr, "ralph", "claude", workspaceId, rootPaneId, paths.real,
+    record.ralph_terminal_id);
   record = { ...record, phase: "ralph_ready" };
   durableWrite(paths.record, record);
   const split = requireHerdrResult(call(herdr, ["pane", "split", rootPaneId,
@@ -467,10 +500,109 @@ async function bootstrapSeats(paths, record, herdr) {
   "pane", "PANE_SPLIT_UNCERTAIN");
   if (!split.pane_id || split.workspace_id !== workspaceId || split.pane_id === rootPaneId)
     throw new Error("PANE_SPLIT_UNCERTAIN");
-  record = { ...record, phase: "pane_created", lisa_pane_id: split.pane_id };
+  record = { ...record, phase: "pane_created", lisa_pane_id: split.pane_id,
+    lisa_terminal_id: split.terminal_id ?? null };
   durableWrite(paths.record, record);
-  await launchAgent(herdr, "lisa", "codex", workspaceId, split.pane_id, paths.real);
+  record = { ...record, phase: "lisa_start_pending", lisa_start_attempted: true };
+  durableWrite(paths.record, record);
+  await launchAgent(herdr, "lisa", "codex", workspaceId, split.pane_id, paths.real,
+    record.lisa_terminal_id);
   record = { ...record, phase: "lisa_ready" };
+  durableWrite(paths.record, record);
+  const context = { workspace_id: workspaceId, workspace_cwd: paths.real };
+  const preflight = call([process.execPath, path.join(root, "actions.mjs")],
+    ["seat-preflight"], { env: { HERDR_WORKSPACE_ID: workspaceId,
+      HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify(context) } });
+  if (preflight.code !== 0 || preflight.value?.status !== "ready" ||
+      preflight.value?.binding_plan?.workspace_id !== workspaceId)
+    throw new Error(preflight.value?.code || "BOOTSTRAP_PREFLIGHT_FAILED");
+  return { plan: preflight.value.binding_plan, record };
+}
+
+function oldCoordinatorPresent(pid) {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return error.code !== "ESRCH"; }
+}
+
+function claimPreclaimRetry(paths, initial) {
+  try { durableWrite(paths.retryLock, { schema: 1, pid: process.pid }, true); }
+  catch (error) {
+    throw new Error(error.code === "EEXIST" ? "PRECLAIM_RETRY_IN_PROGRESS" : "RETRY_LOCK_FAILED");
+  }
+  try {
+    const names = fs.readdirSync(paths.dir).sort();
+    if (names.length !== 2 || names[0] !== "preclaim-retry.lock" ||
+        names[1] !== "record.json" || initial.generation !== null ||
+        initial.last_receipt_id !== null)
+      throw new Error("PRECLAIM_STATE_REQUIRES_REVIEW");
+    const old = readRecord(paths.record);
+    if (old.schema !== 1 || old.project_realpath !== paths.real ||
+        old.session_id !== initial.session_id || old.expected_digest !== initial.state_digest ||
+        !UUID.test(old.owner_id ?? "") || !Number.isSafeInteger(old.pid) || old.pid <= 0 ||
+        old.plan != null || old.lease_id != null ||
+        !["intent", "workspace_created", "ralph_start_pending", "ralph_ready",
+          "pane_created", "lisa_start_pending", "lisa_ready", "needs_reconcile"].includes(old.phase) ||
+        (old.workspace_id && (!old.ralph_pane_id || !old.ralph_terminal_id)) ||
+        (old.lisa_pane_id && (!old.workspace_id || !old.lisa_terminal_id)) ||
+        (!old.workspace_id && (old.ralph_pane_id || old.lisa_pane_id)))
+      throw new Error("PRECLAIM_RECORD_REQUIRES_REVIEW");
+    if (oldCoordinatorPresent(old.pid)) throw new Error("COORDINATOR_EXISTS");
+    const record = { ...old, phase: "preclaim_retry", pid: process.pid };
+    durableWrite(paths.record, record);
+    return record;
+  } finally {
+    fs.unlinkSync(paths.retryLock);
+  }
+}
+
+async function resumePreclaimSeats(paths, record, herdr) {
+  if (!record.workspace_id) return bootstrapSeats(paths, record, herdr);
+  const workspaceId = record.workspace_id;
+  const workspace = call(herdr, ["workspace", "get", workspaceId]);
+  if (workspace.code !== 0 ||
+      workspace.value?.result?.workspace?.workspace_id !== workspaceId)
+    throw new Error("PRECLAIM_WORKSPACE_CHANGED");
+  const ralphPane = requireSavedPane(herdr, workspaceId, record.ralph_pane_id,
+    record.ralph_terminal_id, paths.real);
+  if (missingAgent(herdr, "ralph")) {
+    if ((record.ralph_start_attempted && record.error !== "agent_pane_busy") ||
+        ralphPane.agent)
+      throw new Error("PRECLAIM_RALPH_MISSING_REQUIRES_REVIEW");
+    record = { ...record, phase: "ralph_start_pending", ralph_start_attempted: true };
+    durableWrite(paths.record, record);
+    await launchAgent(herdr, "ralph", "claude", workspaceId, record.ralph_pane_id,
+      paths.real, record.ralph_terminal_id);
+  } else {
+    await waitForAgent(herdr, "ralph", "claude", workspaceId,
+      record.ralph_pane_id, paths.real, record.ralph_terminal_id);
+  }
+  record = { ...record, phase: "ralph_ready" };
+  durableWrite(paths.record, record);
+  if (!record.lisa_pane_id) {
+    const split = requireHerdrResult(call(herdr, ["pane", "split", record.ralph_pane_id,
+      "--direction", "right", "--cwd", paths.real, "--focus"]),
+    "pane", "PANE_SPLIT_UNCERTAIN");
+    if (!split.pane_id || split.workspace_id !== workspaceId ||
+        split.pane_id === record.ralph_pane_id || !split.terminal_id)
+      throw new Error("PANE_SPLIT_UNCERTAIN");
+    record = { ...record, phase: "pane_created", lisa_pane_id: split.pane_id,
+      lisa_terminal_id: split.terminal_id };
+    durableWrite(paths.record, record);
+  }
+  const lisaPane = requireSavedPane(herdr, workspaceId, record.lisa_pane_id,
+    record.lisa_terminal_id, paths.real);
+  if (missingAgent(herdr, "lisa")) {
+    if ((record.lisa_start_attempted && record.error !== "agent_pane_busy") || lisaPane.agent)
+      throw new Error("PRECLAIM_LISA_MISSING_REQUIRES_REVIEW");
+    record = { ...record, phase: "lisa_start_pending", lisa_start_attempted: true };
+    durableWrite(paths.record, record);
+    await launchAgent(herdr, "lisa", "codex", workspaceId, record.lisa_pane_id,
+      paths.real, record.lisa_terminal_id);
+  } else {
+    await waitForAgent(herdr, "lisa", "codex", workspaceId,
+      record.lisa_pane_id, paths.real, record.lisa_terminal_id);
+  }
+  record = { ...record, phase: "lisa_ready", error: undefined };
   durableWrite(paths.record, record);
   const context = { workspace_id: workspaceId, workspace_cwd: paths.real };
   const preflight = call([process.execPath, path.join(root, "actions.mjs")],
@@ -503,33 +635,50 @@ async function start() {
     emit({ status: "not_ready", code: error.message || "TASK_FILE_INVALID" }, 3);
     return;
   }
-  const preflight = call([process.execPath, path.join(root, "actions.mjs")], ["seat-preflight"]);
-  const bootNeeded = preflight.value?.code === "AGENT_MISSING";
-  let plan = preflight.value?.status === "ready" ? preflight.value?.binding_plan : null;
-  if (!plan && !bootNeeded) {
-    emit({ status: "not_ready", code: preflight.value?.code || "SEAT_PREFLIGHT_FAILED" }, 3);
-    return;
-  }
   const paths = files(initial.project_realpath);
   fs.mkdirSync(paths.dir, { recursive: true, mode: 0o700 });
   if (initialPromptExists(paths, initial.session_id)) {
     emit({ status: "not_ready", code: "INITIAL_PROMPT_REQUIRES_RECOVERY" }, 3);
     return;
   }
-  const ownerId = crypto.randomUUID();
-  let record = { schema: 1, phase: "intent", owner_id: ownerId, pid: process.pid,
-    project_realpath: paths.real, session_id: initial.session_id,
-    expected_digest: initial.state_digest, plan };
-  try { durableWrite(paths.record, record, true); }
-  catch (error) {
-    emit({ status: "not_ready", code: error.code === "EEXIST" ? "COORDINATOR_EXISTS" : "STATE_WRITE_FAILED" }, 4);
+  let record;
+  let plan = null;
+  let bootNeeded = false;
+  const retry = fs.existsSync(paths.record);
+  try {
+    if (retry) {
+      record = claimPreclaimRetry(paths, initial);
+    } else {
+      if (fs.readdirSync(paths.dir).length !== 0)
+        throw new Error("PRECLAIM_STATE_REQUIRES_REVIEW");
+      const preflight = call([process.execPath, path.join(root, "actions.mjs")], ["seat-preflight"]);
+      bootNeeded = preflight.value?.code === "AGENT_MISSING";
+      plan = preflight.value?.status === "ready" ? preflight.value?.binding_plan : null;
+      if (!plan && !bootNeeded) {
+        emit({ status: "not_ready", code: preflight.value?.code || "SEAT_PREFLIGHT_FAILED" }, 3);
+        return;
+      }
+      record = { schema: 1, phase: "intent", owner_id: crypto.randomUUID(), pid: process.pid,
+        project_realpath: paths.real, session_id: initial.session_id,
+        expected_digest: initial.state_digest, plan };
+      try { durableWrite(paths.record, record, true); }
+      catch (error) {
+        if (error.code === "EEXIST") throw new Error("COORDINATOR_EXISTS");
+        throw error;
+      }
+    }
+  } catch (error) {
+    emit({ status: "not_ready", code: error.message || "STATE_WRITE_FAILED" }, 4);
     return;
   }
+  const ownerId = record.owner_id;
   const cli = config().cli;
   const herdr = [process.env.HERDR_BIN_PATH || "herdr"];
   try {
-    if (bootNeeded) {
-      const boot = await bootstrapSeats(paths, record, herdr);
+    if (retry || bootNeeded) {
+      const boot = retry
+        ? await resumePreclaimSeats(paths, record, herdr)
+        : await bootstrapSeats(paths, record, herdr);
       plan = boot.plan;
       record = { ...boot.record, phase: "seats_ready", plan };
       durableWrite(paths.record, record);
