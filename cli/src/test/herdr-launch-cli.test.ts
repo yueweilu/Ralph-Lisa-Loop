@@ -82,7 +82,8 @@ const tail = args.slice(2).join(" ");
 if (args[0] === "--version") console.log("herdr 0.9.4");
 else if (tail === "status server --json") console.log(JSON.stringify({ status: "running", running: true }));
 else if (tail === "plugin list --json") console.log(JSON.stringify({ result: { plugins: [
-  { plugin_id: "ralph-lisa.loop", enabled: true, panes: [{ id: "coordinator" }] }
+  { plugin_id: "ralph-lisa.loop", version: process.env.FAKE_PLUGIN_VERSION || "0.1.4",
+    enabled: true, panes: [{ id: "coordinator" }] }
 ] } }));
 else if (tail === "workspace get w1") console.log(JSON.stringify({ result: { workspace: { workspace_id: "w1" } } }));
 else if (tail === "pane list --workspace w1") console.log(JSON.stringify({ result: { panes: [{ cwd: process.env.FAKE_OTHER }] } }));
@@ -97,6 +98,14 @@ else process.exitCode = 2;
             RLL_HERDR_REUSE_WORKSPACE_ID: "w1", FAKE_OTHER: other } });
       assert.equal(result.status, 3, result.stdout + result.stderr);
       assert.match(result.stderr, /WORKSPACE_PROJECT_MISMATCH/);
+      assert.equal(fs.existsSync(path.join(project, ".dual-agent")), false);
+      const outdated = spawnSync(process.execPath,
+        [cli, "auto", "--host", "herdr", "--project", project, "Task"],
+        { cwd: root, encoding: "utf8", timeout: 15000,
+          env: { ...process.env, HERDR_BIN_PATH: fakeHerdr, RLL_HERDR_SESSION: "rll-test",
+            FAKE_PLUGIN_VERSION: "0.1.2" } });
+      assert.equal(outdated.status, 3);
+      assert.match(outdated.stderr, /HERDR_PLUGIN_VERSION_REQUIRED/);
       assert.equal(fs.existsSync(path.join(project, ".dual-agent")), false);
     } finally { fs.rmSync(root, { recursive: true, force: true }); }
   });

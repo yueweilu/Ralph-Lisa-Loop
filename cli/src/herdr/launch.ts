@@ -34,6 +34,16 @@ function command(args: string[], timeout = 15000): HerdrResponse {
   catch { throw new HerdrLaunchError("HERDR_RESPONSE_INVALID"); }
 }
 
+function atLeastVersion(actual: string, minimum: [number, number, number]): boolean {
+  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(actual);
+  if (!match) return false;
+  const found = match.slice(1).map(Number);
+  for (let i = 0; i < 3; i++) {
+    if (found[i] !== minimum[i]) return found[i] > minimum[i];
+  }
+  return true;
+}
+
 function preflight(): void {
   const version = spawnSync(process.env.HERDR_BIN_PATH || "herdr", ["--version"],
     { encoding: "utf8", timeout: 10000, stdio: ["ignore", "pipe", "pipe"] });
@@ -50,6 +60,8 @@ function preflight(): void {
   if (!Array.isArray(plugins)) throw new HerdrLaunchError("PLUGIN_LIST_INVALID");
   const plugin = plugins.find((item: any) => item.plugin_id === "ralph-lisa.loop" && item.enabled === true);
   if (!plugin) throw new HerdrLaunchError("HERDR_PLUGIN_REQUIRED");
+  if (typeof plugin.version !== "string" || !atLeastVersion(plugin.version, [0, 1, 3]))
+    throw new HerdrLaunchError("HERDR_PLUGIN_VERSION_REQUIRED");
   if (!Array.isArray(plugin.panes) || !plugin.panes.some((pane: any) => pane.id === "coordinator"))
     throw new HerdrLaunchError("PLUGIN_LAUNCH_ENTRYPOINT_REQUIRED");
 }
