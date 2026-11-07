@@ -12,6 +12,24 @@ const root = path.dirname(fileURLToPath(import.meta.url));
 const cli = path.resolve(root, "../../cli/dist/cli.js");
 const coordinator = path.join(root, "coordinator.mjs");
 
+test("managed launch refuses a missing request before creating a lease or seats", () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "rll-launch-guard-"));
+  const project = path.join(temp, "project");
+  fs.mkdirSync(project);
+  try {
+    const result = spawnSync(process.execPath, [coordinator, "start"], {
+      encoding: "utf8",
+      env: { ...process.env, HERDR_WORKSPACE_ID: "w1",
+        HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({ workspace_id: "w1", workspace_cwd: project }),
+        HERDR_PLUGIN_STATE_DIR: path.join(temp, "state"),
+        RLL_LAUNCH_REQUEST_ID: randomUUID() },
+    });
+    assert.equal(result.status, 3);
+    assert.equal(JSON.parse(result.stdout).code, "LAUNCH_INTENT_INVALID");
+    assert.equal(fs.existsSync(path.join(project, ".dual-agent")), false);
+  } finally { fs.rmSync(temp, { recursive: true, force: true }); }
+});
+
 test("active snapshot failure names mismatched fields and CLI status without values", () => {
   const paths = { real: "/tmp/private-task-project" };
   const record = { session_id: "native-session-secret", owner_id: "owner-secret",

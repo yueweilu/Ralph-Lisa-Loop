@@ -43,13 +43,55 @@ function config() {
 
 function projectFromContext() {
   const configured = config().project;
-  if (configured) return configured;
   let context = null;
   try { context = JSON.parse(process.env.HERDR_PLUGIN_CONTEXT_JSON || "null"); }
   catch { return null; }
   if (process.env.HERDR_WORKSPACE_ID && context?.workspace_id &&
       process.env.HERDR_WORKSPACE_ID !== context.workspace_id) return null;
+  if (process.env.RLL_LAUNCH_REQUEST_ID) {
+    if (!context?.workspace_id || !context?.workspace_cwd) return null;
+    try {
+      const real = fs.realpathSync.native(context.workspace_cwd);
+      if (configured && fs.realpathSync.native(configured) !== real) return null;
+      return real;
+    } catch { return null; }
+  }
+  if (configured) return configured;
   return context?.workspace_cwd ?? null;
+}
+
+function launchFromContext() {
+  const requestId = process.env.RLL_LAUNCH_REQUEST_ID;
+  if (!requestId) return null;
+  if (!UUID.test(requestId)) throw new Error("LAUNCH_REQUEST_INVALID");
+  const project = projectFromContext();
+  if (!project) throw new Error("LAUNCH_PROJECT_MISMATCH");
+  const context = JSON.parse(process.env.HERDR_PLUGIN_CONTEXT_JSON || "null");
+  const state = path.join(project, ".dual-agent");
+  const intent = readRecord(path.join(state, "herdr-launch-intent.json"));
+  const workspace = readRecord(path.join(state, "herdr-launch-workspace.json"));
+  const identity = readRecord(path.join(state, "session.json"));
+  const taskSha = crypto.createHash("sha256")
+    .update(fs.readFileSync(path.join(state, "task.md"))).digest("hex");
+  if (intent.schema !== 1 || intent.request_id !== requestId ||
+      intent.project_realpath !== project || intent.session_id !== identity.session_id ||
+      identity.project_realpath !== project ||
+      intent.task_sha256 !== taskSha || intent.auto_commit !== false ||
+      !["interactive", "full_auto"].includes(intent.permission_profile) ||
+      workspace.schema !== 1 || workspace.request_id !== requestId ||
+      workspace.workspace_id !== context.workspace_id ||
+      workspace.workspace_id !== process.env.HERDR_WORKSPACE_ID ||
+      !workspace.root_pane_id || !workspace.root_terminal_id)
+    throw new Error("LAUNCH_INTENT_MISMATCH");
+  return { requestId, project, workspace, sessionId: intent.session_id,
+    permissionProfile: intent.permission_profile };
+}
+
+function writeLaunchResult(launch, status, code) {
+  if (!launch) return;
+  const file = path.join(launch.project, ".dual-agent", "herdr-launch-result.json");
+  durableWrite(file, { schema: 1, request_id: launch.requestId, status,
+    ...(code ? { code } : {}) }, true);
 }
 
 function files(project) {
@@ -453,10 +495,15 @@ async function waitForAgent(herdr, role, kind, workspaceId, paneId, project, ter
   throw new Error("AGENT_READY_TIMEOUT");
 }
 
-async function launchAgent(herdr, role, kind, workspaceId, paneId, project, terminalId) {
+async function launchAgent(herdr, role, kind, workspaceId, paneId, project, terminalId,
+  permissionProfile = null) {
+  const agentArgs = permissionProfile === null ? [] : kind === "codex"
+    ? permissionProfile === "full_auto" ? ["--no-daemon", "--full-auto"] : ["--no-daemon"]
+    : permissionProfile === "full_auto" ? ["--dangerously-skip-permissions"] : [];
   for (let attempt = 0; attempt < 12; attempt++) {
     const launched = call(herdr, ["agent", "start", role, "--kind", kind,
-      "--pane", paneId, "--timeout", "60000"], { timeoutMs: 70000 });
+      "--pane", paneId, "--timeout", "60000",
+      ...(agentArgs.length ? ["--", ...agentArgs] : [])], { timeoutMs: 70000 });
     const code = launched.value?.error?.code;
     if (launched.code === 0 || code === "agent_not_ready") {
       await waitForAgent(herdr, role, kind, workspaceId, paneId, project, terminalId);
@@ -477,24 +524,37 @@ async function launchAgent(herdr, role, kind, workspaceId, paneId, project, term
   }
 }
 
-async function bootstrapSeats(paths, record, herdr) {
+async function bootstrapSeats(paths, record, herdr, launch = null) {
   if (!missingAgent(herdr, "ralph") || !missingAgent(herdr, "lisa"))
     throw new Error("EXISTING_AGENT_REQUIRES_REVIEW");
-  const created = call(herdr, ["workspace", "create", "--cwd", paths.real,
-    "--label", `Ralph-Lisa ${path.basename(paths.real)}`, "--focus"]);
-  const workspaceId = created.value?.result?.workspace?.workspace_id;
-  const rootPaneId = created.value?.result?.root_pane?.pane_id;
-  if (created.code !== 0 || !workspaceId || !rootPaneId ||
-      created.value?.result?.root_pane?.workspace_id !== workspaceId)
-    throw new Error("WORKSPACE_CREATE_UNCERTAIN");
+  let workspaceId, rootPaneId, rootTerminalId;
+  if (launch) {
+    workspaceId = launch.workspace.workspace_id;
+    rootPaneId = launch.workspace.root_pane_id;
+    rootTerminalId = launch.workspace.root_terminal_id;
+    const observed = call(herdr, ["workspace", "get", workspaceId]);
+    if (observed.code !== 0 ||
+        observed.value?.result?.workspace?.workspace_id !== workspaceId)
+      throw new Error("LAUNCH_WORKSPACE_MISMATCH");
+    requireSavedPane(herdr, workspaceId, rootPaneId, rootTerminalId, paths.real);
+  } else {
+    const created = call(herdr, ["workspace", "create", "--cwd", paths.real,
+      "--label", `Ralph-Lisa ${path.basename(paths.real)}`, "--focus"]);
+    workspaceId = created.value?.result?.workspace?.workspace_id;
+    rootPaneId = created.value?.result?.root_pane?.pane_id;
+    rootTerminalId = created.value?.result?.root_pane?.terminal_id ?? null;
+    if (created.code !== 0 || !workspaceId || !rootPaneId ||
+        created.value?.result?.root_pane?.workspace_id !== workspaceId)
+      throw new Error("WORKSPACE_CREATE_UNCERTAIN");
+  }
   record = { ...record, phase: "workspace_created", workspace_id: workspaceId,
     ralph_pane_id: rootPaneId,
-    ralph_terminal_id: created.value.result.root_pane.terminal_id ?? null };
+    ralph_terminal_id: rootTerminalId };
   durableWrite(paths.record, record);
   record = { ...record, phase: "ralph_start_pending", ralph_start_attempted: true };
   durableWrite(paths.record, record);
   await launchAgent(herdr, "ralph", "claude", workspaceId, rootPaneId, paths.real,
-    record.ralph_terminal_id);
+    record.ralph_terminal_id, launch?.permissionProfile);
   record = { ...record, phase: "ralph_ready" };
   durableWrite(paths.record, record);
   const split = requireHerdrResult(call(herdr, ["pane", "split", rootPaneId,
@@ -508,7 +568,7 @@ async function bootstrapSeats(paths, record, herdr) {
   record = { ...record, phase: "lisa_start_pending", lisa_start_attempted: true };
   durableWrite(paths.record, record);
   await launchAgent(herdr, "lisa", "codex", workspaceId, split.pane_id, paths.real,
-    record.lisa_terminal_id);
+    record.lisa_terminal_id, launch?.permissionProfile);
   record = { ...record, phase: "lisa_ready" };
   durableWrite(paths.record, record);
   const context = { workspace_id: workspaceId, workspace_cwd: paths.real };
@@ -557,8 +617,8 @@ function claimPreclaimRetry(paths, initial) {
   }
 }
 
-async function resumePreclaimSeats(paths, record, herdr) {
-  if (!record.workspace_id) return bootstrapSeats(paths, record, herdr);
+async function resumePreclaimSeats(paths, record, herdr, launch = null) {
+  if (!record.workspace_id) return bootstrapSeats(paths, record, herdr, launch);
   const workspaceId = record.workspace_id;
   const workspace = call(herdr, ["workspace", "get", workspaceId]);
   if (workspace.code !== 0 ||
@@ -573,7 +633,7 @@ async function resumePreclaimSeats(paths, record, herdr) {
     record = { ...record, phase: "ralph_start_pending", ralph_start_attempted: true };
     durableWrite(paths.record, record);
     await launchAgent(herdr, "ralph", "claude", workspaceId, record.ralph_pane_id,
-      paths.real, record.ralph_terminal_id);
+      paths.real, record.ralph_terminal_id, launch?.permissionProfile);
   } else {
     await waitForAgent(herdr, "ralph", "claude", workspaceId,
       record.ralph_pane_id, paths.real, record.ralph_terminal_id);
@@ -599,7 +659,7 @@ async function resumePreclaimSeats(paths, record, herdr) {
     record = { ...record, phase: "lisa_start_pending", lisa_start_attempted: true };
     durableWrite(paths.record, record);
     await launchAgent(herdr, "lisa", "codex", workspaceId, record.lisa_pane_id,
-      paths.real, record.lisa_terminal_id);
+      paths.real, record.lisa_terminal_id, launch?.permissionProfile);
   } else {
     await waitForAgent(herdr, "lisa", "codex", workspaceId,
       record.lisa_pane_id, paths.real, record.lisa_terminal_id);
@@ -617,16 +677,33 @@ async function resumePreclaimSeats(paths, record, herdr) {
 }
 
 async function start() {
+  let launch = null;
+  try { launch = launchFromContext(); }
+  catch (error) {
+    const code = /^[A-Z0-9_]+$/.test(error.message ?? "") ? error.message : "LAUNCH_INTENT_INVALID";
+    emit({ status: "not_ready", code }, 3);
+    return;
+  }
+  const stopLaunch = (status, code, exitCode) => {
+    try { writeLaunchResult(launch, status, code); }
+    catch { emit({ status: "needs_reconcile", code: "LAUNCH_RESULT_WRITE_FAILED" }, 7); return; }
+    emit({ status, code }, exitCode);
+  };
   const status = call([process.execPath, path.join(root, "actions.mjs")], ["status"]);
   let initial;
   try { initial = requireSnapshot(status); }
   catch (error) {
-    emit({ status: "not_ready", code: error.message || "PROJECT_NOT_READY" }, 3);
+    stopLaunch("not_ready", error.message || "PROJECT_NOT_READY", 3);
+    return;
+  }
+  if (launch && (initial.project_realpath !== launch.project ||
+      initial.session_id !== launch.sessionId)) {
+    stopLaunch("not_ready", "LAUNCH_SESSION_MISMATCH", 3);
     return;
   }
   if (initial.generation !== null &&
       (initial.generation !== 0 || initial.last_receipt_id !== null)) {
-    emit({ status: "not_ready", code: "EXISTING_GENERATION_REQUIRES_RECOVERY" }, 3);
+    stopLaunch("not_ready", "EXISTING_GENERATION_REQUIRES_RECOVERY", 3);
     return;
   }
   let taskFile;
@@ -634,13 +711,13 @@ async function start() {
     if (initial.turn !== "ralph") throw new Error("INITIAL_TURN_REQUIRED");
     taskFile = requireTaskFile(initial);
   } catch (error) {
-    emit({ status: "not_ready", code: error.message || "TASK_FILE_INVALID" }, 3);
+    stopLaunch("not_ready", error.message || "TASK_FILE_INVALID", 3);
     return;
   }
   const paths = files(initial.project_realpath);
   fs.mkdirSync(paths.dir, { recursive: true, mode: 0o700 });
   if (initialPromptExists(paths, initial.session_id)) {
-    emit({ status: "not_ready", code: "INITIAL_PROMPT_REQUIRES_RECOVERY" }, 3);
+    stopLaunch("not_ready", "INITIAL_PROMPT_REQUIRES_RECOVERY", 3);
     return;
   }
   let record;
@@ -657,7 +734,7 @@ async function start() {
       bootNeeded = preflight.value?.code === "AGENT_MISSING";
       plan = preflight.value?.status === "ready" ? preflight.value?.binding_plan : null;
       if (!plan && !bootNeeded) {
-        emit({ status: "not_ready", code: preflight.value?.code || "SEAT_PREFLIGHT_FAILED" }, 3);
+        stopLaunch("not_ready", preflight.value?.code || "SEAT_PREFLIGHT_FAILED", 3);
         return;
       }
       record = { schema: 1, phase: "intent", owner_id: crypto.randomUUID(), pid: process.pid,
@@ -670,7 +747,7 @@ async function start() {
       }
     }
   } catch (error) {
-    emit({ status: "not_ready", code: error.message || "STATE_WRITE_FAILED" }, 4);
+    stopLaunch("not_ready", error.message || "STATE_WRITE_FAILED", 4);
     return;
   }
   const ownerId = record.owner_id;
@@ -679,8 +756,8 @@ async function start() {
   try {
     if (retry || bootNeeded) {
       const boot = retry
-        ? await resumePreclaimSeats(paths, record, herdr)
-        : await bootstrapSeats(paths, record, herdr);
+        ? await resumePreclaimSeats(paths, record, herdr, launch)
+        : await bootstrapSeats(paths, record, herdr, launch);
       plan = boot.plan;
       record = { ...boot.record, phase: "seats_ready", plan };
       durableWrite(paths.record, record);
@@ -731,12 +808,15 @@ async function start() {
       cursor_generation: 0, cursor_receipt_id: null, cursor_turn: prepared.value.turn };
     durableWrite(paths.record, record);
     record = deliverInitial(paths, record, cli, herdr, plan, taskFile);
+    writeLaunchResult(launch, "started");
     emit({ status: "started", project: paths.real, workspace_id: plan.workspace_id,
       binding_generation: record.binding_generation, owner_id: ownerId, lease_id: lease.lease_id });
     await runActiveLoop(paths, record, cli, herdr);
   } catch (error) {
     let latest = record;
     try { latest = readRecord(paths.record); } catch { /* Keep the last in-memory intent. */ }
+    try { writeLaunchResult(launch, "needs_reconcile", error.message || "COORDINATOR_ERROR"); }
+    catch { /* Existing result stays immutable; plugin record carries the failure. */ }
     failRecord(paths, latest, error, "COORDINATOR_ERROR");
   }
 }

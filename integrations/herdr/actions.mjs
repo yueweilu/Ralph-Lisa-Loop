@@ -781,7 +781,25 @@ function main() {
       code: setupCode(diagnosis.checks), checks: diagnosis.checks }, diagnosis.ready ? 0 : 3);
     return;
   }
-  const project = config.value.project || workspaceProject(diagnosis.herdr);
+  const workspace = workspaceProject(diagnosis.herdr);
+  let project = config.value.project || workspace;
+  if (process.env.RLL_LAUNCH_REQUEST_ID) {
+    if (!workspace) {
+      emit({ status: "not_ready", code: "LAUNCH_WORKSPACE_REQUIRED" }, 3);
+      return;
+    }
+    try {
+      if (config.value.project && fs.realpathSync.native(config.value.project) !==
+          fs.realpathSync.native(workspace)) {
+        emit({ status: "not_ready", code: "LAUNCH_PROJECT_MISMATCH" }, 3);
+        return;
+      }
+    } catch {
+      emit({ status: "not_ready", code: "LAUNCH_PROJECT_MISMATCH" }, 3);
+      return;
+    }
+    project = workspace;
+  }
   if (!project) {
     emit({ status: "needs_setup", code: "PROJECT_REQUIRED", checks: diagnosis.checks }, 3);
     return;

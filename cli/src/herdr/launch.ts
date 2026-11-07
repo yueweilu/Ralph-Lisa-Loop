@@ -61,8 +61,26 @@ export type HerdrLaunchReceipt = {
   session_id: string;
   workspace_id: string;
   coordinator_pane_id: string;
+  blocked_role?: "ralph" | "lisa";
+  blocked_pane_id?: string;
   code?: string;
 };
+
+function blockedAgent(workspaceId: string, project: string):
+  { role: "ralph" | "lisa"; paneId: string } | null {
+  for (const [role, kind] of [["ralph", "claude"], ["lisa", "codex"]] as const) {
+    let agent: any;
+    try { agent = command(["agent", "get", role], 5000).result?.agent; }
+    catch { continue; }
+    let cwd: string | null = null;
+    try { cwd = fs.realpathSync.native(agent?.cwd); } catch { /* Ignore unrelated agents. */ }
+    if (agent?.name === role && agent?.agent === kind &&
+        agent?.workspace_id === workspaceId && cwd === project &&
+        agent?.agent_status === "blocked" && typeof agent.pane_id === "string")
+      return { role, paneId: agent.pane_id };
+  }
+  return null;
+}
 
 /** One launch request; an uncertain Herdr response must be inspected, never blindly retried. */
 export async function launchHerdrTask(options: HerdrLaunchOptions): Promise<HerdrLaunchReceipt> {
@@ -92,8 +110,9 @@ export async function launchHerdrTask(options: HerdrLaunchOptions): Promise<Herd
   const opened = command(["plugin", "pane", "open", "--plugin", "ralph-lisa.loop",
     "--entrypoint", "coordinator", "--placement", "tab", "--workspace", workspaceId,
     "--env", `RLL_LAUNCH_REQUEST_ID=${requestId}`, "--no-focus"]);
-  const pane = opened.result?.pane;
-  if (!pane?.pane_id || pane.workspace_id !== workspaceId)
+  const pane = opened.result?.plugin_pane?.pane;
+  if (opened.result?.type !== "plugin_pane_opened" || !pane?.pane_id ||
+      pane.workspace_id !== workspaceId)
     throw new HerdrLaunchError("COORDINATOR_PANE_UNCERTAIN", requestId);
   recordLaunchPane(project, requestId, pane.pane_id);
 
@@ -102,6 +121,11 @@ export async function launchHerdrTask(options: HerdrLaunchOptions): Promise<Herd
     if (result) return { status: result.status, request_id: requestId, project_realpath: project,
       session_id: sessionId, workspace_id: workspaceId, coordinator_pane_id: pane.pane_id,
       ...(result.code ? { code: result.code } : {}) };
+    const blocked = blockedAgent(workspaceId, project);
+    if (blocked) return { status: "needs_input", code: "AGENT_BLOCKED",
+      request_id: requestId, project_realpath: project, session_id: sessionId,
+      workspace_id: workspaceId, coordinator_pane_id: pane.pane_id,
+      blocked_role: blocked.role, blocked_pane_id: blocked.paneId };
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
   return { status: "pending", code: "START_OUTCOME_UNKNOWN", request_id: requestId,

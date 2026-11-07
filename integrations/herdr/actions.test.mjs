@@ -23,6 +23,7 @@ function run(action, options = {}) {
     HERDR_PLUGIN_CONFIG_DIR: temp,
     HERDR_WORKSPACE_ID: options.workspaceId ?? "",
     HERDR_PLUGIN_CONTEXT_JSON: options.context ?? "",
+    RLL_LAUNCH_REQUEST_ID: options.launchRequestId ?? "",
     FAKE_HERDR_VERSION: options.version ?? "herdr 0.9.4",
     FAKE_HERDR_INTEGRATIONS: options.integrations ?? "installed",
     FAKE_HERDR_WORKSPACE: project,
@@ -108,6 +109,20 @@ test("doctor distinguishes missing agent login from missing integrations", () =>
   assert.equal(loggedOut.value.code, "AGENT_LOGIN_REQUIRED");
   assert.equal(loggedOut.value.checks.login.claude, "not_logged_in");
   assert.equal(loggedOut.value.checks.login.codex, "not_logged_in");
+});
+
+test("launch context rejects a configured project from another Workspace", () => {
+  fs.mkdirSync(project);
+  const other = path.join(temp, "other");
+  fs.mkdirSync(other);
+  config({ project });
+  const result = run("status", { workspaceId: "w1",
+    context: JSON.stringify({ workspace_id: "w1", workspace_cwd: other }),
+    launchRequestId: "123e4567-e89b-42d3-a456-426614174000" });
+  assert.equal(result.code, 3);
+  assert.equal(result.value.code, "LAUNCH_PROJECT_MISMATCH");
+  assert.equal(fs.existsSync(path.join(project, ".dual-agent")), false);
+  assert.equal(fs.existsSync(path.join(other, ".dual-agent")), false);
 });
 
 test("status reads one initialized project without creating host state", () => {

@@ -1,6 +1,6 @@
 id = "ralph-lisa.loop"
 name = "Ralph-Lisa Loop"
-version = "0.1.2"
+version = "0.1.3"
 min_herdr_version = "0.9.4"
 description = "Run Ralph-Lisa seats and host coordination inside Herdr"
 platforms = ["macos"]
@@ -72,6 +72,12 @@ id = "stop"
 title = "Stop Ralph-Lisa workflow"
 contexts = ["workspace"]
 command = ["node", "coordinator.mjs", "stop"]
+
+[[panes]]
+id = "coordinator"
+title = "Ralph-Lisa workflow"
+placement = "tab"
+command = ["node", "coordinator.mjs", "start"]
 
 [[panes]]
 id = "control"
