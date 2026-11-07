@@ -54,6 +54,24 @@ function preflight(): void {
     throw new HerdrLaunchError("PLUGIN_LAUNCH_ENTRYPOINT_REQUIRED");
 }
 
+function reusableWorkspace(project: string): string | null {
+  const id = process.env.RLL_HERDR_REUSE_WORKSPACE_ID ||
+    (process.env.HERDR_ENV === "1" ? process.env.HERDR_WORKSPACE_ID : undefined);
+  if (!id) return null;
+  if (!/^w[1-9][0-9]*$/.test(id)) throw new HerdrLaunchError("WORKSPACE_ID_INVALID");
+  const observed = command(["workspace", "get", id]);
+  if (observed.result?.workspace?.workspace_id !== id)
+    throw new HerdrLaunchError("WORKSPACE_NOT_FOUND");
+  const panes = command(["pane", "list", "--workspace", id]).result?.panes;
+  if (!Array.isArray(panes)) throw new HerdrLaunchError("WORKSPACE_PANES_INVALID");
+  const containsProject = panes.some((pane: any) => {
+    try { return fs.realpathSync.native(pane.cwd) === project; }
+    catch { return false; }
+  });
+  if (!containsProject) throw new HerdrLaunchError("WORKSPACE_PROJECT_MISMATCH");
+  return id;
+}
+
 export type HerdrLaunchReceipt = {
   status: "started" | "needs_input" | "needs_reconcile" | "not_ready" | "pending";
   request_id: string;
@@ -87,6 +105,7 @@ export async function launchHerdrTask(options: HerdrLaunchOptions): Promise<Herd
   const project = canonicalProject(path.resolve(options.project));
   if (existingState(project)) throw new HerdrLaunchError("SESSION_EXISTS");
   preflight();
+  const reuseWorkspaceId = reusableWorkspace(project);
   const requestId = crypto.randomUUID();
   let sessionId: string;
   const release = acquireSessionCommandLock(stateDir(project));
@@ -96,15 +115,17 @@ export async function launchHerdrTask(options: HerdrLaunchOptions): Promise<Herd
     createLaunchIntent(project, sessionId, requestId, options.fullAuto);
   } finally { release(); }
 
-  const created = command(["workspace", "create", "--cwd", project,
-    "--label", `Ralph-Lisa ${path.basename(project)}`, "--no-focus"]);
-  const workspace = created.result?.workspace;
+  const created = reuseWorkspaceId
+    ? command(["tab", "create", "--workspace", reuseWorkspaceId,
+      "--cwd", project, "--label", "Ralph-Lisa agents", "--focus"])
+    : command(["workspace", "create", "--cwd", project,
+      "--label", `Ralph-Lisa ${path.basename(project)}`, "--focus"]);
+  const workspaceId = reuseWorkspaceId || created.result?.workspace?.workspace_id;
   const rootPane = created.result?.root_pane;
-  if (created.result?.type !== "workspace_created" || !workspace?.workspace_id ||
-      !rootPane?.pane_id || !rootPane?.terminal_id ||
-      rootPane.workspace_id !== workspace.workspace_id)
+  if (created.result?.type !== (reuseWorkspaceId ? "tab_created" : "workspace_created") ||
+      !workspaceId || !rootPane?.pane_id || !rootPane?.terminal_id ||
+      rootPane.workspace_id !== workspaceId)
     throw new HerdrLaunchError("WORKSPACE_CREATE_UNCERTAIN", requestId);
-  const workspaceId = workspace.workspace_id as string;
   recordLaunchWorkspace(project, requestId, workspaceId, rootPane.pane_id, rootPane.terminal_id);
 
   const opened = command(["plugin", "pane", "open", "--plugin", "ralph-lisa.loop",

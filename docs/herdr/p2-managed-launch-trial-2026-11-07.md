@@ -18,3 +18,9 @@
 - 真实 Herdr 只验证了项目定址、受管理控制 Pane、Ralph 启动与信任阻断。Lisa 原生会话、两席绑定、首任务单次投递、协调器关闭后的租约状态和重启恢复仍待隔离真实验收。
 - 本切片没有开启候选自动提交；`--full-auto` 参数当前只映射 Agent 启动权限。候选来源仍是 `unverified`，正式提交继续要求逐份人工确认。
 - 旧 `start` action 保留兼容；上述真实试跑不是完整自动协作验收。
+
+## 同日补充：复用 Workspace 与输入 overlay
+
+在同一命名测试 Server 中，对尚未初始化、但已有 Workspace `w1` 的临时项目使用短命令并显式传入复用 Workspace ID。CLI 在 `w1` 下创建 Ralph tab 和控制 tab，返回 `workspace_id=w1`、`blocked_role=ralph`；只读 Workspace 列表仍只有原有 `w1/w2/w3`，没有为这个项目新建另一个 Workspace。未确认 Claude 信任提示，Server 再次停止。
+
+插件 manifest `0.1.4` 已声明 `start-task` 为 `overlay`，输入脚本将所选 Workspace 项目和任务转交同一个 `herdr-rll` 启动服务。脚本测试覆盖无 Workspace 上下文拒绝、已有会话拒绝覆盖。**headless 命名 Server 不能验证 overlay 的屏幕呈现**：从 Server 外调用 `plugin pane open --placement overlay`，即使显式指定 Workspace 和目标 Pane，Herdr 0.9.4 仍返回 `invalid_params: overlay and popup plugin panes target the active pane`。因此 overlay 的 TUI 内点击、任务输入与实际启动仍待可见客户端验收；不能把这次 headless 错误写成插件 UI 已通过。
