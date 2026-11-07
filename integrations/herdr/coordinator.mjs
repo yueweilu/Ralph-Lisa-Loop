@@ -310,22 +310,31 @@ function checkDelivery(paths, record, cli, herdr, plan) {
   return next;
 }
 
-async function runActiveLoop(paths, initialRecord, cli, herdr) {
+async function runActiveLoop(paths, initialRecord, cli, herdr, signalState = null) {
   let record = initialRecord;
   const plan = record.plan;
   const ownerId = record.owner_id;
   const leaseId = record.lease_id;
   let ticks = 0;
+  let signalBusyChecks = 0;
   for (;;) {
     await new Promise((resolve) => setTimeout(resolve, 1000));
     if (fs.existsSync(paths.stop) && fs.existsSync(paths.control))
       throw new Error("CONCURRENT_CONTROL_REQUESTS");
-    if (fs.existsSync(paths.stop)) {
-      const request = readRecord(paths.stop);
+    const signalStop = signalState?.requested === true;
+    if (signalStop && fs.existsSync(paths.control))
+      throw new Error("SIGNAL_SHUTDOWN_CONTROL_PENDING");
+    if (fs.existsSync(paths.stop) || signalStop) {
+      const request = fs.existsSync(paths.stop)
+        ? readRecord(paths.stop) : { owner_id: ownerId, lease_id: leaseId };
       if (request.owner_id !== ownerId || request.lease_id !== leaseId)
         throw new Error("STOP_REQUEST_MISMATCH");
       const stoppedRead = call(cli, ["host", "snapshot", "--project", paths.real, "--json"]);
-      if (hostBusy(stoppedRead)) continue;
+      if (hostBusy(stoppedRead)) {
+        if (signalStop && ++signalBusyChecks >= 5)
+          throw new Error("SIGNAL_SHUTDOWN_HOST_BUSY");
+        continue;
+      }
       const stoppedAt = requireActiveSnapshot(stoppedRead, paths, record, plan);
       if (stoppedAt.generation !== record.cursor_generation ||
           stoppedAt.last_receipt_id !== record.cursor_receipt_id)
@@ -334,11 +343,13 @@ async function runActiveLoop(paths, initialRecord, cli, herdr) {
         "--lease-id", leaseId, "--json"]);
       if (released.code !== 0 || released.value?.status !== "released")
         throw new Error(released.value?.code || "RELEASE_UNCERTAIN");
-      record = { ...record, phase: "released" };
+      record = { ...record, phase: "released",
+        ...(signalStop ? { stop_reason: "managed_pane_closed" } : {}) };
       durableWrite(paths.record, record);
       fs.renameSync(paths.record, path.join(paths.dir, `finished-${ownerId}.json`));
-      fs.unlinkSync(paths.stop);
-      emit({ status: "stopped", project: paths.real, owner_id: ownerId });
+      if (fs.existsSync(paths.stop)) fs.unlinkSync(paths.stop);
+      emit({ status: "stopped", project: paths.real, owner_id: ownerId,
+        ...(signalStop ? { reason: "managed_pane_closed" } : {}) });
       return;
     }
     record = processControl(paths, record, cli, herdr, plan);
@@ -811,7 +822,19 @@ async function start() {
     writeLaunchResult(launch, "started");
     emit({ status: "started", project: paths.real, workspace_id: plan.workspace_id,
       binding_generation: record.binding_generation, owner_id: ownerId, lease_id: lease.lease_id });
-    await runActiveLoop(paths, record, cli, herdr);
+    const signalState = launch ? { requested: false } : null;
+    const onSignal = () => { if (signalState) signalState.requested = true; };
+    if (signalState) {
+      process.on("SIGTERM", onSignal);
+      process.on("SIGINT", onSignal);
+    }
+    try { await runActiveLoop(paths, record, cli, herdr, signalState); }
+    finally {
+      if (signalState) {
+        process.off("SIGTERM", onSignal);
+        process.off("SIGINT", onSignal);
+      }
+    }
   } catch (error) {
     let latest = record;
     try { latest = readRecord(paths.record); } catch { /* Keep the last in-memory intent. */ }

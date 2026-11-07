@@ -23,4 +23,10 @@
 
 在同一命名测试 Server 中，对尚未初始化、但已有 Workspace `w1` 的临时项目使用短命令并显式传入复用 Workspace ID。CLI 在 `w1` 下创建 Ralph tab 和控制 tab，返回 `workspace_id=w1`、`blocked_role=ralph`；只读 Workspace 列表仍只有原有 `w1/w2/w3`，没有为这个项目新建另一个 Workspace。未确认 Claude 信任提示，Server 再次停止。
 
-插件 manifest `0.1.4` 已声明 `start-task` 为 `overlay`，输入脚本将所选 Workspace 项目和任务转交同一个 `herdr-rll` 启动服务。脚本测试覆盖无 Workspace 上下文拒绝、已有会话拒绝覆盖。**headless 命名 Server 不能验证 overlay 的屏幕呈现**：从 Server 外调用 `plugin pane open --placement overlay`，即使显式指定 Workspace 和目标 Pane，Herdr 0.9.4 仍返回 `invalid_params: overlay and popup plugin panes target the active pane`。因此 overlay 的 TUI 内点击、任务输入与实际启动仍待可见客户端验收；不能把这次 headless 错误写成插件 UI 已通过。
+插件 manifest 自 `0.1.4` 起声明 `start-task` 为 `overlay`，输入脚本将所选 Workspace 项目和任务转交同一个 `herdr-rll` 启动服务。脚本测试覆盖无 Workspace 上下文拒绝、已有会话拒绝覆盖。**headless 命名 Server 不能验证 overlay 的屏幕呈现**：从 Server 外调用 `plugin pane open --placement overlay`，即使显式指定 Workspace 和目标 Pane，Herdr 0.9.4 仍返回 `invalid_params: overlay and popup plugin panes target the active pane`。因此 overlay 的 TUI 内点击、任务输入与实际启动仍待可见客户端验收；不能把这次 headless 错误写成插件 UI 已通过。
+
+## 协调器 Pane 关闭的本地故障验证
+
+受管理启动的协调器在进入活跃循环后监听 `SIGTERM` / `SIGINT`。收到信号先停止后续交接，再用正式 `host snapshot` 核对当前会话、绑定和投递游标；完全一致才释放租约并写入 `managed_pane_closed` 结束记录。快照或业务状态变化时不释放租约，而写 `needs_reconcile` 供现有 S4 路径核查。新增模拟测试分别证明安全释放和篡改后保留租约，2/2 通过；旧 action 启动路径未安装该信号处理，保持原有重启测试语义。
+
+这只是本地进程信号测试。真实 Herdr 关闭控制 Pane、启动途中关闭、Server 强制退出以及非零游标接续，仍需独立验收；信号可能被强制终止打断，不能把“安装处理器”当作所有退出都会成功释放租约。
