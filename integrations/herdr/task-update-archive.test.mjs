@@ -113,3 +113,81 @@ test("accepted task delivery can close an interrupted queue before lease recover
     assert.equal(after.generation, receipt.generation_after);
   } finally { fs.rmSync(temp, { recursive: true, force: true }); }
 });
+
+test("uncommitted request can be abandoned only after matching no-write evidence", () => {
+  const temp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "rll-task-abandon-")));
+  const project = path.join(temp, "project");
+  const config = path.join(temp, "config");
+  const stateRoot = path.join(temp, "plugin-state");
+  fs.mkdirSync(project);
+  fs.mkdirSync(config);
+  const env = { ...process.env, HERDR_PLUGIN_CONFIG_DIR: config,
+    HERDR_PLUGIN_STATE_DIR: stateRoot };
+  fs.writeFileSync(path.join(config, "settings.json"), JSON.stringify({ project,
+    rll_cli_argv: [process.execPath, cli] }));
+  const invoke = (...args) => spawnSync(process.execPath, [cli, ...args],
+    { cwd: project, env, encoding: "utf8" });
+  const run = (...args) => {
+    const result = invoke(...args);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    return JSON.parse(result.stdout);
+  };
+  const abandon = (id, generation, decision = "reviewed-no-commit") =>
+    spawnSync(process.execPath, [coordinator, "abandon-uncommitted-task-request",
+      id, String(generation), decision], { cwd: project, env, encoding: "utf8" });
+  try {
+    assert.equal(invoke("init", "--minimal", project).status, 0);
+    const owner = crypto.randomUUID();
+    const lease = run("host", "claim", "--project", project, "--host", "herdr",
+      "--owner-id", owner, "--json");
+    run("host", "bind-seat", "--project", project, "--lease-id", lease.lease_id,
+      "--role", "ralph", "--workspace-id", "w1", "--pane-id", "p1",
+      "--agent-target", "ralph", "--json");
+    const binding = run("host", "bind-seat", "--project", project, "--lease-id", lease.lease_id,
+      "--role", "lisa", "--workspace-id", "w1", "--pane-id", "p2",
+      "--agent-target", "lisa", "--json");
+    const before = run("host", "snapshot", "--project", project, "--json");
+    run("host", "prepare-generation", "--project", project, "--lease-id", lease.lease_id,
+      "--expected-digest", before.state_digest, "--json");
+    const requestId = crypto.randomUUID();
+    const queue = path.join(project, ".dual-agent", "host", "task-update-requests");
+    fs.mkdirSync(queue);
+    const request = { schema: 1, status: "requested", request_id: requestId,
+      project_realpath: project, session_id: before.session_id,
+      workspace_id: "w1", pane_id: "p1", terminal_id: "term-r",
+      agent_target: "ralph", source_verification: "unverified",
+      mode: "switch", content_sha256: "a".repeat(64),
+      generation: 0, binding_generation: binding.binding_generation,
+      state_digest: before.state_digest, last_receipt_id: null };
+    const requestFile = path.join(queue, `${requestId}.json`);
+    fs.writeFileSync(requestFile, JSON.stringify(request));
+    const key = crypto.createHash("sha256").update(project).digest("hex");
+    const pluginDir = path.join(stateRoot, "sessions", key);
+    fs.mkdirSync(pluginDir, { recursive: true });
+    fs.writeFileSync(path.join(pluginDir, "record.json"), JSON.stringify({
+      schema: 1, phase: "needs_reconcile", project_realpath: project,
+      session_id: before.session_id, lease_id: lease.lease_id, owner_id: owner,
+      binding_generation: binding.binding_generation,
+      cursor_generation: 0, cursor_receipt_id: null, cursor_turn: "ralph",
+      plan: { workspace_id: "w1", seats: {
+        ralph: { pane_id: "p1", terminal_id: "term-r" },
+        lisa: { pane_id: "p2" },
+      } },
+    }));
+    assert.equal(invoke("host", "recovery-check", "--project", project, "--json").status, 7);
+    assert.equal(abandon(requestId, 0, "yes").status, 7);
+    fs.writeFileSync(requestFile, JSON.stringify({ ...request, state_digest: "0".repeat(64) }));
+    assert.equal(abandon(requestId, 0).status, 7);
+    fs.writeFileSync(requestFile, JSON.stringify(request));
+    const result = abandon(requestId, 0);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.equal(JSON.parse(result.stdout).status, "task_request_abandoned");
+    assert.equal(fs.existsSync(requestFile), false);
+    assert.equal(fs.existsSync(path.join(project, ".dual-agent", "host",
+      "task-update-requests-abandoned", `${requestId}.json`)), true);
+    assert.equal(abandon(requestId, 0).status, 7);
+    assert.equal(run("host", "recovery-check", "--project", project, "--json").status,
+      "review_required");
+    assert.equal(run("host", "snapshot", "--project", project, "--json").generation, 0);
+  } finally { fs.rmSync(temp, { recursive: true, force: true }); }
+});

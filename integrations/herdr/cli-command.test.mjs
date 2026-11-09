@@ -35,6 +35,7 @@ test("Agent guidance names only the installed checkout CLI and quotes its path",
   assert.ok(guidance.includes("'" + process.execPath + "'"));
   assert.ok(guidance.includes("'\\''"));
   assert.doesNotMatch(guidance, /ralph-lisa host/);
+  assert.ok(agentCliGuidance(["node", own], plugin).includes(`'node' '${own.replaceAll("'", "'\\''")}'`));
   assert.equal(agentCliGuidance(["custom-cli", "--private"], plugin),
     "Use the RLL CLI configured for this Herdr plugin when running host commands.");
 });

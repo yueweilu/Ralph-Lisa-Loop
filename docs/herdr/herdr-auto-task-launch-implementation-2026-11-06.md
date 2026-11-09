@@ -1,6 +1,6 @@
 # Ralph-Lisa × Herdr：一条命令启动与自动协作实施方案
 
-> 状态：实施中。2026-11-09 已确认采用第 4.2 节的会话级自动提交授权；[真实双席验收](p3-auto-commit-live-2026-11-09.md)已验证自动双向交接、双方共识及修复后的自动停止。聊天任务更新已完成本地协议、Pane 适配器与假 Herdr 协调器测试，真实 Herdr、故障注入和重启接续仍待验收；自动授权重启接续和长期稳定性亦未验收。
+> 状态：实施中。2026-11-09 已确认采用第 4.2 节的会话级自动提交授权；[真实双席验收](p3-auto-commit-live-2026-11-09.md)已验证自动双向交接、双方共识及修复后的自动停止。[聊天改任务现场记录](d5-chat-task-update-live-2026-11-09.md)已验证真实 Ralph Pane 发起、任务版本推进、双向交接和一次投递。写中故障注入、任务事件后的 Server 再次重启接续、自动授权重启接续及长期稳定性仍待验收。
 >
 > 日期：2026-11-06。
 >
@@ -51,7 +51,7 @@ Herdr 内提供“启动 Ralph-Lisa 任务”的短暂终端 overlay，输入同
 | `integrations/herdr/coordinator.mjs` | 能启动双席、绑定租约、初始提示、心跳；仅依据正式回执交接；投递有持久意图与不确定结果阻断 | 继续复用，不把屏幕文本或 Herdr `idle/done` 当正式提交 |
 | `integrations/herdr/candidate-propose.mjs` | 核对真实 Pane、Agent、项目与绑定；提议候选后仍写 `source_verification=unverified` | 可扩展为自动模式的调用侧观察，但**不构成作者身份的密码学证明** |
 | `integrations/herdr/review.mjs`、`cli/src/host/commit.ts` | 当前候选必须逐份人工来源确认，正式回执为 `human_asserted` | 全自动需要独立的会话授权提交协议，不能复用人工决定字段 |
-| `docs/herdr/host-task-update-design-2026-11-06.md` | 已定 Ralph 聊天改任务的宿主事件设计；目前尚未实现 | 本方案纳入实施，但不把任意终端文本直接解释成新任务 |
+| `docs/herdr/host-task-update-design-2026-11-06.md` | 已定 Ralph 聊天改任务的宿主事件设计；现有协议和真实双向交接已验收，异常矩阵未完成 | 本方案纳入实施，但不把任意终端文本直接解释成新任务 |
 
 证据边界：Herdr 0.9.4 插件 v1 能声明 action、Pane 和事件；`plugin action invoke` 不接受任务正文参数，且本机实测会取 Server **当前焦点 Workspace**，不能由外部 CLI 指定项目。`plugin pane open` 支持 `--workspace`、`--env` 和受管理普通 Pane，本机 `--help` **不支持 `popup`**；首版用 `overlay` 收集任务，用普通 `tab` 承载长期协调器。Herdr `agent.prompt` 成功只说明输入被接受；超时也不能证明输入未送达。实测过程见 [P0 上下文与来源观察记录](p0-launch-context-and-source-observation-2026-11-06.md)；接口参考 [Herdr Plugins](https://herdr.dev/tui/docs/plugins/)、[CLI reference](https://herdr.dev/tui/docs/cli-reference/) 与 [Agent automation](https://herdr.dev/tui/docs/agent-automation/)。
 
@@ -170,7 +170,7 @@ P0 已证明现有 `pane current` 环境标记不足以限定真实调用者。�
 
 用户在 Ralph 聊天里提出明确新要求时，Ralph 使用受控命令发起任务更新，而不是让用户去控制页再输入一遍；控制页只提供备用入口。按现有 [宿主管理任务更新设计](host-task-update-design-2026-11-06.md)增加 `host task-update-check` 和 `host task-update`。补充当前任务保留 turn/round；切换新任务在同一项目和 Pane 内开启新逻辑任务周期，旧候选与回执保留历史但不能跨任务版本提交。任务更新作为独立宿主事件进入代次链，完成回执后由协调器给当前席位或 Ralph 投递一次“重读 task.md”。
 
-自动提交授权对**新任务周期是否继承**按最小授权范围处理：切换新任务时撤销自动提交授权，由用户在聊天中明确继续授权或通过控制页确认；补充当前任务可保留原授权，但更新后的下一份候选必须重新通过策略/测试门禁。这样避免把一次任务授权无限扩大到后来完全不同的任务。该规则须写入机器契约及 UI 文案。
+当前实现对**切换和补充**都结束旧自动提交授权；更新后的候选重新经过人工来源确认。日后若允许补充任务保留授权，须先增加独立的授权核对与真实验收，不能由旧授权记录自动推断。这样避免把一次任务授权无限扩大到后来完全不同的要求。
 
 ## 6. 文件级改造清单
 

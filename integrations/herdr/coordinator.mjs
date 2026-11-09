@@ -245,9 +245,10 @@ function pendingTaskRequest(paths) {
   return request;
 }
 
-function archiveTaskRequest(paths, requestId) {
+function archiveTaskRequest(paths, requestId, disposition = "archived") {
   const source = path.join(taskRequestDir(paths), `${requestId}.json`);
-  const archived = path.join(paths.real, ".dual-agent", "host", "task-update-requests-archived");
+  if (!["archived", "abandoned"].includes(disposition)) throw new Error("TASK_REQUEST_DISPOSITION_INVALID");
+  const archived = path.join(paths.real, ".dual-agent", "host", `task-update-requests-${disposition}`);
   if (!fs.existsSync(archived)) fs.mkdirSync(archived, { mode: 0o700 });
   const archivedStat = fs.lstatSync(archived);
   if (!archivedStat.isDirectory() || archivedStat.isSymbolicLink() ||
@@ -512,7 +513,12 @@ function processTaskRequest(paths, record, cli, herdr, plan) {
       !path.isAbsolute(request.file ?? "") ||
       !request.file.startsWith(paths.real + path.sep))
     throw new Error("TASK_REQUEST_STALE");
-  verifySeat(herdr, plan, "ralph", "claude");
+  try { verifySeat(herdr, plan, "ralph", "claude"); }
+  catch (error) {
+    // Ralph may still be finishing the chat turn that queued this request.
+    if (error.message === "AGENT_NOT_READY") return record;
+    throw error;
+  }
   const args = ["--project", paths.real, "--lease-id", record.lease_id,
     "--request-id", request.request_id, "--expected-generation", String(request.generation),
     "--expected-binding-generation", String(record.binding_generation),
@@ -590,6 +596,47 @@ function archiveDeliveredTaskRequest(paths, requestId, expectedGeneration) {
     throw new Error("TASK_REQUEST_ARCHIVE_RECEIPT_MISMATCH");
   archiveTaskRequest(paths, requestId);
   return { status: "task_request_archived", project: paths.real,
+    request_id: requestId, generation: expectedGeneration, replay: "not_replayed" };
+}
+
+/** Abandon a queued request only when host and plugin both prove no task write began. */
+function abandonUncommittedTaskRequest(paths, requestId, expectedGeneration, decision) {
+  if (!UUID.test(requestId ?? "") || !Number.isSafeInteger(expectedGeneration) ||
+      expectedGeneration < 0 || decision !== "reviewed-no-commit")
+    throw new Error("TASK_REQUEST_ABANDON_CONFIRMATION_REQUIRED");
+  const record = readRecord(paths.record);
+  const request = pendingTaskRequest(paths);
+  if (record.phase !== "needs_reconcile" || !request ||
+      request.request_id !== requestId || request.project_realpath !== paths.real ||
+      request.session_id !== record.session_id ||
+      request.workspace_id !== record.plan?.workspace_id ||
+      request.pane_id !== record.plan?.seats?.ralph?.pane_id ||
+      request.terminal_id !== record.plan?.seats?.ralph?.terminal_id ||
+      request.agent_target !== "ralph" || request.source_verification !== "unverified" ||
+      !["supplement", "switch"].includes(request.mode) ||
+      !/^[0-9a-f]{64}$/.test(request.content_sha256 ?? "") ||
+      request.generation !== expectedGeneration ||
+      request.binding_generation !== record.binding_generation ||
+      record.cursor_generation !== expectedGeneration ||
+      record.cursor_receipt_id !== request.last_receipt_id ||
+      fs.existsSync(deliveryFile(paths, requestId)))
+    throw new Error("TASK_REQUEST_ABANDON_EVIDENCE_MISMATCH");
+  const cli = config().cli;
+  const observed = call(cli, ["host", "snapshot", "--project", paths.real, "--json"]);
+  const snapshot = requireActiveSnapshot(observed, paths, record, record.plan);
+  if (snapshot.generation !== expectedGeneration ||
+      snapshot.last_receipt_id !== request.last_receipt_id ||
+      snapshot.state_digest !== request.state_digest ||
+      snapshot.turn !== record.cursor_turn)
+    throw new Error("TASK_REQUEST_ABANDON_STATE_CHANGED");
+  const result = call(cli, ["host", "receipt", "--project", paths.real,
+    "--request-id", requestId, "--json"]);
+  if (result.code !== 0 || result.value?.status !== "unknown" ||
+      result.value?.request_id !== requestId ||
+      result.value?.session_id !== record.session_id)
+    throw new Error("TASK_REQUEST_ABANDON_OUTCOME_UNKNOWN");
+  archiveTaskRequest(paths, requestId, "abandoned");
+  return { status: "task_request_abandoned", project: paths.real,
     request_id: requestId, generation: expectedGeneration, replay: "not_replayed" };
 }
 
@@ -1593,6 +1640,12 @@ try {
     const project = projectFromContext();
     if (!project) throw new Error("PROJECT_REQUIRED");
     emit(archiveDeliveredTaskRequest(files(project), process.argv[3], Number(process.argv[4])));
+  }
+  else if (process.argv[2] === "abandon-uncommitted-task-request") {
+    const project = projectFromContext();
+    if (!project) throw new Error("PROJECT_REQUIRED");
+    emit(abandonUncommittedTaskRequest(files(project), process.argv[3],
+      Number(process.argv[4]), process.argv[5]));
   }
   else if (["pause", "resume"].includes(process.argv[2])) await control(process.argv[2]);
   else emit({ status: "error", code: "UNKNOWN_ACTION" }, 2);

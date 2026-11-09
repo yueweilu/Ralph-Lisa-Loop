@@ -23,7 +23,9 @@ test("Ralph Pane requests a task update without exposing a lease; Lisa is refuse
     `if(a[0]==='pane'&&a[1]==='current')console.log(JSON.stringify({result:{pane}}));` +
     `else if(a[0]==='agent'&&a[1]==='get')console.log(JSON.stringify({result:{agent:{` +
     `name:role,agent:role==='ralph'?'claude':'codex',pane_id:'p1',workspace_id:'w1',` +
-    `terminal_id:'t1',cwd:project,agent_status:'working'}}}));` +
+    `terminal_id:'t1',cwd:project,agent_status:process.env.TEST_STATUS||'working',` +
+    `interactive_ready:true,agent_session:process.env.TEST_NATIVE==='1'?` +
+    `{agent:'claude',kind:'id',source:'herdr:claude',value:'native-test-session'}:undefined}}}));` +
     `else process.exitCode=2;\n`);
   fs.chmodSync(herdr, 0o700);
   fs.writeFileSync(path.join(config, "settings.json"), JSON.stringify({ project,
@@ -71,6 +73,16 @@ test("Ralph Pane requests a task update without exposing a lease; Lisa is refuse
     assert.equal(record.content_sha256,
       crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex"));
     assert.equal(record.generation, 0);
+    const blockedWithoutSession = spawnSync(process.execPath, args,
+      { cwd: project, env: { ...env, TEST_STATUS: "blocked" }, encoding: "utf8" });
+    assert.equal(blockedWithoutSession.status, 4);
+    assert.equal(JSON.parse(blockedWithoutSession.stdout).code, "CALLER_AGENT_MISMATCH");
+    const blockedWithSession = spawnSync(process.execPath, args,
+      { cwd: project, env: { ...env, TEST_STATUS: "blocked", TEST_NATIVE: "1" }, encoding: "utf8" });
+    assert.equal(blockedWithSession.status, 0, blockedWithSession.stdout + blockedWithSession.stderr);
+    const idle = spawnSync(process.execPath, args,
+      { cwd: project, env: { ...env, TEST_STATUS: "idle", TEST_NATIVE: "1" }, encoding: "utf8" });
+    assert.equal(idle.status, 4);
     assert.equal(run("host", "snapshot", "--project", project, "--json").generation, 0);
     const release = spawnSync(process.execPath, [cli, "host", "release",
       "--project", project, "--lease-id", lease.lease_id, "--json"],

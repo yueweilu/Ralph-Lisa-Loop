@@ -75,11 +75,13 @@ for (const scenario of ["normal", "hangup", "changed", "before_prompt", "authori
   const fakeCodex = path.join(temp, "codex");
   const fakeCli = path.join(temp, "rll-cli");
   const prompts = path.join(temp, "prompts");
+  const ralphBusy = path.join(temp, "ralph-busy");
   fs.writeFileSync(fakeHerdr, `#!${process.execPath}\n` +
     `const a=process.argv.slice(2);const role=a[2];const project=process.env.FAKE_PROJECT;` +
     `const agent=(r)=>({name:r,agent:r==='ralph'?'claude':'codex',workspace_id:'w1',` +
     `pane_id:r==='ralph'?'w1:p1':'w1:p2',terminal_id:r==='ralph'?'term-r':'term-l',` +
-    `cwd:project,interactive_ready:true,agent_status:'idle'});` +
+    `cwd:project,interactive_ready:true,agent_status:r==='ralph'&&` +
+    `require('node:fs').existsSync(process.env.FAKE_RALPH_BUSY)?'working':'idle'});` +
     `if(a[0]==='--version')console.log('herdr 0.9.4');` +
     `else if(a[0]==='integration')console.log('claude: installed\\ncodex: installed');` +
     `else if(a[0]==='agent'&&a[1]==='get')console.log(JSON.stringify({result:{agent:agent(role)}}));` +
@@ -117,7 +119,7 @@ for (const scenario of ["normal", "hangup", "changed", "before_prompt", "authori
     HERDR_WORKSPACE_ID: "w1", HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({
       workspace_id: "w1", workspace_cwd: project }),
     RLL_LAUNCH_REQUEST_ID: requestId, FAKE_PROJECT: project,
-    FAKE_PROMPTS: prompts, REAL_RLL_CLI: cli };
+    FAKE_PROMPTS: prompts, FAKE_RALPH_BUSY: ralphBusy, REAL_RLL_CLI: cli };
   const child = spawn(process.execPath, [coordinator, "start"],
     { env, stdio: ["ignore", "pipe", "pipe"] });
   try {
@@ -215,6 +217,7 @@ for (const scenario of ["normal", "hangup", "changed", "before_prompt", "authori
         fs.mkdirSync(queue);
         const committed = waitForStatus(child, "task_update_committed", 15000);
         const delivered = waitForStatus(child, "task_updated_delivered", 15000);
+        fs.writeFileSync(ralphBusy, "working");
         fs.writeFileSync(path.join(queue, `${changeId}.json`), JSON.stringify({
           schema: 1, status: "requested", request_id: changeId,
           project_realpath: before.project_realpath, session_id: before.session_id,
@@ -225,6 +228,10 @@ for (const scenario of ["normal", "hangup", "changed", "before_prompt", "authori
           content_sha256: crypto.createHash("sha256").update(body).digest("hex"),
           source_verification: "unverified", requested_at: new Date().toISOString(),
         }));
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        assert.equal(JSON.parse(fs.readFileSync(path.join(sessionDir, "record.json"))).phase, "active");
+        assert.equal(fs.existsSync(path.join(state, "host", "task-update-receipts", `${changeId}.json`)), false);
+        fs.unlinkSync(ralphBusy);
         const committedEvent = await committed;
         assert.equal(committedEvent.status, "task_update_committed", JSON.stringify(committedEvent));
         assert.equal(committedEvent.request_id, changeId);

@@ -65,3 +65,7 @@ Ralph 在自己的 Herdr Pane 收到明确的补充或新任务时，把要求�
 对写前中断的任务意图，`host receipt --request-id` 现在只读返回 `audit_status`、业务摘要及未匹配的固定文件名；不会重放写入，也不输出任务正文。写中和回执后故障矩阵及真实 Herdr 重启接续仍待执行。
 
 任务更新投递确认后，协调器现在立即归档对应请求。若进程恰好在游标已前进、请求尚未归档之间退出，租约恢复仍会被待处理队列阻断。先只读核对 `host snapshot`、`host receipt --request-id`、插件 `record.json` 和 `delivery-<request-id>.json`；四者显示同一代次、同一回执且投递状态为 `accepted` 时，才可在原隔离插件环境执行 `node integrations/herdr/coordinator.mjs archive-delivered-task-request <request-id> <generation-after>`。此命令只归档该请求，不投递 Agent 提示，也不推进业务代次；证据不匹配时返回错误并保留请求。随后重新执行既有的 `recovery-check`、显式租约回收、重绑与接续。未正式提交、未确认投递或部分写入的请求不适用此命令，仍须人工核对，不得用删除队列文件的方式跳过门禁。本地回归覆盖了这一已投递中断窗口；真实 Herdr 重启验收仍待执行。
+
+真实测试还发现 Claude 执行受权限审批的 Bash 时，Herdr 可能将其标为 `blocked`；Pane 适配器现在只在有匹配原生 Claude 会话、交互就绪、当前 Pane/终端/项目均相符时接受该状态。`idle` 和错误席位仍拒绝。协调器若遇到 Ralph 正在完成发起请求的聊天轮次，会等待其 `idle/done`，不把 `AGENT_NOT_READY` 当成需要回收租约的故障。与原生会话有关的检查是席位连续性证据，不是候选作者证明。
+
+若协调器在**任务写入前**退出，`host receipt` 为 `unknown`、快照保持请求的原代次与摘要、插件游标未前进且没有投递文件时，可在确认插件记录为 `needs_reconcile` 后执行 `node integrations/herdr/coordinator.mjs abandon-uncommitted-task-request <request-id> <generation-before> reviewed-no-commit`。命令再次只读核对以上事实，再把请求移入 `task-update-requests-abandoned` 审计目录；不删除正文、改业务状态或投递提示。任何意图、正式回执、摘要变化或未确认投递都会阻断。现场按这条路径处理一次后，显式回收旧租约、重绑并接续，旧提示没有重放。参见[现场记录](d5-chat-task-update-live-2026-11-09.md)。

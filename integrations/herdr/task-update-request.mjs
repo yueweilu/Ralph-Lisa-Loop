@@ -94,10 +94,15 @@ async function main() {
   const agent = agentRead.value?.result?.agent;
   let cwd = null;
   try { cwd = fs.realpathSync.native(agent.cwd); } catch { /* Fail closed. */ }
+  const activeStatus = agent?.agent_status === "working" ||
+    (agent?.agent_status === "blocked" && agent.interactive_ready === true &&
+      agent.agent_session?.agent === "claude" && agent.agent_session?.kind === "id" &&
+      agent.agent_session?.source === "herdr:claude" &&
+      typeof agent.agent_session?.value === "string" && !!agent.agent_session.value);
   if (agentRead.code !== 0 || agent?.name !== "ralph" || agent.agent !== "claude" ||
       agent.pane_id !== pane.pane_id || agent.workspace_id !== pane.workspace_id ||
       agent.terminal_id !== pane.terminal_id || cwd !== requested.project ||
-      agent.agent_status !== "working") return fail("CALLER_AGENT_MISMATCH");
+      !activeStatus) return fail("CALLER_AGENT_MISMATCH");
   const cli = resolveCliArgv(settings.rll_cli_argv);
   const snap = call(cli, ["host", "snapshot", "--project", requested.project, "--json"]);
   const snapshot = snap.value;

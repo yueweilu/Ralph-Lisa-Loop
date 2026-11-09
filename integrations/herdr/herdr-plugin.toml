@@ -1,6 +1,6 @@
 id = "ralph-lisa.loop"
 name = "Ralph-Lisa Loop"
-version = "0.1.5"
+version = "0.1.6"
 min_herdr_version = "0.9.4"
 description = "Run Ralph-Lisa seats and host coordination inside Herdr"
 platforms = ["macos"]

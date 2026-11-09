@@ -17,7 +17,7 @@ export function resolveCliArgv(configured, root = pluginRoot) {
 
 export function agentCliGuidance(argv, root = pluginRoot) {
   const ownCli = path.resolve(root, "../../cli/dist/cli.js");
-  if (argv.length !== 2 || argv[0] !== process.execPath || argv[1] !== ownCli)
+  if (argv.length !== 2 || ![process.execPath, "node"].includes(argv[0]) || argv[1] !== ownCli)
     return "Use the RLL CLI configured for this Herdr plugin when running host commands.";
   const quote = (part) => "'" + part.replaceAll("'", "'\\''") + "'";
   return `Run RLL host commands with ${quote(argv[0])} ${quote(ownCli)} ` +
