@@ -5,7 +5,6 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
 import { createLaunchIntent, recordLaunchWorkspace } from "../herdr/launch-record.js";
 import { inspectHerdrLaunch } from "../herdr/launch-status.js";
 import { initSessionIfAbsent } from "../herdr/session-init.js";
@@ -23,7 +22,7 @@ describe("read-only Herdr launch status", () => {
       assert.equal(pending.host_state, "unclaimed");
       assert.equal(pending.workspace_id, null);
       const cli = spawnSync(process.execPath,
-        [fileURLToPath(new URL("../herdr-rll.js", import.meta.url)), "status", "--project", project],
+        [path.resolve(__dirname, "../herdr-rll.js"), "status", "--project", project],
         { encoding: "utf8" });
       assert.equal(cli.status, 0, cli.stderr);
       assert.equal(JSON.parse(cli.stdout).status, "pending");
