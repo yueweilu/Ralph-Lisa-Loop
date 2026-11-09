@@ -543,7 +543,9 @@ async function waitForAgent(herdr, role, kind, workspaceId, paneId, project, ter
 async function launchAgent(herdr, role, kind, workspaceId, paneId, project, terminalId,
   permissionProfile = null, launch = null) {
   const agentArgs = permissionProfile === null ? [] : kind === "codex"
-    ? permissionProfile === "full_auto" ? ["--no-daemon", "--full-auto"] : ["--no-daemon"]
+    ? permissionProfile === "full_auto"
+      ? ["--no-daemon", "--sandbox", "workspace-write", "--ask-for-approval", "never"]
+      : ["--no-daemon"]
     : permissionProfile === "full_auto" ? ["--dangerously-skip-permissions"] : [];
   for (let attempt = 0; attempt < 12; attempt++) {
     requireManagedPaneOpen(launch);

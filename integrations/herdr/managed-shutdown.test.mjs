@@ -158,6 +158,7 @@ test("managed preclaim close retains an auditable result and resumes the same re
   const readyFlag = path.join(temp, "ralph-ready");
   const lisaFlag = path.join(temp, "lisa-started");
   const promptFile = path.join(temp, "prompts");
+  const startArgsFile = path.join(temp, "agent-start-args");
   fs.writeFileSync(fakeHerdr, `#!${process.execPath}\n` +
     `const fs=require('node:fs');const a=process.argv.slice(2);` +
     `const project=process.env.FAKE_PROJECT;const started=process.env.FAKE_STARTED_FLAG;` +
@@ -175,7 +176,7 @@ test("managed preclaim close retains an auditable result and resumes the same re
     `else if(a[0]==='workspace'&&a[1]==='get')out({workspace:{workspace_id:'w1'}});` +
     `else if(a[0]==='pane'&&a[1]==='get')out({pane:pane(a[2])});` +
     `else if(a[0]==='pane'&&a[1]==='split')out({pane:pane('w1:p2')});` +
-    `else if(a[0]==='agent'&&a[1]==='start'){fs.writeFileSync(a[2]==='ralph'?started:lisa,'1');out({agent:agent(a[2])});}` +
+    `else if(a[0]==='agent'&&a[1]==='start'){fs.appendFileSync(process.env.FAKE_START_ARGS,JSON.stringify(a)+'\\n');fs.writeFileSync(a[2]==='ralph'?started:lisa,'1');out({agent:agent(a[2])});}` +
     `else if(a[0]==='agent'&&a[1]==='get'){if(present(a[2]))out({agent:agent(a[2])});` +
     `else{console.error(JSON.stringify({error:{code:'agent_not_found'}}));process.exitCode=1;}}` +
     `else if(a[0]==='agent'&&a[1]==='prompt'){fs.appendFileSync(process.env.FAKE_PROMPT_FILE,'1');out({type:'agent_prompted',agent:agent(a[2])});}` +
@@ -195,7 +196,7 @@ test("managed preclaim close retains an auditable result and resumes the same re
     request_id: requestId, project_realpath: fs.realpathSync.native(project),
     session_id: identity.session_id,
     task_sha256: crypto.createHash("sha256").update(fs.readFileSync(path.join(state, "task.md"))).digest("hex"),
-    permission_profile: "interactive", auto_commit: false }));
+    permission_profile: "full_auto", auto_commit: false }));
   fs.writeFileSync(path.join(state, "herdr-launch-workspace.json"), JSON.stringify({ schema: 1,
     request_id: requestId, workspace_id: "w1", root_pane_id: "w1:p1", root_terminal_id: "term-r" }));
   const env = { ...process.env, HERDR_BIN_PATH: fakeHerdr,
@@ -205,7 +206,8 @@ test("managed preclaim close retains an auditable result and resumes the same re
       workspace_id: "w1", workspace_cwd: project }),
     RLL_LAUNCH_REQUEST_ID: requestId, FAKE_PROJECT: project,
     FAKE_STARTED_FLAG: startedFlag, FAKE_READY_FLAG: readyFlag,
-    FAKE_LISA_FLAG: lisaFlag, FAKE_PROMPT_FILE: promptFile };
+    FAKE_LISA_FLAG: lisaFlag, FAKE_PROMPT_FILE: promptFile,
+    FAKE_START_ARGS: startArgsFile };
   const child = spawn(process.execPath, [coordinator, "start"],
     { env, stdio: ["ignore", "pipe", "pipe"] });
   let resumed;
@@ -235,6 +237,12 @@ test("managed preclaim close retains an auditable result and resumes the same re
       { env, stdio: ["ignore", "pipe", "pipe"] });
     const started = await waitForStatus(resumed, "started", 30000);
     assert.equal(started.status, "started", JSON.stringify(started));
+    const startArgs = fs.readFileSync(startArgsFile, "utf8").trim().split("\n")
+      .map((line) => JSON.parse(line));
+    assert.deepEqual(startArgs.find((args) => args[2] === "ralph")?.slice(-2),
+      ["--", "--dangerously-skip-permissions"]);
+    assert.deepEqual(startArgs.find((args) => args[2] === "lisa")?.slice(-6),
+      ["--", "--no-daemon", "--sandbox", "workspace-write", "--ask-for-approval", "never"]);
     assert.equal(fs.readFileSync(promptFile, "utf8"), "1");
     const currentResult = JSON.parse(fs.readFileSync(path.join(state, "herdr-launch-result.json")));
     assert.equal(currentResult.status, "started");
