@@ -1,7 +1,8 @@
 /** A session-scoped operator grant. It does not verify who authored a candidate. */
+import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { readLaunchIntent } from "../herdr/launch-record.js";
+import { readLaunchIntent, readLaunchIntentEvidence } from "../herdr/launch-record.js";
 import { readBinding } from "./binding.js";
 import { readGeneration } from "./generation.js";
 import { canonicalProject, HostContractError, inspectProject } from "./inspect.js";
@@ -9,7 +10,7 @@ import { acquireHostLock, entryExists, readLease } from "./lease.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/;
-const FILE = "auto-authorization.json";
+const DIR = "auto-authorizations";
 
 export interface AutoAuthorization {
   schema: 1;
@@ -39,15 +40,25 @@ function syncDirectory(dir: string): void {
   try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
 }
 
+function authorizationDirectory(host: string): string {
+  const dir = path.join(host, DIR);
+  if (!entryExists(dir)) return dir;
+  const stat = fs.lstatSync(dir);
+  if (!stat.isDirectory() || stat.isSymbolicLink() || fs.realpathSync.native(dir) !== dir ||
+      fs.readdirSync(dir).some((name) =>
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json$/.test(name)))
+    throw new HostContractError("NEEDS_RECONCILE", 7, "Auto authorization inventory is incomplete");
+  return dir;
+}
+
 /** Missing means manual mode; malformed or incomplete evidence fails closed. */
 export function readAutoAuthorization(host: string, project: string, state: string,
-  sessionId: string): AutoAuthorization | null {
-  const file = path.join(host, FILE);
-  if (!entryExists(file)) {
-    if (entryExists(path.join(host, "auto-authorization.pending")))
-      throw new HostContractError("NEEDS_RECONCILE", 7, "Auto authorization write is incomplete");
-    return null;
-  }
+  sessionId: string, leaseId: string): AutoAuthorization | null {
+  if (!UUID.test(leaseId)) throw new HostContractError("INVALID_ARGUMENTS", 2, "Invalid lease ID");
+  const dir = authorizationDirectory(host);
+  if (!entryExists(dir)) return null;
+  const file = path.join(dir, `${leaseId.toLowerCase()}.json`);
+  if (!entryExists(file)) return null;
   let value: AutoAuthorization;
   try {
     const stat = fs.lstatSync(file);
@@ -61,7 +72,7 @@ export function readAutoAuthorization(host: string, project: string, state: stri
       value.mode !== "unattended_candidate_commit" || value.policy_revision !== 1 ||
       value.project_realpath !== project || value.state_realpath !== state ||
       value.session_id !== sessionId || !UUID.test(value.launch_request_id ?? "") ||
-      !UUID.test(value.lease_id ?? "") ||
+      value.lease_id !== leaseId.toLowerCase() ||
       !Number.isSafeInteger(value.binding_generation) || value.binding_generation < 1 ||
       typeof value.workspace_id !== "string" || !value.workspace_id ||
       !seats || [seats.ralph, seats.lisa].some((seat) =>
@@ -77,16 +88,33 @@ export function readAutoAuthorization(host: string, project: string, state: stri
     throw new HostContractError("NEEDS_RECONCILE", 7, "Invalid auto authorization");
   }
   let launch;
-  try { launch = readLaunchIntent(project, value.launch_request_id); }
+  try { launch = readLaunchIntentEvidence(project, value.launch_request_id); }
   catch { throw new HostContractError("NEEDS_RECONCILE", 7, "Auto authorization launch intent is invalid"); }
   if (launch.auto_commit !== true || launch.session_id !== sessionId ||
       launch.task_sha256 !== value.task_sha256 ||
       launch.permission_profile !== value.permission_profile) {
     throw new HostContractError("NEEDS_RECONCILE", 7, "Auto authorization differs from launch intent");
   }
-  if (entryExists(path.join(host, "auto-authorization.pending")))
-    throw new HostContractError("NEEDS_RECONCILE", 7, "Auto authorization write is incomplete");
   return value;
+}
+
+/** A changed task, lease, binding, Workspace, or seat ends this grant's reach. */
+export function autoAuthorizationForSeat(host: string, project: string, state: string,
+  sessionId: string, leaseId: string, bindingGeneration: number, workspaceId: string,
+  role: "ralph" | "lisa", paneId: string, agentTarget: string): AutoAuthorization | null {
+  const record = readAutoAuthorization(host, project, state, sessionId, leaseId);
+  if (!record) return null;
+  let taskHash: string;
+  try {
+    const bytes = fs.readFileSync(path.join(state, "task.md"));
+    taskHash = crypto.createHash("sha256").update(bytes).digest("hex");
+  } catch {
+    throw new HostContractError("NEEDS_RECONCILE", 7, "Cannot inspect the authorized task");
+  }
+  if (record.binding_generation !== bindingGeneration || record.workspace_id !== workspaceId ||
+      record.seats[role].pane_id !== paneId || record.seats[role].agent_target !== agentTarget ||
+      record.task_sha256 !== taskHash) return null;
+  return record;
 }
 
 /** Requires a fresh Herdr launch intent and a fully bound generation-zero lease. */
@@ -107,7 +135,8 @@ export function grantAutoAuthorization(project: string, leaseId: string, launchR
     if (current.state_realpath !== initial.state_realpath || current.session_id !== initial.session_id)
       throw new HostContractError("STALE_SESSION", 5, "Session changed while acquiring the host lock");
     const host = path.join(initial.state_realpath, "host");
-    const existing = readAutoAuthorization(host, root, initial.state_realpath, initial.session_id);
+    const existing = readAutoAuthorization(host, root, initial.state_realpath,
+      initial.session_id, leaseId);
     if (existing) {
       if (existing.lease_id !== leaseId.toLowerCase() ||
           existing.launch_request_id !== launchRequestId.toLowerCase() ||
@@ -146,12 +175,15 @@ export function grantAutoAuthorization(project: string, leaseId: string, launchR
       granted_via: grantedVia, source_verification: "unverified",
       granted_at: new Date().toISOString(),
     };
-    const pending = path.join(host, "auto-authorization.pending");
+    const dir = path.join(host, DIR);
+    if (!entryExists(dir)) { fs.mkdirSync(dir, { mode: 0o700 }); syncDirectory(host); }
+    authorizationDirectory(host);
+    const pending = path.join(dir, `${record.lease_id}.pending`);
     const fd = fs.openSync(pending, "wx", 0o600);
     try { fs.writeFileSync(fd, JSON.stringify(record) + "\n", "utf8"); fs.fsyncSync(fd); }
     finally { fs.closeSync(fd); }
-    fs.renameSync(pending, path.join(host, FILE));
-    syncDirectory(host);
+    fs.renameSync(pending, path.join(dir, `${record.lease_id}.json`));
+    syncDirectory(dir);
     return record;
   } finally { release(); }
 }

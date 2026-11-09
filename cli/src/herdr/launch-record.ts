@@ -56,17 +56,25 @@ export function createLaunchIntent(project: string, sessionId: string, requestId
   return intent;
 }
 
-export function readLaunchIntent(project: string, requestId: string): LaunchIntent {
+/** Historical evidence remains readable after a later controlled task update. */
+export function readLaunchIntentEvidence(project: string, requestId: string): LaunchIntent {
   const real = fs.realpathSync.native(project);
   const intent = readRegular<LaunchIntent>(stateFile(real, "herdr-launch-intent.json"));
   const identity = readRegular<{ session_id?: string; project_realpath?: string }>(stateFile(real, "session.json"));
-  const task = fs.readFileSync(stateFile(real, "task.md"));
   if (intent.schema !== 1 || intent.request_id !== requestId ||
       intent.project_realpath !== real || !UUID.test(intent.session_id) ||
       identity.session_id !== intent.session_id || identity.project_realpath !== real ||
-      intent.task_sha256 !== crypto.createHash("sha256").update(task).digest("hex") ||
+      !/^[0-9a-f]{64}$/.test(intent.task_sha256) ||
       !["interactive", "full_auto"].includes(intent.permission_profile) ||
       typeof intent.auto_commit !== "boolean") throw new Error("LAUNCH_INTENT_MISMATCH");
+  return intent;
+}
+
+export function readLaunchIntent(project: string, requestId: string): LaunchIntent {
+  const intent = readLaunchIntentEvidence(project, requestId);
+  const task = fs.readFileSync(stateFile(project, "task.md"));
+  if (intent.task_sha256 !== crypto.createHash("sha256").update(task).digest("hex"))
+    throw new Error("LAUNCH_INTENT_MISMATCH");
   return intent;
 }
 

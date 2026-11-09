@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { spawnSync } from "node:child_process";
-import { grantAutoAuthorization, readAutoAuthorization } from "../host/auto-authorization.js";
+import { autoAuthorizationForSeat, grantAutoAuthorization, readAutoAuthorization } from "../host/auto-authorization.js";
 
 const cli = path.join(__dirname, "..", "cli.js");
 
@@ -50,7 +50,7 @@ describe("session-scoped auto authorization record", () => {
       fs.writeFileSync(launchFile, JSON.stringify(launch));
       assert.throws(() => grantAutoAuthorization(project, lease.lease_id, launchRequestId,
         lisa.binding_generation, "cli_auto_host_herdr"), /Launch did not grant/);
-      assert.equal(readAutoAuthorization(host, project, state, session.session_id), null);
+      assert.equal(readAutoAuthorization(host, project, state, session.session_id, lease.lease_id), null);
       launch.auto_commit = true;
       fs.writeFileSync(launchFile, JSON.stringify(launch));
       const granted = grantAutoAuthorization(project, lease.lease_id, launchRequestId,
@@ -61,16 +61,23 @@ describe("session-scoped auto authorization record", () => {
       assert.equal(granted.seats.lisa.pane_id, "w1:p2");
       assert.deepEqual(grantAutoAuthorization(project, lease.lease_id, launchRequestId,
         lisa.binding_generation, "cli_auto_host_herdr"), granted);
-      assert.deepEqual(readAutoAuthorization(host, project, state, session.session_id), granted);
+      assert.deepEqual(readAutoAuthorization(host, project, state, session.session_id, lease.lease_id), granted);
       assert.equal(fs.existsSync(path.join(host, "confirmations")), false);
       const after = run("host", "snapshot", "--project", project, "--json");
       assert.equal(after.generation, 0);
       assert.equal(after.candidate_count, 0);
+      assert.deepEqual(autoAuthorizationForSeat(host, project, state, session.session_id,
+        lease.lease_id, lisa.binding_generation, "w1", "ralph", "w1:p1", "ralph"), granted);
+      assert.equal(autoAuthorizationForSeat(host, project, state, session.session_id,
+        lease.lease_id, lisa.binding_generation + 1, "w1", "ralph", "w1:p1", "ralph"), null);
       assert.throws(() => grantAutoAuthorization(project, crypto.randomUUID(), launchRequestId,
-        lisa.binding_generation, "cli_auto_host_herdr"), /another launch or lease/);
-      fs.writeFileSync(path.join(host, "auto-authorization.json"),
+        lisa.binding_generation, "cli_auto_host_herdr"), /bound initial turn/);
+      fs.appendFileSync(path.join(state, "task.md"), "Changed task\n");
+      assert.equal(autoAuthorizationForSeat(host, project, state, session.session_id,
+        lease.lease_id, lisa.binding_generation, "w1", "ralph", "w1:p1", "ralph"), null);
+      fs.writeFileSync(path.join(host, "auto-authorizations", `${lease.lease_id}.json`),
         JSON.stringify({ ...granted, source_verification: "verified" }));
-      assert.throws(() => readAutoAuthorization(host, project, state, session.session_id),
+      assert.throws(() => readAutoAuthorization(host, project, state, session.session_id, lease.lease_id),
         /Invalid auto authorization/);
     } finally { fs.rmSync(project, { recursive: true, force: true }); }
   });
