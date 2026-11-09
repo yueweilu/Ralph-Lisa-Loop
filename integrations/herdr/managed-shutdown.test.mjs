@@ -118,6 +118,19 @@ for (const scenario of ["normal", "hangup", "changed", "before_prompt", "authori
         assert.equal(authorization.status, "active");
         assert.equal(authorization.source_verification, "unverified");
         assert.equal(fs.existsSync(path.join(state, "host", "confirmations")), false);
+        const handedOff = waitForStatus(child, "handed_off", 15000);
+        const proposal = path.join(project, "candidate.md");
+        fs.writeFileSync(proposal,
+          "[PLAN] Create README.md with the requested sentence.\n\n" +
+          "Test Plan: run cat README.md to verify the exact sentence and single-line scope.\n");
+        const proposed = spawnSync(process.execPath, [cli, "host", "propose",
+          "--project", project, "--role", "ralph", "--file", "candidate.md",
+          "--candidate-id", crypto.randomUUID(), "--json"], { encoding: "utf8" });
+        assert.equal(proposed.status, 0, proposed.stdout + proposed.stderr);
+        const handed = await handedOff;
+        assert.equal(handed.status, "handed_off", JSON.stringify(handed));
+        assert.equal(handed.role, "lisa");
+        assert.equal(fs.existsSync(path.join(state, "host", "confirmations")), false);
       }
       if (scenario === "changed") fs.writeFileSync(path.join(state, "work.md"), "Changed after baseline");
       child.kill(scenario === "hangup" ? "SIGHUP" : "SIGTERM");
@@ -145,6 +158,7 @@ for (const scenario of ["normal", "hangup", "changed", "before_prompt", "authori
         "--project", project, "--json"], { encoding: "utf8" });
       assert.equal(snapshot.status, 0, snapshot.stdout + snapshot.stderr);
       assert.equal(JSON.parse(snapshot.stdout).host_state, "unclaimed");
+      assert.equal(JSON.parse(snapshot.stdout).generation, scenario === "authorized" ? 1 : 0);
       const finished = fs.readdirSync(sessionDir).find((name) => name.startsWith("finished-"));
       assert.ok(finished);
       assert.equal(JSON.parse(fs.readFileSync(path.join(sessionDir, finished))).stop_reason,

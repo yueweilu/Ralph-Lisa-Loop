@@ -346,6 +346,100 @@ function checkDelivery(paths, record, cli, herdr, plan) {
   return next;
 }
 
+function autoCommitRequestId(sessionId, generation, candidateId) {
+  const bytes = crypto.createHash("sha256")
+    .update(`rll-auto-commit\0${sessionId}\0${generation}\0${candidateId}`).digest();
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.subarray(0, 16).toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function checkAutoCandidate(paths, record, cli, herdr, plan) {
+  const observed = call(cli, ["host", "snapshot", "--project", paths.real, "--json"]);
+  if (hostBusy(observed)) return record;
+  const snapshot = requireActiveSnapshot(observed, paths, record, plan);
+  if (snapshot.generation !== record.cursor_generation ||
+      snapshot.last_receipt_id !== record.cursor_receipt_id) return record;
+  const listed = call(cli, ["host", "candidates", "--project", paths.real, "--json"]);
+  if (hostBusy(listed)) return record;
+  if (listed.code !== 0 || listed.value?.status !== "ok" ||
+      listed.value.session_id !== record.session_id ||
+      !Array.isArray(listed.value.candidates))
+    throw new Error(listed.value?.code || "AUTO_CANDIDATES_UNAVAILABLE");
+  const matches = listed.value.candidates.filter((candidate) =>
+    candidate.session_id === record.session_id && candidate.lease_id === record.lease_id &&
+    candidate.generation === record.cursor_generation &&
+    candidate.binding_generation === record.binding_generation &&
+    candidate.role === record.cursor_turn);
+  if (matches.length === 0) return record;
+  if (matches.length !== 1) throw new Error("AUTO_CANDIDATE_AMBIGUOUS");
+  const candidate = matches[0];
+  const role = record.cursor_turn;
+  if (!UUID.test(candidate.candidate_id ?? "") ||
+      !/^[0-9a-f]{64}$/.test(candidate.content_sha256 ?? "") ||
+      candidate.state_digest !== snapshot.state_digest ||
+      candidate.turn !== snapshot.turn || candidate.round !== snapshot.round ||
+      candidate.step !== snapshot.step ||
+      candidate.intended_workspace_id !== plan.workspace_id ||
+      candidate.intended_pane_id !== plan.seats[role].pane_id ||
+      candidate.intended_agent_target !== role ||
+      candidate.source_verification !== "unverified")
+    throw new Error("AUTO_CANDIDATE_MISMATCH");
+  try { verifySeat(herdr, plan, role, role === "ralph" ? "claude" : "codex"); }
+  catch (error) {
+    if (error.message === "AGENT_NOT_READY") return record;
+    throw error;
+  }
+  const requestId = autoCommitRequestId(record.session_id, snapshot.generation, candidate.candidate_id);
+  if (record.auto_commit_request_id && record.auto_commit_generation === snapshot.generation &&
+      (record.auto_commit_request_id !== requestId ||
+        record.auto_commit_candidate_id !== candidate.candidate_id ||
+        record.auto_commit_content_sha256 !== candidate.content_sha256))
+    throw new Error("AUTO_COMMIT_REQUEST_CONFLICT");
+  const args = ["--project", paths.real, "--lease-id", record.lease_id,
+    "--request-id", requestId, "--candidate-id", candidate.candidate_id,
+    "--expected-generation", String(snapshot.generation),
+    "--expected-binding-generation", String(record.binding_generation), "--json"];
+  const checked = call(cli, ["host", "commit-check", ...args]);
+  if (hostBusy(checked)) return record;
+  if (checked.code !== 0 || checked.value?.status !== "auto_source_authorized" ||
+      checked.value.candidate_id !== candidate.candidate_id ||
+      checked.value.content_sha256 !== candidate.content_sha256 ||
+      checked.value.generation_before !== snapshot.generation ||
+      checked.value.binding_generation !== record.binding_generation ||
+      checked.value.auto_authorization !== "active")
+    throw new Error(checked.value?.code || checked.value?.status || "AUTO_COMMIT_CHECK_FAILED");
+  if (!record.auto_commit_request_id || record.auto_commit_generation !== snapshot.generation) {
+    record = { ...record, auto_commit_request_id: requestId,
+      auto_commit_candidate_id: candidate.candidate_id,
+      auto_commit_generation: snapshot.generation,
+      auto_commit_content_sha256: candidate.content_sha256 };
+    durableWrite(paths.record, record);
+  }
+  const committed = call(cli, ["host", "commit", ...args], { timeoutMs: 120000 });
+  if (hostBusy(committed) || committed.code !== 0 || committed.value?.status !== "committed") {
+    const lookup = call(cli, ["host", "receipt", "--project", paths.real,
+      "--request-id", requestId, "--json"]);
+    if (lookup.code !== 0 || lookup.value?.status !== "committed")
+      throw new Error("AUTO_COMMIT_REQUIRES_RECONCILE");
+  }
+  const receipt = call(cli, ["host", "receipt", "--project", paths.real,
+    "--request-id", requestId, "--json"]);
+  if (receipt.code !== 0 || receipt.value?.status !== "committed" ||
+      receipt.value.request_id !== requestId ||
+      receipt.value.candidate_id !== candidate.candidate_id ||
+      receipt.value.content_sha256 !== candidate.content_sha256 ||
+      receipt.value.generation_before !== snapshot.generation ||
+      receipt.value.lease_id !== record.lease_id ||
+      receipt.value.source_confirmation !== "session_authorized_auto" ||
+      receipt.value.source_verification !== "unverified")
+    throw new Error("AUTO_COMMIT_RECEIPT_MISMATCH");
+  emit({ status: "auto_committed", project: paths.real, request_id: requestId,
+    candidate_id: candidate.candidate_id, generation: receipt.value.generation_after });
+  return record;
+}
+
 async function runActiveLoop(paths, initialRecord, cli, herdr, signalState = null) {
   let record = initialRecord;
   const plan = record.plan;
@@ -389,7 +483,10 @@ async function runActiveLoop(paths, initialRecord, cli, herdr, signalState = nul
       return;
     }
     record = processControl(paths, record, cli, herdr, plan);
-    if (record.phase === "active") record = checkDelivery(paths, record, cli, herdr, plan);
+    if (record.phase === "active") {
+      record = checkDelivery(paths, record, cli, herdr, plan);
+      if (record.auto_commit === true) record = checkAutoCandidate(paths, record, cli, herdr, plan);
+    }
     if (++ticks % 5 === 0) {
       for (const [role, kind] of [["ralph", "claude"], ["lisa", "codex"]]) {
         const nativeSession = observeSeat(herdr, plan, role, kind, false);
@@ -797,6 +894,9 @@ async function start() {
   try {
     if (retry) {
       record = claimPreclaimRetry(paths, initial);
+      if ((record.auto_commit === true) !== (launch?.autoCommit === true) ||
+          (record.launch_request_id ?? null) !== (launch?.requestId ?? null))
+        throw new Error("PRECLAIM_LAUNCH_MODE_CHANGED");
       if (launch) launch.retryResult = true;
     } else {
       if (fs.readdirSync(paths.dir).length !== 0)
@@ -810,7 +910,9 @@ async function start() {
       }
       record = { schema: 1, phase: "intent", owner_id: crypto.randomUUID(), pid: process.pid,
         project_realpath: paths.real, session_id: initial.session_id,
-        expected_digest: initial.state_digest, plan };
+        expected_digest: initial.state_digest, plan,
+        auto_commit: launch?.autoCommit === true,
+        launch_request_id: launch?.requestId ?? null };
       try { durableWrite(paths.record, record, true); }
       catch (error) {
         if (error.code === "EEXIST") throw new Error("COORDINATOR_EXISTS");
