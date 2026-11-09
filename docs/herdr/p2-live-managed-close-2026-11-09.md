@@ -23,10 +23,10 @@
 2. 受管理启动监听 SIGHUP，并用可被信号立即唤醒的等待代替一秒固定睡眠。活动循环仍先核对宿主快照、游标及未投递回执，再调用原 `host release`；检查不通过继续保留租约供人工恢复。
 3. 回归覆盖预领租约关闭后同请求重试、初始提示一次、SIGTERM/SIGHUP 关闭及业务状态变化时拒绝释放。模拟测试不替代上述真实 Herdr 证据。
 
-## 尚未验收
+## 前三次试验后的未验收项
 
 - Lisa/Codex 在这三次启动中均未向 Herdr 返回可保存的原生会话引用；第三次 finished 记录中 Lisa 的原生引用指纹为 `null`。因此不能据此宣布双席 Server 重启接续通过。需独立排查 Codex 启动/SessionStart hook、Herdr `agent get` 与本插件 `nativeSessionReference` 的字段契约，并用新的隔离会话复验。
-- 本轮没有正式候选、Ralph→Lisa 或 Lisa→Ralph 交接，也未验证任务输入 overlay 的视觉呈现。自动提交仍受现有逐份人工来源确认门禁约束；本次修复没有放宽门禁。
+- 前三次试验没有正式候选、Ralph→Lisa 或 Lisa→Ralph 交接，也未验证任务输入 overlay 的视觉呈现。自动提交仍受现有逐份人工来源确认门禁约束；本次修复没有放宽门禁。
 - 关闭活动 Pane 时的安全释放仅在快照与游标一致、没有待投递回执的场景通过。SIGKILL、Server 异常退出、忙锁或已提交而未交接的场景仍需 S4 只读恢复与显式决策。
 
 ## 验证记录
@@ -52,3 +52,11 @@
 用户随后仅对这份候选 `56cafeea-c9c3-4566-92fa-2a7c63c87abc`、SHA-256 `6288226e2bdd92e1bf413407d33e5619b691166332fe2628657130ca0ffba18f` 确认来源并授权正式提交一次。重读候选及 `commit-check` 后，用同一请求 ID 一次 `confirm-candidate`、一次 `host commit`；CLI 返回 committed，generation 0→1、turn Ralph→Lisa。插件 `delivery-*` 为 accepted、游标 1；Lisa Pane 收到正式提示。Lisa 随后提出候选，但未获来源确认，未正式提交。关闭协调器后 host unclaimed、generation 1、candidate_count 2；命名 Server 已停止。
 
 该真实交接暴露了更窄的时序差：Herdr `agent get lisa` 在提示后出现 `agent_session`（`kind=id`、`source=herdr:codex`），但协调器在 `agent_prompted` 回执刚返回时读取仍为空，持久计划中的 Lisa 指纹继续为 `null`。既有代码只在该瞬间尝试记录，没有在后续心跳补存。修复后，活动心跳只对已接受过正式提示、且原指纹为空的席位观察并持久保存后来出现的引用指纹；未提示的 Lisa 不自动登记。模拟 Herdr 回归延迟揭示 Lisa 引用，检查同一交接只投递一次且后续记录取得指纹。修复后的真实再验仍待完成，不能把本次旧进程的结果写成已通过。
+
+### 延迟引用修复后的真实再验
+
+新建 `config8/state8`、命名 Server `rll-p2native-ml523e` 和同路径全新临时项目，链接修复后的本仓插件。`auto --host herdr --full-auto` 返回 `started`，两席绑定，Ralph 初始任务一次 accepted。Ralph 提出的 `[PLAN]` 候选 `0b87cfb5-934d-49ce-9b3e-fa86f13fd6bf`、SHA-256 `1951ea3240ae8b078fe049986b0bf938cd18b029cd0b12cd77c4657b0a1ab06d` 经只读 `candidate-show` 和 `commit-check` 核对；用户仅对这份候选明确接受来源并授权正式提交一次。随后同一请求 ID `3c6a0977-0c04-4410-98c3-49ec2f051e58` 的一次 `confirm-candidate` 与一次 `host commit` 返回 human_asserted、committed，generation 0→1、turn Ralph→Lisa。
+
+插件只有一份该回执的 `delivery-*`，状态 accepted、角色 Lisa、游标 1。真实 `herdr agent get lisa` 显示 ready、working、`agent_session` 存在且来源 `herdr:codex`；活动记录在后续心跳保存 Lisa 原生引用 SHA-256 指纹。关闭协调器 Pane 后，宿主快照为 unclaimed、binding stale、generation 1；finished 记录为 `phase=released`、`stop_reason=managed_pane_closed`，Ralph/Lisa 两席指纹均存在。Lisa 另提出一份候选，未获单独来源确认，未正式提交。命名 Server 已停止，临时证据目录保留。
+
+本地插件套件 47/47 通过；修复提交 `8a7bfb95bb3bf18b063ce4533fa235ca494fa4c2` 的 [GitHub CI](https://github.com/yueweilu/Ralph-Lisa-Loop/actions/runs/42565344550) 在 Node 18/20/22 全部成功。这证实 P2 的正式首交接后原生引用持久化及受管理关闭收尾。任务输入 overlay 的视觉呈现、两个入口与本次新进程的非零游标 Server 重启接续仍需分别验收；本次没有启用自动来源授权或无人值守正式提交。
