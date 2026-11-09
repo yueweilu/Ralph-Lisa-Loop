@@ -6,7 +6,7 @@ import { checkSubmission, extractLastTag } from "../submission.js";
 import { evaluateGate, gateOptionsFromEnv, type GateRunner } from "../gate.js";
 import { HostContractError } from "./inspect.js";
 import { assertNoPendingIntents, entryExists } from "./lease.js";
-import { prepareHostIntent, readArchivedHostIntent, type HostIntentInput } from "./transaction.js";
+import { prepareHostIntent, type HostIntentInput } from "./transaction.js";
 import { readGeneration, type GenerationRecord } from "./generation.js";
 import { committedReceiptLedger, type CommittedReceiptLedger, type ReceiptChecks } from "./receipt-store.js";
 import { candidateInventory, type HostCandidate } from "./candidate.js";
@@ -150,16 +150,12 @@ export function rejectedReceiptInventory(
       !name.endsWith(".json") || !UUID.test(name.slice(0, -5)) || name !== name.toLowerCase())) {
     throw new HostContractError("NEEDS_RECONCILE", 7, "Rejected receipt inventory is incomplete");
   }
-  const baseline = ledger.receipts.length > 0
-    ? readArchivedHostIntent(host, ledger.receipts[0].request_id) : null;
-  if (ledger.receipts.length > 0 && !baseline) {
-    throw new HostContractError("NEEDS_RECONCILE", 7, "Rejected receipt baseline is missing");
-  }
+  const baseline = ledger.transitions[0] ?? null;
   const receipts = receiptNames.map((name) => {
     const id = name.slice(0, -5);
     const receipt = readRejectedReceipt(host, id);
     const candidate = candidates.find((item) => item.candidate_id === receipt?.candidate_id);
-    const previous = receipt && receipt.generation > 0 ? ledger.receipts[receipt.generation - 1] : null;
+    const previous = receipt && receipt.generation > 0 ? ledger.transitions[receipt.generation - 1] : null;
     const expected = previous
       ? { digest: previous.state_digest_after, turn: previous.turn_after,
           round: previous.round_after, step: previous.step_after }

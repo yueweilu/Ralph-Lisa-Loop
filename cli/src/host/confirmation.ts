@@ -8,7 +8,6 @@ import { readGeneration, type GenerationRecord } from "./generation.js";
 import { canonicalProject, HostContractError, inspectProject } from "./inspect.js";
 import { acquireHostLock, assertNoPendingIntents, entryExists } from "./lease.js";
 import { committedReceiptLedger, type CommittedReceiptLedger } from "./receipt-store.js";
-import { readArchivedHostIntent } from "./transaction.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -147,16 +146,12 @@ export function humanConfirmationInventory(
       !name.endsWith(".json") || !UUID.test(name.slice(0, -5)) || name !== name.toLowerCase())) {
     throw new HostContractError("NEEDS_RECONCILE", 7, "Confirmation inventory is incomplete");
   }
-  const baseline = ledger.receipts.length > 0
-    ? readArchivedHostIntent(host, ledger.receipts[0].request_id) : null;
-  if (ledger.receipts.length > 0 && !baseline) {
-    throw new HostContractError("NEEDS_RECONCILE", 7, "Confirmation baseline is missing");
-  }
+  const baseline = ledger.transitions[0] ?? null;
   const confirmations = recordNames.map((name) => {
     const record = readHumanConfirmation(host, name.slice(0, -5));
     const candidate = candidates.find((item) => item.candidate_id === record?.candidate_id);
     const committed = ledger.receipts.find((item) => item.request_id === record?.request_id);
-    const previous = record && record.generation > 0 ? ledger.receipts[record.generation - 1] : null;
+    const previous = record && record.generation > 0 ? ledger.transitions[record.generation - 1] : null;
     const expected = previous
       ? { digest: previous.state_digest_after, turn: previous.turn_after,
           round: previous.round_after, step: previous.step_after }

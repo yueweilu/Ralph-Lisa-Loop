@@ -29,6 +29,8 @@ export interface TaskUpdatePreflight {
   request_id: string;
   mode: TaskUpdateMode;
   content_sha256: string;
+  task_version_before: number;
+  task_version_after: number;
   generation_before: number;
   binding_generation: number;
   state_digest_before: string;
@@ -122,13 +124,14 @@ export function checkTaskUpdate(project: string, leaseId: string, requestId: str
     const candidates = candidateInventory(host, root, state, initial.session_id).candidates;
     rejectedReceiptInventory(host, root, state, initial.session_id, generation, ledger, candidates);
     humanConfirmationInventory(host, root, state, initial.session_id, generation, ledger, candidates);
-    if (ledger.receipts.some((receipt) => receipt.request_id === requestId.toLowerCase()) ||
+    if (ledger.transitions.some((transition) => transition.request_id === requestId.toLowerCase()) ||
         entryExists(path.join(host, "archived-intents", `${requestId.toLowerCase()}.json`)))
       throw new HostContractError("DUPLICATE_CONFLICT", 5, "Request ID already belongs to a submission");
     return {
       schema: 1, status: "ready", project_realpath: root, session_id: initial.session_id,
       lease_id: lease.lease_id, request_id: requestId.toLowerCase(), mode,
       content_sha256: contentSha256, generation_before: generation.generation,
+      task_version_before: ledger.task_version, task_version_after: ledger.task_version + 1,
       binding_generation: binding.binding_generation, state_digest_before: digest,
       turn_before: current.turn!, round_before: current.round!, step_before: current.step!,
       target_role: mode === "switch" ? "ralph" : current.turn!,

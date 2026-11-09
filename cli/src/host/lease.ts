@@ -134,11 +134,14 @@ function assertNoHostMarkers(host: string): void {
 }
 
 export function assertNoPendingIntents(host: string): void {
-  const intentsDir = path.join(host, "intents");
-  if (entryExists(intentsDir)) {
-    const stat = fs.lstatSync(intentsDir);
-    if (!stat.isDirectory() || stat.isSymbolicLink() || fs.readdirSync(intentsDir).length > 0) {
-      throw new HostContractError("NEEDS_RECONCILE", 7, "Resolve pending host intents before changing the lease");
+  for (const name of ["intents", "task-update-intents"]) {
+    const intentsDir = path.join(host, name);
+    if (entryExists(intentsDir)) {
+      const stat = fs.lstatSync(intentsDir);
+      if (!stat.isDirectory() || stat.isSymbolicLink() || fs.realpathSync.native(intentsDir) !== intentsDir ||
+          fs.readdirSync(intentsDir).length > 0) {
+        throw new HostContractError("NEEDS_RECONCILE", 7, "Resolve pending host intents before changing the lease");
+      }
     }
   }
 }

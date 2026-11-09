@@ -7,6 +7,7 @@ import { readGeneration, type GenerationRecord } from "./generation.js";
 import { HostContractError } from "./inspect.js";
 import { assertNoPendingIntents, entryExists } from "./lease.js";
 import { auditHostIntent, auditHostIntentRecord, readArchivedHostIntent, readHostIntent, type HostIntent } from "./transaction.js";
+import { taskUpdatePairs, type TaskUpdateReceipt } from "./task-update-record.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -54,9 +55,25 @@ export interface ReceiptChecks {
 
 export interface CommittedReceiptLedger {
   count: number;
+  task_version: number;
   digest: string | null;
   receipts: CommittedHostReceipt[];
-  latest: CommittedHostReceipt | null;
+  transitions: HostTransition[];
+  latest: CommittedHostReceipt | TaskUpdateReceipt | null;
+}
+
+export interface HostTransition {
+  request_id: string;
+  generation_before: number;
+  generation_after: number;
+  state_digest_before: string;
+  state_digest_after: string;
+  turn_before: "ralph" | "lisa";
+  turn_after: "ralph" | "lisa";
+  round_before: number;
+  round_after: number;
+  step_before: string;
+  step_after: string;
 }
 
 function regularDirectory(dir: string): void {
@@ -178,6 +195,7 @@ export function committedReceiptLedger(
 ): CommittedReceiptLedger {
   const receiptsDir = path.join(host, "receipts");
   const archiveDir = path.join(host, "archived-intents");
+  const updates = taskUpdatePairs(host, project, state, sessionId);
   if (!entryExists(receiptsDir)) {
     if (entryExists(archiveDir)) {
       regularDirectory(archiveDir);
@@ -185,12 +203,13 @@ export function committedReceiptLedger(
         throw new HostContractError("NEEDS_RECONCILE", 7, "Archived intents have no receipts");
       }
     }
-    if (generation && generation.generation > 0) {
+    if (generation && generation.generation > 0 && updates.length === 0) {
       throw new HostContractError("NEEDS_RECONCILE", 7, "Generation has no committed receipts");
     }
-    return { count: 0, digest: null, receipts: [], latest: null };
+    if (updates.length === 0)
+      return { count: 0, task_version: 1, digest: null, receipts: [], transitions: [], latest: null };
   }
-  regularDirectory(receiptsDir);
+  if (entryExists(receiptsDir)) regularDirectory(receiptsDir);
   const pendingId = activeLatestRequestId?.toLowerCase();
   if (pendingId) {
     if (!UUID.test(pendingId)) throw new HostContractError("INVALID_ARGUMENTS", 2, "Invalid active request ID");
@@ -202,15 +221,16 @@ export function committedReceiptLedger(
   } else {
     assertNoPendingIntents(host);
   }
-  const receiptNames = fs.readdirSync(receiptsDir).sort();
+  const receiptNames = entryExists(receiptsDir) ? fs.readdirSync(receiptsDir).sort() : [];
   const expectedArchiveNames = receiptNames.filter((name) => name !== `${pendingId}.json`);
   let archiveNames: string[] = [];
   if (entryExists(archiveDir)) {
     regularDirectory(archiveDir);
     archiveNames = fs.readdirSync(archiveDir).sort();
   }
-  if (!generation || receiptNames.length === 0 ||
-      receiptNames.length !== generation.generation ||
+  if ((entryExists(receiptsDir) && receiptNames.length === 0 && updates.length === 0) ||
+      (!generation && receiptNames.length + updates.length > 0) ||
+      (generation && receiptNames.length + updates.length !== generation.generation) ||
       (pendingId && !receiptNames.includes(`${pendingId}.json`)) ||
       JSON.stringify(expectedArchiveNames) !== JSON.stringify(archiveNames) ||
       receiptNames.some((name) => !name.endsWith(".json") ||
@@ -239,28 +259,47 @@ export function committedReceiptLedger(
       throw new HostContractError("NEEDS_RECONCILE", 7, "Committed receipt differs from archived intent");
     }
     return { receipt, intent };
-  }).sort((a, b) => a.receipt.generation_before - b.receipt.generation_before);
+  });
+  const allPairs = [...pairs, ...updates].sort((a, b) =>
+    a.receipt.generation_before - b.receipt.generation_before);
+  if (new Set(allPairs.map(({ receipt }) => receipt.request_id)).size !== allPairs.length)
+    throw new HostContractError("NEEDS_RECONCILE", 7, "Host transition request ID is reused");
   const hash = crypto.createHash("sha256");
-  for (let index = 0; index < pairs.length; index++) {
-    const { receipt, intent } = pairs[index];
-    const previous = pairs[index - 1]?.receipt;
+  let taskVersion = 1;
+  const transitions: HostTransition[] = [];
+  for (let index = 0; index < allPairs.length; index++) {
+    const { receipt, intent } = allPairs[index];
+    const previous = allPairs[index - 1]?.receipt;
     if (receipt.generation_before !== index || receipt.generation_after !== index + 1 ||
         (previous && (intent.state_digest_before !== previous.state_digest_after ||
           intent.turn_before !== previous.turn_after || intent.round_before !== previous.round_after ||
           intent.step_before !== previous.step_after))) {
       throw new HostContractError("NEEDS_RECONCILE", 7, "Committed receipt chain has a gap or changed transition");
     }
+    if ("event" in receipt) {
+      if (!("event" in intent) || intent.task_version_before !== taskVersion)
+        throw new HostContractError("NEEDS_RECONCILE", 7, "Task version has a gap");
+      taskVersion++;
+    }
+    transitions.push({ request_id: receipt.request_id,
+      generation_before: receipt.generation_before, generation_after: receipt.generation_after,
+      state_digest_before: intent.state_digest_before, state_digest_after: receipt.state_digest_after,
+      turn_before: intent.turn_before, turn_after: receipt.turn_after,
+      round_before: intent.round_before, round_after: receipt.round_after,
+      step_before: intent.step_before, step_after: receipt.step_after });
     hash.update(JSON.stringify({ receipt, intent })).update("\n");
   }
   const receipts = pairs.map(({ receipt }) => receipt);
-  const latest = receipts[receipts.length - 1];
-  if ((pendingId && latest.request_id !== pendingId) ||
-      generation.last_receipt_id !== latest.request_id ||
-      generation.state_digest !== latest.state_digest_after || generation.turn !== latest.turn_after ||
-      generation.round !== latest.round_after || generation.step !== latest.step_after) {
+  const latest = allPairs.at(-1)?.receipt ?? null;
+  if ((pendingId && latest?.request_id !== pendingId) ||
+      (latest && (!generation || generation.last_receipt_id !== latest.request_id ||
+        generation.state_digest !== latest.state_digest_after || generation.turn !== latest.turn_after ||
+        generation.round !== latest.round_after || generation.step !== latest.step_after))) {
     throw new HostContractError("NEEDS_RECONCILE", 7, "Latest receipt differs from generation");
   }
-  return { count: receipts.length, digest: hash.digest("hex"), receipts, latest };
+  return { count: allPairs.length, task_version: taskVersion,
+    digest: allPairs.length ? hash.digest("hex") : null,
+    receipts, transitions, latest };
 }
 
 /** Only the latest receipt can be checked against live business state. */
