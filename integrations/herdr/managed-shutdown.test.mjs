@@ -40,9 +40,10 @@ function waitForStatus(child, expected, timeoutMs = 15000) {
   });
 }
 
-for (const scenario of ["normal", "hangup", "changed", "before_prompt"]) test(
+for (const scenario of ["normal", "hangup", "changed", "before_prompt", "authorized"]) test(
   scenario === "changed" ? "managed close retains the lease when business state changed" :
     scenario === "before_prompt" ? "managed close before initial prompt retains the lease without delivery" :
+    scenario === "authorized" ? "managed launch records a scoped auto grant before the first prompt" :
     scenario === "hangup" ? "managed pane hangup releases a matching lease" :
     "closing a managed coordinator releases only a matching cursor", async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "rll-managed-stop-"));
@@ -86,7 +87,8 @@ for (const scenario of ["normal", "hangup", "changed", "before_prompt"]) test(
     request_id: requestId, project_realpath: fs.realpathSync.native(project),
     session_id: identity.session_id,
     task_sha256: crypto.createHash("sha256").update(fs.readFileSync(path.join(state, "task.md"))).digest("hex"),
-    permission_profile: "interactive", auto_commit: false }));
+    permission_profile: "interactive", auto_commit: scenario === "authorized",
+    ...(scenario === "authorized" ? { auto_commit_granted_via: "cli_auto_host_herdr" } : {}) }));
   fs.writeFileSync(path.join(state, "herdr-launch-workspace.json"), JSON.stringify({ schema: 1,
     request_id: requestId, workspace_id: "w1", root_pane_id: "w1:p1", root_terminal_id: "term-r" }));
   const env = { ...process.env, HERDR_BIN_PATH: fakeHerdr,
@@ -108,15 +110,24 @@ for (const scenario of ["normal", "hangup", "changed", "before_prompt"]) test(
     } else {
       assert.equal(started.status, "started", JSON.stringify(started));
       assert.equal(JSON.parse(fs.readFileSync(path.join(state, "herdr-launch-result.json"))).status, "started");
+      if (scenario === "authorized") {
+        const active = JSON.parse(fs.readFileSync(path.join(pluginState, "sessions",
+          fs.readdirSync(path.join(pluginState, "sessions"))[0], "record.json")));
+        const authorization = JSON.parse(fs.readFileSync(path.join(state, "host",
+          "auto-authorizations", `${active.lease_id}.json`)));
+        assert.equal(authorization.status, "active");
+        assert.equal(authorization.source_verification, "unverified");
+        assert.equal(fs.existsSync(path.join(state, "host", "confirmations")), false);
+      }
       if (scenario === "changed") fs.writeFileSync(path.join(state, "work.md"), "Changed after baseline");
       child.kill(scenario === "hangup" ? "SIGHUP" : "SIGTERM");
     }
     const stopped = scenario === "before_prompt" ? started :
       await waitForStatus(child, scenario === "changed" ? "needs_reconcile" : "stopped");
-    assert.equal(stopped.status, ["normal", "hangup"].includes(scenario) ? "stopped" : "needs_reconcile", JSON.stringify(stopped));
+    assert.equal(stopped.status, ["normal", "hangup", "authorized"].includes(scenario) ? "stopped" : "needs_reconcile", JSON.stringify(stopped));
     const sessionDir = path.join(pluginState, "sessions",
       fs.readdirSync(path.join(pluginState, "sessions"))[0]);
-    if (!["normal", "hangup"].includes(scenario)) {
+    if (!["normal", "hangup", "authorized"].includes(scenario)) {
       assert.equal(fs.existsSync(path.join(state, "host", "lease")), true);
       assert.equal(JSON.parse(fs.readFileSync(path.join(sessionDir, "record.json"))).phase,
         "needs_reconcile");

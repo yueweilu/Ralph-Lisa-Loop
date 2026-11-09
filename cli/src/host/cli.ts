@@ -10,6 +10,7 @@ import { receiptStatus } from "./receipt.js";
 import { checkHostCommit } from "./commit-check.js";
 import { confirmCandidateSource } from "./confirmation.js";
 import { commitHostCandidate } from "./commit.js";
+import { grantAutoAuthorization } from "./auto-authorization.js";
 import { commandLockCheck, retireCommandLock } from "./command-lock-recovery.js";
 
 function options(args: string[], names: string[]): Record<string, string> {
@@ -136,6 +137,17 @@ export function cmdHost(args: string[]): void {
           opts["--decision"]);
         break;
       }
+      case "authorize-auto": {
+        const opts = options(args.slice(1), ["--project", "--lease-id", "--launch-request-id",
+          "--expected-binding-generation", "--granted-via"]);
+        if (opts["--granted-via"] !== "cli_auto_host_herdr" &&
+            opts["--granted-via"] !== "plugin_start_task")
+          throw new HostContractError("INVALID_ARGUMENTS", 2, "Invalid auto authorization entrypoint");
+        result = grantAutoAuthorization(opts["--project"], opts["--lease-id"],
+          opts["--launch-request-id"], decimal(opts["--expected-binding-generation"]),
+          opts["--granted-via"]);
+        break;
+      }
       case "commit": {
         const opts = options(args.slice(1), ["--project", "--lease-id", "--request-id",
           "--candidate-id", "--expected-generation", "--expected-binding-generation"]);
@@ -157,7 +169,7 @@ export function cmdHost(args: string[]): void {
         break;
       }
       default:
-        throw new HostContractError("UNKNOWN_HOST_COMMAND", 2, "Usage: ralph-lisa host <inspect|adopt|confirm-adoption|claim|heartbeat|command-lock-check|retire-command-lock|recovery-check|recover-lease|bind-seat|snapshot|prepare-generation|propose|candidates|candidate-show|commit-check|confirm-candidate|commit|receipt|release> ... --json");
+        throw new HostContractError("UNKNOWN_HOST_COMMAND", 2, "Usage: ralph-lisa host <inspect|adopt|confirm-adoption|claim|heartbeat|command-lock-check|retire-command-lock|recover-lease|bind-seat|snapshot|prepare-generation|propose|candidates|candidate-show|commit-check|confirm-candidate|authorize-auto|commit|receipt|release> ... --json");
     }
     console.log(JSON.stringify(result));
   } catch (error) {

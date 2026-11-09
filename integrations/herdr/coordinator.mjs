@@ -91,7 +91,10 @@ function launchFromContext() {
   if (intent.schema !== 1 || intent.request_id !== requestId ||
       intent.project_realpath !== project || intent.session_id !== identity.session_id ||
       identity.project_realpath !== project ||
-      intent.task_sha256 !== taskSha || intent.auto_commit !== false ||
+      intent.task_sha256 !== taskSha || typeof intent.auto_commit !== "boolean" ||
+      (intent.auto_commit && !["cli_auto_host_herdr", "plugin_start_task"]
+        .includes(intent.auto_commit_granted_via)) ||
+      (!intent.auto_commit && intent.auto_commit_granted_via !== undefined) ||
       !["interactive", "full_auto"].includes(intent.permission_profile) ||
       workspace.schema !== 1 || workspace.request_id !== requestId ||
       workspace.workspace_id !== context.workspace_id ||
@@ -99,7 +102,8 @@ function launchFromContext() {
       !workspace.root_pane_id || !workspace.root_terminal_id)
     throw new Error("LAUNCH_INTENT_MISMATCH");
   return { requestId, project, workspace, sessionId: intent.session_id,
-    permissionProfile: intent.permission_profile };
+    permissionProfile: intent.permission_profile, autoCommit: intent.auto_commit,
+    grantedVia: intent.auto_commit_granted_via ?? null };
 }
 
 function writeLaunchResult(launch, status, code) {
@@ -893,6 +897,19 @@ async function start() {
     // One zero-delay timer can run before the signal callback on loaded CI hosts.
     if (launch) await new Promise((resolve) => setTimeout(resolve, 50));
     requireManagedPaneOpen(launch);
+    if (launch?.autoCommit) {
+      const granted = call(cli, ["host", "authorize-auto", "--project", paths.real,
+        "--lease-id", lease.lease_id, "--launch-request-id", launch.requestId,
+        "--expected-binding-generation", String(current.value.binding_generation),
+        "--granted-via", launch.grantedVia, "--json"]);
+      if (granted.code !== 0 || granted.value?.status !== "active" ||
+          granted.value?.lease_id !== lease.lease_id ||
+          granted.value?.binding_generation !== current.value.binding_generation ||
+          granted.value?.source_verification !== "unverified")
+        throw new Error(granted.value?.code || "AUTO_AUTHORIZATION_UNCERTAIN");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      requireManagedPaneOpen(launch);
+    }
     record = deliverInitial(paths, record, cli, herdr, plan, taskFile);
     writeLaunchResult(launch, "started");
     emit({ status: "started", project: paths.real, workspace_id: plan.workspace_id,

@@ -12,6 +12,7 @@ export type LaunchIntent = {
   task_sha256: string;
   permission_profile: "interactive" | "full_auto";
   auto_commit: boolean;
+  auto_commit_granted_via?: "cli_auto_host_herdr" | "plugin_start_task";
 };
 
 export type LaunchWorkspace = {
@@ -66,7 +67,11 @@ export function readLaunchIntentEvidence(project: string, requestId: string): La
       identity.session_id !== intent.session_id || identity.project_realpath !== real ||
       !/^[0-9a-f]{64}$/.test(intent.task_sha256) ||
       !["interactive", "full_auto"].includes(intent.permission_profile) ||
-      typeof intent.auto_commit !== "boolean") throw new Error("LAUNCH_INTENT_MISMATCH");
+      typeof intent.auto_commit !== "boolean" ||
+      (intent.auto_commit && !["cli_auto_host_herdr", "plugin_start_task"]
+        .includes(intent.auto_commit_granted_via ?? "")) ||
+      (!intent.auto_commit && intent.auto_commit_granted_via !== undefined))
+    throw new Error("LAUNCH_INTENT_MISMATCH");
   return intent;
 }
 

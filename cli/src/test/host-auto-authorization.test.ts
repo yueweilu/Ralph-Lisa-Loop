@@ -29,7 +29,8 @@ describe("session-scoped auto authorization record", () => {
       const launch = { schema: 1, request_id: launchRequestId, project_realpath: project,
         session_id: session.session_id,
         task_sha256: crypto.createHash("sha256").update(fs.readFileSync(path.join(state, "task.md"))).digest("hex"),
-        permission_profile: "interactive", auto_commit: false };
+        permission_profile: "interactive", auto_commit: false,
+        auto_commit_granted_via: undefined as "cli_auto_host_herdr" | undefined };
       fs.writeFileSync(launchFile, JSON.stringify(launch));
       const lease = run("host", "claim", "--project", project,
         "--host", "herdr", "--owner-id", crypto.randomUUID(), "--json");
@@ -37,6 +38,7 @@ describe("session-scoped auto authorization record", () => {
         "--role", "ralph", "--workspace-id", "w1", "--pane-id", "w1:p1",
         "--agent-target", "ralph", "--json");
       launch.auto_commit = true;
+      launch.auto_commit_granted_via = "cli_auto_host_herdr";
       fs.writeFileSync(launchFile, JSON.stringify(launch));
       assert.throws(() => grantAutoAuthorization(project, lease.lease_id, launchRequestId,
         ralph.binding_generation, "cli_auto_host_herdr"), /bound initial turn/);
@@ -47,11 +49,13 @@ describe("session-scoped auto authorization record", () => {
       run("host", "prepare-generation", "--project", project,
         "--lease-id", lease.lease_id, "--expected-digest", snapshot.state_digest, "--json");
       launch.auto_commit = false;
+      launch.auto_commit_granted_via = undefined;
       fs.writeFileSync(launchFile, JSON.stringify(launch));
       assert.throws(() => grantAutoAuthorization(project, lease.lease_id, launchRequestId,
         lisa.binding_generation, "cli_auto_host_herdr"), /Launch did not grant/);
       assert.equal(readAutoAuthorization(host, project, state, session.session_id, lease.lease_id), null);
       launch.auto_commit = true;
+      launch.auto_commit_granted_via = "cli_auto_host_herdr";
       fs.writeFileSync(launchFile, JSON.stringify(launch));
       const granted = grantAutoAuthorization(project, lease.lease_id, launchRequestId,
         lisa.binding_generation, "cli_auto_host_herdr");
@@ -102,6 +106,7 @@ describe("session-scoped auto authorization record", () => {
         session_id: session.session_id,
         task_sha256: crypto.createHash("sha256").update(fs.readFileSync(path.join(state, "task.md"))).digest("hex"),
         permission_profile: "interactive", auto_commit: true,
+        auto_commit_granted_via: "cli_auto_host_herdr",
       }));
       const lease = run("host", "claim", "--project", project,
         "--host", "herdr", "--owner-id", crypto.randomUUID(), "--json");
@@ -114,8 +119,11 @@ describe("session-scoped auto authorization record", () => {
       const baseline = run("host", "snapshot", "--project", project, "--json");
       run("host", "prepare-generation", "--project", project,
         "--lease-id", lease.lease_id, "--expected-digest", baseline.state_digest, "--json");
-      grantAutoAuthorization(project, lease.lease_id, launchRequestId,
-        binding.binding_generation, "cli_auto_host_herdr");
+      const authorization = run("host", "authorize-auto", "--project", project,
+        "--lease-id", lease.lease_id, "--launch-request-id", launchRequestId,
+        "--expected-binding-generation", String(binding.binding_generation),
+        "--granted-via", "cli_auto_host_herdr", "--json");
+      assert.equal(authorization.source_verification, "unverified");
       const candidateId = crypto.randomUUID();
       const candidateFile = path.join(project, "candidate.md");
       fs.writeFileSync(candidateFile, "[PLAN] Create the README.\n\nTest Plan: read README.md after writing it.\n");

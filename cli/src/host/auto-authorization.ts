@@ -92,6 +92,7 @@ export function readAutoAuthorization(host: string, project: string, state: stri
   catch { throw new HostContractError("NEEDS_RECONCILE", 7, "Auto authorization launch intent is invalid"); }
   if (launch.auto_commit !== true || launch.session_id !== sessionId ||
       launch.task_sha256 !== value.task_sha256 ||
+      launch.auto_commit_granted_via !== value.granted_via ||
       launch.permission_profile !== value.permission_profile) {
     throw new HostContractError("NEEDS_RECONCILE", 7, "Auto authorization differs from launch intent");
   }
@@ -148,7 +149,7 @@ export function grantAutoAuthorization(project: string, leaseId: string, launchR
     let launch;
     try { launch = readLaunchIntent(root, launchRequestId.toLowerCase()); }
     catch { throw new HostContractError("AUTO_AUTHORIZATION_REQUIRED", 5, "No valid auto-authorized launch intent"); }
-    if (launch.auto_commit !== true)
+    if (launch.auto_commit !== true || launch.auto_commit_granted_via !== grantedVia)
       throw new HostContractError("AUTO_AUTHORIZATION_REQUIRED", 5, "Launch did not grant automatic candidate commits");
     const lease = readLease(host);
     const binding = readBinding(host);
