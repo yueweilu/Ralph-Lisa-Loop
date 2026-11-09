@@ -11,7 +11,7 @@ import { businessDigest } from "./business.js";
 import { candidateInventory } from "./candidate.js";
 import { rejectedReceiptInventory } from "./rejection.js";
 import { humanConfirmationInventory } from "./confirmation.js";
-import { readTaskUpdateIntent, readTaskUpdateReceipt } from "./task-update-record.js";
+import { auditTaskUpdateIntent, readTaskUpdateIntent, readTaskUpdateReceipt } from "./task-update-record.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -31,6 +31,17 @@ export interface HostReceiptStatus {
     state_digest_after: string;
     audit_status: "before" | "applied" | "partial";
     state_digest_observed: string | null;
+  };
+  task_update_intent?: {
+    mode: "supplement" | "switch";
+    generation_before: number;
+    task_version_before: number;
+    content_sha256: string;
+    state_digest_before: string;
+    state_digest_after: string;
+    audit_status: "before" | "applied" | "partial";
+    state_digest_observed: string | null;
+    unmatched_files: string[];
   };
 }
 
@@ -90,7 +101,20 @@ export function receiptStatus(project: string, requestId: string): HostReceiptSt
     try {
       const taskReceipt = readTaskUpdateReceipt(host, requestId);
       const taskIntent = readTaskUpdateIntent(host, requestId);
-      if (taskIntent) return reconcile(requestId, sessionId, "pending_task_update_intent");
+      if (taskIntent) {
+        const audit = auditTaskUpdateIntent(taskIntent);
+        return { ...reconcile(requestId, sessionId, "pending_task_update_intent"),
+          task_update_intent: {
+            mode: taskIntent.mode, generation_before: taskIntent.generation_before,
+            task_version_before: taskIntent.task_version_before,
+            content_sha256: taskIntent.content_sha256,
+            state_digest_before: taskIntent.state_digest_before,
+            state_digest_after: taskIntent.state_digest_after,
+            audit_status: audit.status, state_digest_observed: audit.state_digest_observed,
+            unmatched_files: audit.files.filter((file) => !file.matches_before && !file.matches_after)
+              .map((file) => file.name),
+          } };
+      }
       if (taskReceipt) {
         committedReceiptLedger(host, root, current.state_realpath, sessionId, generation);
         if (!generation || generation.generation < taskReceipt.generation_after)

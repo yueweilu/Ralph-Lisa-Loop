@@ -112,7 +112,35 @@ describe("host-managed task update", () => {
       assert.equal(switched.task_version_after, 4);
       assert.equal(switched.turn_after, "ralph");
       assert.equal(switched.round_after, 1);
-      assert.equal(run("host", "snapshot", "--project", project, "--json").generation, 4);
+      const finalSnapshot = run("host", "snapshot", "--project", project, "--json");
+      assert.equal(finalSnapshot.generation, 4);
+      const host = path.join(state, "host");
+      const pendingId = crypto.randomUUID();
+      const oldIntent = JSON.parse(fs.readFileSync(path.join(host, "task-update-archived",
+        `${requestId}.json`), "utf8"));
+      const pending = { ...oldIntent, request_id: pendingId, mode: "supplement",
+        generation_before: 4, task_version_before: 4, task_version_after: 5,
+        turn_before: finalSnapshot.turn, round_before: finalSnapshot.round,
+        step_before: finalSnapshot.step, turn_after: finalSnapshot.turn,
+        round_after: finalSnapshot.round, step_after: finalSnapshot.step,
+        state_digest_before: finalSnapshot.state_digest,
+        changes: oldIntent.changes.map((change: { name: string; action: string }) => ({
+          name: change.name, action: "write",
+          before_sha256: crypto.createHash("sha256")
+            .update(fs.readFileSync(path.join(state, change.name))).digest("hex"),
+          after_sha256: "0".repeat(64),
+        })),
+      };
+      fs.writeFileSync(path.join(host, "task-update-intents", `${pendingId}.json`),
+        JSON.stringify(pending));
+      const uncertain = invoke("host", "receipt", "--project", project,
+        "--request-id", pendingId, "--json");
+      assert.equal(uncertain.status, 7);
+      const evidence = JSON.parse(uncertain.stdout);
+      assert.equal(evidence.status, "needs_reconcile");
+      assert.equal(evidence.task_update_intent.audit_status, "before");
+      assert.deepEqual(evidence.task_update_intent.unmatched_files, []);
+      assert.equal(invoke("host", "snapshot", "--project", project, "--json").status, 7);
     } finally { fs.rmSync(project, { recursive: true, force: true }); }
   });
 });

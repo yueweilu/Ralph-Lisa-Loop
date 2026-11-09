@@ -9,7 +9,7 @@ import { readGeneration } from "./generation.js";
 import { committedReceiptLedger } from "./receipt-store.js";
 import { checkTaskUpdateLocked, readTaskUpdateText, type TaskUpdateMode,
   type TaskUpdatePreflight } from "./task-update-check.js";
-import { readTaskUpdateIntent, readTaskUpdateReceipt, type TaskUpdateChange,
+import { auditTaskUpdateIntent, readTaskUpdateIntent, readTaskUpdateReceipt, type TaskUpdateChange,
   type TaskUpdateIntent, type TaskUpdateReceipt } from "./task-update-record.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -119,24 +119,6 @@ function apply(state: string, changes: PlannedChange[]): void {
   syncDirectory(state);
 }
 
-function audit(intent: TaskUpdateIntent): "before" | "applied" | "partial" {
-  const observed = intent.changes.map((change) => {
-    try { const bytes = currentFile(intent.state_realpath, change.name); return bytes ? sha(bytes) : null; }
-    catch { return "unreadable"; }
-  });
-  let digest: string | null = null;
-  try {
-    const current = inspectProject(intent.project_realpath);
-    if (current.session_id === intent.session_id && current.state_realpath === intent.state_realpath)
-      digest = businessDigest(intent.state_realpath, current.turn!, current.round!, current.step!);
-  } catch { /* A torn business file remains partial. */ }
-  if (digest === intent.state_digest_after &&
-      intent.changes.every((change, i) => observed[i] === change.after_sha256)) return "applied";
-  if (digest === intent.state_digest_before &&
-      intent.changes.every((change, i) => observed[i] === change.before_sha256)) return "before";
-  return "partial";
-}
-
 function sameRequest(receipt: TaskUpdateReceipt, leaseId: string, requestId: string,
   generation: number, bindingGeneration: number, mode: TaskUpdateMode, hash: string): boolean {
   return receipt.request_id === requestId && receipt.lease_id === leaseId &&
@@ -173,7 +155,7 @@ export function updateHostTask(project: string, leaseId: string, requestId: stri
       if (intent.project_realpath !== root || intent.session_id !== initial.session_id ||
           intent.state_realpath !== state || intent.state_digest_before !== expectedDigest)
         throw new HostContractError("DUPLICATE_CONFLICT", 5, "Task-update request belongs to another state");
-      if (active && audit(intent) !== "applied")
+      if (active && auditTaskUpdateIntent(intent).status !== "applied")
         throw new HostContractError("NEEDS_RECONCILE", 7, "Task-update business writes need review");
       const generation = readGeneration(host, root, state, initial.session_id);
       if (!generation || generation.generation < stored.generation_after)
@@ -214,7 +196,8 @@ export function updateHostTask(project: string, leaseId: string, requestId: stri
     atomicJson(intents, requestId, intent);
     try {
       apply(state, changes);
-      if (businessDigest(state, nextTurn, nextRound, nextStep) !== afterDigest || audit(intent) !== "applied")
+      if (businessDigest(state, nextTurn, nextRound, nextStep) !== afterDigest ||
+          auditTaskUpdateIntent(intent).status !== "applied")
         throw new HostContractError("NEEDS_RECONCILE", 7, "Task-update write differs from intent");
       const prior = readGeneration(host, root, state, initial.session_id);
       if (!prior || prior.generation !== expectedGeneration ||

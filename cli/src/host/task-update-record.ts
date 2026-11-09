@@ -1,7 +1,9 @@
 /** Immutable read side of host task-update events. Existing submission receipts stay unchanged. */
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { HostContractError } from "./inspect.js";
+import * as crypto from "node:crypto";
+import { businessDigest } from "./business.js";
+import { HostContractError, inspectProject } from "./inspect.js";
 import { entryExists } from "./lease.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -71,6 +73,45 @@ export interface TaskUpdateReceipt {
 export interface TaskUpdatePair {
   intent: TaskUpdateIntent;
   receipt: TaskUpdateReceipt;
+}
+
+export interface TaskUpdateAudit {
+  schema: 1;
+  status: "before" | "applied" | "partial";
+  request_id: string;
+  state_digest_observed: string | null;
+  files: Array<{ name: string; observed_sha256: string | null;
+    matches_before: boolean; matches_after: boolean }>;
+}
+
+/** Read-only evidence for an interrupted task write; never replays it. */
+export function auditTaskUpdateIntent(intent: TaskUpdateIntent): TaskUpdateAudit {
+  const files = intent.changes.map((change) => {
+    let observed: string | null = null;
+    let readable = true;
+    try {
+      const file = path.join(intent.state_realpath, change.name);
+      if (entryExists(file)) {
+        const stat = fs.lstatSync(file);
+        if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("invalid business file");
+        observed = crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+      }
+    } catch { readable = false; }
+    return { name: change.name, observed_sha256: observed,
+      matches_before: readable && observed === change.before_sha256,
+      matches_after: readable && observed === change.after_sha256 };
+  });
+  let digest: string | null = null;
+  try {
+    const current = inspectProject(intent.project_realpath);
+    if (current.session_id === intent.session_id && current.state_realpath === intent.state_realpath)
+      digest = businessDigest(intent.state_realpath, current.turn!, current.round!, current.step!);
+  } catch { /* A torn business file remains partial evidence. */ }
+  const status = files.every((file) => file.matches_after) && digest === intent.state_digest_after
+    ? "applied" : files.every((file) => file.matches_before) &&
+      digest === intent.state_digest_before ? "before" : "partial";
+  return { schema: 1, status, request_id: intent.request_id,
+    state_digest_observed: digest, files };
 }
 
 function directory(host: string, name: string): string | null {
