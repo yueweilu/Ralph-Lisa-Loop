@@ -11,6 +11,23 @@ const root = path.dirname(fileURLToPath(import.meta.url));
 const cli = path.resolve(root, "../../cli/dist/cli.js");
 const coordinator = path.join(root, "coordinator.mjs");
 
+function proposeWhenUnlocked(project, role, file) {
+  const candidateId = crypto.randomUUID();
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const result = spawnSync(process.execPath, [cli, "host", "propose",
+      "--project", project, "--role", role, "--file", file,
+      "--candidate-id", candidateId, "--json"], { encoding: "utf8" });
+    let response;
+    try { response = JSON.parse(result.stdout); } catch { /* Assertion below includes output. */ }
+    if (result.status !== 4 || response?.code !== "HOST_BUSY") {
+      assert.equal(result.status, 0, result.stdout + result.stderr);
+      return;
+    }
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+  }
+  assert.fail("host propose stayed busy after bounded retries");
+}
+
 function waitForStatus(child, expected, timeoutMs = 15000) {
   return new Promise((resolve, reject) => {
     let buffer = "";
@@ -123,13 +140,19 @@ for (const scenario of ["normal", "hangup", "changed", "before_prompt", "authori
         fs.writeFileSync(proposal,
           "[PLAN] Create README.md with the requested sentence.\n\n" +
           "Test Plan: run cat README.md to verify the exact sentence and single-line scope.\n");
-        const proposed = spawnSync(process.execPath, [cli, "host", "propose",
-          "--project", project, "--role", "ralph", "--file", "candidate.md",
-          "--candidate-id", crypto.randomUUID(), "--json"], { encoding: "utf8" });
-        assert.equal(proposed.status, 0, proposed.stdout + proposed.stderr);
+        proposeWhenUnlocked(project, "ralph", "candidate.md");
         const handed = await handedOff;
         assert.equal(handed.status, "handed_off", JSON.stringify(handed));
         assert.equal(handed.role, "lisa");
+        const returned = waitForStatus(child, "handed_off", 15000);
+        fs.writeFileSync(path.join(project, "lisa-candidate.md"),
+          "[NEEDS_WORK] The plan does not specify the exact README sentence.\n\n" +
+          "Reason: candidate.md:1 leaves the sentence unspecified, so implementation cannot be checked.\n");
+        proposeWhenUnlocked(project, "lisa", "lisa-candidate.md");
+        const back = await returned;
+        assert.equal(back.status, "handed_off", JSON.stringify(back));
+        assert.equal(back.role, "ralph");
+        assert.equal(back.generation, 2);
         assert.equal(fs.existsSync(path.join(state, "host", "confirmations")), false);
       }
       if (scenario === "changed") fs.writeFileSync(path.join(state, "work.md"), "Changed after baseline");
@@ -158,7 +181,7 @@ for (const scenario of ["normal", "hangup", "changed", "before_prompt", "authori
         "--project", project, "--json"], { encoding: "utf8" });
       assert.equal(snapshot.status, 0, snapshot.stdout + snapshot.stderr);
       assert.equal(JSON.parse(snapshot.stdout).host_state, "unclaimed");
-      assert.equal(JSON.parse(snapshot.stdout).generation, scenario === "authorized" ? 1 : 0);
+      assert.equal(JSON.parse(snapshot.stdout).generation, scenario === "authorized" ? 2 : 0);
       const finished = fs.readdirSync(sessionDir).find((name) => name.startsWith("finished-"));
       assert.ok(finished);
       assert.equal(JSON.parse(fs.readFileSync(path.join(sessionDir, finished))).stop_reason,
