@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { requireActiveSnapshot } from "./snapshot-diagnostic.mjs";
@@ -423,7 +423,7 @@ for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commi
   "server-restart", "server-restart-bind-failure", "server-restart-continue",
   "server-restart-continue-failure", "server-restart-continue-uncertain",
   "server-restart-nonzero-continue", "server-restart-nonzero-paused",
-  "server-restart-nonzero-rebind-twice"]) test(
+  "server-restart-nonzero-rebind-twice", "server-restart-task-update"]) test(
   `${failure} Herdr prompt keeps one durable intent and stops without replay`, async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "rll-herdr-uncertain-"));
   const project = path.join(temp, "project");
@@ -443,7 +443,7 @@ for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commi
     `if(a[0]==='--version')console.log('herdr 0.9.4');` +
     `else if(a[0]==='integration')console.log('claude: current (v10)\\ncodex: current (v9)');` +
     `else if(a[0]==='agent'&&a[1]==='get'){const role=a[2];const fs=require('node:fs');const changed=fs.existsSync(process.env.FAKE_SERVER_RESTARTED);const marker=process.env.FAKE_AUDIT_MUTATION;if(role==='ralph'&&marker&&fs.existsSync(marker)){const target=fs.readFileSync(marker,'utf8').trim()==='lease'?process.env.FAKE_LEASE_PATH:process.env.FAKE_RECORD_PATH;const value=JSON.parse(fs.readFileSync(target,'utf8'));if(target===process.env.FAKE_LEASE_PATH)value.heartbeat_seq++;else value.error='changed-during-audit';fs.writeFileSync(target,JSON.stringify(value));fs.unlinkSync(marker);}const rebindMarker=process.env.FAKE_REBIND_MARKER;const continuationMarker=process.env.FAKE_CONTINUATION_MARKER;const fail=(rebindMarker&&fs.existsSync(rebindMarker)&&JSON.parse(fs.readFileSync(rebindMarker,'utf8')).status==='claimed')||(continuationMarker&&fs.existsSync(continuationMarker));const lisaSession=role==='lisa'&&process.env.FAKE_PROMPT_FAILURE==='server-restart-nonzero-continue'&&fs.existsSync(process.env.FAKE_PROMPTS)&&fs.readFileSync(process.env.FAKE_PROMPTS,'utf8').includes('lisa\\n');console.log(JSON.stringify({result:{agent:{name:role,agent:role==='ralph'?'claude':'codex',workspace_id:'w1',pane_id:role==='ralph'?'w1:p1':'w1:p2',terminal_id:(fail?'bad-':changed?'new-':'term-')+role,cwd:process.env.FAKE_PROJECT,agent_session:role==='ralph'?{agent:'claude',kind:'id',source:'herdr:claude',value:process.env.FAKE_RALPH_SESSION||'ralph-session-1'}:lisaSession?{agent:'codex',kind:'id',source:'herdr:codex',value:'lisa-session-1'}:undefined,interactive_ready:true,agent_status:'idle'}}}));}` +
-    `else if(a[0]==='agent'&&a[1]==='prompt'){require('node:fs').appendFileSync(process.env.FAKE_PROMPTS,a[2]+'\\n');if((a[2]==='ralph'&&process.env.FAKE_PROMPT_FAILURE==='initial-timeout')||(a[2]==='lisa'&&process.env.FAKE_PROMPT_FAILURE==='timeout')){console.error(JSON.stringify({error:{code:'timeout'}}));process.exitCode=1;}else if(a[2]==='ralph')console.log(JSON.stringify({result:{type:'agent_prompted',agent:{name:'ralph',agent:'claude',workspace_id:'w1',pane_id:'w1:p1',cwd:process.env.FAKE_PROJECT}}}));else console.log(JSON.stringify({result:{type:'agent_prompted',agent:{name:a[2],agent:'codex',workspace_id:'w1',pane_id:['server-restart-continue','server-restart-nonzero-continue'].includes(process.env.FAKE_PROMPT_FAILURE)?'w1:p2':'w1:p9',cwd:process.env.FAKE_PROJECT}}}));}` +
+    `else if(a[0]==='agent'&&a[1]==='prompt'){require('node:fs').appendFileSync(process.env.FAKE_PROMPTS,a[2]+'\\n');if((a[2]==='ralph'&&process.env.FAKE_PROMPT_FAILURE==='initial-timeout')||(a[2]==='lisa'&&process.env.FAKE_PROMPT_FAILURE==='timeout')){console.error(JSON.stringify({error:{code:'timeout'}}));process.exitCode=1;}else if(a[2]==='ralph')console.log(JSON.stringify({result:{type:'agent_prompted',agent:{name:'ralph',agent:'claude',workspace_id:'w1',pane_id:'w1:p1',cwd:process.env.FAKE_PROJECT}}}));else console.log(JSON.stringify({result:{type:'agent_prompted',agent:{name:a[2],agent:'codex',workspace_id:'w1',pane_id:['server-restart-continue','server-restart-nonzero-continue','server-restart-task-update'].includes(process.env.FAKE_PROMPT_FAILURE)?'w1:p2':'w1:p9',cwd:process.env.FAKE_PROJECT}}}));}` +
     `else process.exitCode=2;\n`);
   fs.writeFileSync(fakeClaude, `#!${process.execPath}\nconsole.log('{"loggedIn":true}');\n`);
   fs.writeFileSync(fakeCodex, `#!${process.execPath}\nconsole.log('Logged in using ChatGPT');\n`);
@@ -564,7 +564,8 @@ for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commi
     if (failure.startsWith("server-restart")) {
       const nonzero = ["server-restart-nonzero-continue",
         "server-restart-nonzero-paused",
-        "server-restart-nonzero-rebind-twice"].includes(failure);
+        "server-restart-nonzero-rebind-twice", "server-restart-task-update"].includes(failure);
+      const taskUpdate = failure === "server-restart-task-update";
       let priorReceipt = null;
       if (nonzero) {
         const hostBeforeRestart = async (action, args = []) => {
@@ -581,31 +582,61 @@ for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commi
           }
           assert.fail(`host ${action} remained busy`);
         };
-        const candidateId = randomUUID();
-        const requestId = randomUUID();
-        fs.writeFileSync(path.join(project, "before-restart.md"),
-          "[PLAN] Prepare the first handoff.\n\nTest Plan: npm test\n");
-        await hostBeforeRestart("propose", ["--role", "ralph", "--file",
-          "before-restart.md", "--candidate-id", candidateId]);
-        const args = ["--lease-id", started.lease_id, "--request-id", requestId,
-          "--candidate-id", candidateId, "--expected-generation", "0",
-          "--expected-binding-generation", String(started.binding_generation)];
-        const checkedCommit = await hostBeforeRestart("commit-check", args);
-        assert.equal(checkedCommit.status, "awaiting_source_confirmation");
-        await hostBeforeRestart("confirm-candidate", [...args,
-          "--expected-content-sha256", checkedCommit.content_sha256,
-          "--decision", "reviewed_candidate_source"]);
-        const firstHandoff = waitForLine(child, (value) =>
-          value.status === "handed_off" || value.status === "needs_reconcile");
-        priorReceipt = await hostBeforeRestart("commit", args);
-        assert.equal(priorReceipt.status, "committed");
-        const delivered = await firstHandoff;
-        assert.equal(delivered.status, "handed_off", JSON.stringify(delivered));
-        assert.equal(delivered.request_id, requestId);
-        assert.equal(delivered.role, "lisa");
-        assert.equal(fs.readFileSync(prompts, "utf8"), "ralph\nlisa\n");
+        if (taskUpdate) {
+          const baseline = await hostBeforeRestart("snapshot");
+          const requestId = randomUUID();
+          const file = path.join(project, "new-task.txt");
+          const body = "Plan a different README after restart.\n";
+          fs.writeFileSync(file, body);
+          const realFile = fs.realpathSync.native(file);
+          const contentSha = createHash("sha256").update(body).digest("hex");
+          const queue = path.join(project, ".dual-agent", "host", "task-update-requests");
+          fs.mkdirSync(queue, { recursive: true });
+          fs.writeFileSync(path.join(queue, `${requestId}.json`), JSON.stringify({
+            schema: 1, status: "requested", request_id: requestId,
+            project_realpath: baseline.project_realpath, session_id: baseline.session_id,
+            workspace_id: "w1", pane_id: "w1:p1", terminal_id: "term-ralph",
+            agent_target: "ralph", generation: 0,
+            binding_generation: started.binding_generation,
+            state_digest: baseline.state_digest, last_receipt_id: null,
+            mode: "switch", file: realFile, content_sha256: contentSha,
+            source_verification: "unverified", requested_at: new Date().toISOString(),
+          }));
+          const delivered = await waitForLine(child, (value) =>
+            value.status === "task_updated_delivered" || value.status === "needs_reconcile");
+          assert.equal(delivered.status, "task_updated_delivered", JSON.stringify(delivered));
+          assert.equal(delivered.request_id, requestId);
+          priorReceipt = await hostBeforeRestart("receipt", ["--request-id", requestId]);
+          assert.equal(priorReceipt.status, "task_updated");
+          assert.equal(fs.readFileSync(prompts, "utf8"), "ralph\nralph\n");
+        } else {
+          const candidateId = randomUUID();
+          const requestId = randomUUID();
+          fs.writeFileSync(path.join(project, "before-restart.md"),
+            "[PLAN] Prepare the first handoff.\n\nTest Plan: npm test\n");
+          await hostBeforeRestart("propose", ["--role", "ralph", "--file",
+            "before-restart.md", "--candidate-id", candidateId]);
+          const args = ["--lease-id", started.lease_id, "--request-id", requestId,
+            "--candidate-id", candidateId, "--expected-generation", "0",
+            "--expected-binding-generation", String(started.binding_generation)];
+          const checkedCommit = await hostBeforeRestart("commit-check", args);
+          assert.equal(checkedCommit.status, "awaiting_source_confirmation");
+          await hostBeforeRestart("confirm-candidate", [...args,
+            "--expected-content-sha256", checkedCommit.content_sha256,
+            "--decision", "reviewed_candidate_source"]);
+          const firstHandoff = waitForLine(child, (value) =>
+            value.status === "handed_off" || value.status === "needs_reconcile");
+          priorReceipt = await hostBeforeRestart("commit", args);
+          assert.equal(priorReceipt.status, "committed");
+          const delivered = await firstHandoff;
+          assert.equal(delivered.status, "handed_off", JSON.stringify(delivered));
+          assert.equal(delivered.request_id, requestId);
+          assert.equal(delivered.role, "lisa");
+          assert.equal(fs.readFileSync(prompts, "utf8"), "ralph\nlisa\n");
+        }
       }
-      const expectedBefore = nonzero ? "ralph\nlisa\n" : "ralph\n";
+      const expectedBefore = taskUpdate ? "ralph\nralph\n" :
+        nonzero ? "ralph\nlisa\n" : "ralph\n";
       const expectedGeneration = nonzero ? 1 : 0;
       if (failure === "server-restart-nonzero-paused") {
         const paused = spawnSync(process.execPath, [coordinator, "pause"],
@@ -678,7 +709,7 @@ for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commi
       assert.deepEqual(checked.continuation_blockers, []);
       assert.equal(checked.old_lease_id, evidence.lease_id);
       assert.equal(checked.binding_plan.seats.ralph.terminal_id, "new-ralph");
-      if (nonzero) {
+      if (nonzero && !taskUpdate) {
         const oldPlan = JSON.parse(pluginRecordBefore).plan;
         assert.match(oldPlan.seats.lisa.native_session_fingerprint_sha256,
           /^[0-9a-f]{64}$/);
@@ -775,7 +806,7 @@ for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commi
       assert.deepEqual(continuationPlan.continuation_blockers, []);
       assert.equal(continuationPlan.lease_id, reboundValue.lease_id);
       assert.equal(continuationPlan.generation, expectedGeneration);
-      assert.equal(continuationPlan.turn, nonzero ? "lisa" : "ralph");
+      assert.equal(continuationPlan.turn, nonzero && !taskUpdate ? "lisa" : "ralph");
       assert.match(continuationPlan.evidence_sha256, /^[0-9a-f]{64}$/);
       const changedAgent = continueCheck({ FAKE_RALPH_SESSION: "replacement-session" });
       assert.equal(changedAgent.status, 4, changedAgent.stdout + changedAgent.stderr);
@@ -831,7 +862,7 @@ for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commi
       if (["server-restart-continue", "server-restart-continue-uncertain",
         "server-restart-nonzero-continue",
         "server-restart-nonzero-paused",
-        "server-restart-nonzero-rebind-twice"].includes(failure)) {
+        "server-restart-nonzero-rebind-twice", "server-restart-task-update"].includes(failure)) {
         const active = spawn(process.execPath, [coordinator, "continue",
           continuationPlan.evidence_sha256, "reviewed-cursor-no-replay"], {
             env: { ...env, FAKE_PROMPT_FAILURE:
@@ -861,7 +892,7 @@ for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commi
           const receivingRole = actingRole === "ralph" ? "lisa" : "ralph";
           const expectedAfter = `${expectedBefore}${receivingRole}\n`;
           fs.writeFileSync(path.join(project, "candidate.md"),
-            nonzero ? "[NEEDS_WORK] Continue after restart.\n\n- Issue at commands.ts:42 needs another check.\n" :
+            nonzero && !taskUpdate ? "[NEEDS_WORK] Continue after restart.\n\n- Issue at commands.ts:42 needs another check.\n" :
               "[PLAN] Continue after restart.\n\nTest Plan: npm test\n");
           host("propose", ["--role", actingRole, "--file", "candidate.md",
             "--candidate-id", candidateId]);

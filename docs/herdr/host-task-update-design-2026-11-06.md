@@ -75,3 +75,5 @@ Ralph 在自己的 Herdr Pane 收到明确的补充或新任务时，把要求�
 此外，`host-task-update-fault.test.ts` 通过预加载文件系统故障钩子调用真实 `host task-update` 写入器。钩子只在正式意图原子更名完成后启用，分别使首个 `task.md` 写入、第二个 `history.md` 写入、代次推进后的回执写入、回执完成后的意图归档失败。四种情况均返回 `NEEDS_RECONCILE`，保留活动意图；只读回执审计依次为 `before`、`partial`、`applied`、`applied`，代次依次为 0、0、1、1，快照和新的任务更新预检均阻断。该测试证明同步 I/O 异常路径的状态和门禁；它没有模拟 `SIGKILL`、系统断电或真实 Herdr Server 在投递边界重启。
 
 任务事件后的隔离真实 Herdr 试验见[停机与异常退出记录](d5-task-event-restart-trial-2026-11-09.md)：Ralph 聊天更新正式推进到 generation 1，任务提示只有一份 `accepted` 投递；正常停止和仅对命名 Server 执行 `SIGKILL` 都触发托管协调器的安全释放，未留下待重绑租约。后续单独模拟协调器异常退出的项目遇到 Claude API `402 Insufficient Balance`，未生成任务事件。非零游标重绑接续需在 Agent 可调用后另行验收，不能由上述停机结果推断通过。
+
+模拟 Herdr 的协调器回归新增 `server-restart-task-update`：由排队请求生成真实 CLI 任务事件、确认 generation 1 与 Ralph 一次投递后，模拟 Server 终端身份变化使旧协调器退出。随后走 `recovery-check`、带证据的租约回收、`rebind-check`、重绑和 `continuation-check`，核对旧提示不重发、游标仍为 1，并在接续后验证下一次正常交接。此项只证明模拟环境中的协议路径；真实 Herdr 的同一场景仍以现场验收为准。
