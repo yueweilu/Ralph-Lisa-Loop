@@ -889,8 +889,9 @@ async function start() {
       cursor_generation: 0, cursor_receipt_id: null, cursor_turn: prepared.value.turn };
     durableWrite(paths.record, record);
     // A managed Pane may close while synchronous claim/bind commands are running.
-    // Let queued signals run before creating the irreversible initial prompt intent.
-    if (launch) await new Promise((resolve) => setTimeout(resolve, 0));
+    // Let its queued OS signal reach Node before creating the irreversible prompt intent.
+    // One zero-delay timer can run before the signal callback on loaded CI hosts.
+    if (launch) await new Promise((resolve) => setTimeout(resolve, 50));
     requireManagedPaneOpen(launch);
     record = deliverInitial(paths, record, cli, herdr, plan, taskFile);
     writeLaunchResult(launch, "started");

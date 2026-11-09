@@ -68,3 +68,13 @@
 `start-task` 插件入口在新的 `config10/state10`、命名 Server `rll-p2overlay-ml523e` 中复验。Herdr 0.9.4 对 overlay 使用当前活动 Pane：带 `--workspace w2` 或 `--target-pane w2:p1` 均返回 `invalid_params`；未显式切换焦点时，它附着到 `w1`，显示 `/Users/fugur`。该空输入页未提交任务，已关闭。显式聚焦测试项目 Workspace `w2` 后，以 `plugin pane open --plugin ralph-lisa.loop --entrypoint start-task --placement overlay --focus` 打开 `w2:p2`，输入页显示正确项目 `/private/tmp/rhp2-Ml523e/project`；输入一次 `Write README.md with exactly one sentence: P2 overlay entry trial.` 后输入页退出。启动结果为 `started`，request `25a19330-2ab7-4d09-aece-77af7a27cfe0`；双席出现在同一项目 Workspace，协调器在 `w2:p4`。宿主为 claimed/bound、generation 0、候选 0；只有一份 Ralph 初始投递记录，状态 accepted。控制端未连接默认 Server：测试 Pane 的 `HERDR_SOCKET_PATH` 指向 `config10` 下命名会话 socket。
 
 Ralph 随后停在读取会话状态文件的权限提示；这不是目录信任提示，未代用户确认，也没有候选、正式提交或轮次交接。关闭协调器后宿主为 unclaimed/binding stale、generation 0、候选 0；finished 记录为 `phase=released`、`stop_reason=managed_pane_closed`。命名 Server 已停止，临时证据保留。该验收证明插件输入页的**功能路径**与短命令入口均可启动；Terminal 画面仍无法由自动化工具读取，视觉布局未验收。overlay 对活动 Workspace 的依赖应在界面与使用说明中明确；不能把 `--workspace` 作为 0.9.4 overlay 的定址参数。
+
+### 输入页预览与取消的真实复验
+
+输入页补充了项目现有会话检查、任务摘要、`interactive/full-auto` Agent 权限选择和最终启动确认；文案明确指出 `full-auto` **不等于**自动正式提交候选。新实现 `e4e15d7` 的本地插件回归为 48/48，包含取消不写 `.dual-agent` 的交互测试。另在全新 `/tmp/rhp11-vCYyx2`、命名 Server `rll-p2ui-vcyyx2` 和空项目上打开真实 overlay：页内显示规范项目路径和 `Session: new`；输入任务并选 `full-auto` 后，真实 Pane 显示任务摘要、权限模式、来源确认说明及 `Start this task? [y/N]`。输入 `n` 后 overlay 退出，项目仍为空、Workspace 只剩原 root Pane、Agent 列表为空。命名 Server 已停止，临时目录保留。
+
+这次复验只覆盖**预览与取消**；新版多步输入页的最终 `y` 启动路径尚未重新实测。上节的真实启动使用的是改动前的单步输入页，不能将两段证据合并写成新版端到端启动已通过。自动候选提交、聊天改任务及完整无人值守轮次仍未验收。
+
+### CI 发现的关闭信号时序
+
+文档提交 `efe707c` 和 `60f3081` 的 fork CI 均在 `managed close before initial prompt` 用例失败；Node 18/20/22 上观察到协调器在测试预期的 `needs_reconcile` 前以 0 退出，本地此前通过。该用例的假 Herdr CLI 在同步 `prepare-generation` 期间向协调器发送 SIGTERM。启动代码原先只等一个零延时计时器，就准备创建不可逆的初始提示意图；负载较高的 runner 上，计时器可能先于排队的信号回调。将该边界改为等待 50 毫秒再核对关闭信号，保持原有拒绝投递条件。改动后本地 `managed-shutdown.test.mjs` 5/5 通过；跨 Node 版本的 CI 结果需以该修复提交的运行记录为准。
