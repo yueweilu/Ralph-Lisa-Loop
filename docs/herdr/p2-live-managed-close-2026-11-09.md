@@ -47,4 +47,8 @@
 
 该 `config6/state6` 会话随后收到 Ralph 候选，但候选正文直接是 README 的一句话，缺少 planning 轮次的 `[PLAN]` 首行。只读 `commit-check` 返回 `INVALID_SUBMISSION`；未做来源确认、正式提交或交接。关闭受管理协调器 Pane 后，租约正常释放；最终 generation 0、候选 1，Server 已停止。该失败项目已单独保留。
 
-初始 Ralph 提示因此明确区分交付文件和 RLL 评审候选，并要求 planning 候选以 `[PLAN]` 开头、包含测试命令与覆盖范围，先做只读 `commit-check`。新的 `config7/state7` 命名会话 `rll-p2handoff3-ml523e` 已在新项目中启动，Ralph 提出一份独立 `[PLAN]` 候选；只读门禁返回 `awaiting_source_confirmation`、策略 pass，尚无正式提交或交接。该隔离 Server 暂时保持运行，等待逐份人工来源决定。
+初始 Ralph 提示因此明确区分交付文件和 RLL 评审候选，并要求 planning 候选以 `[PLAN]` 开头、包含测试命令与覆盖范围，先做只读 `commit-check`。新的 `config7/state7` 命名会话 `rll-p2handoff3-ml523e` 在新项目中启动，Ralph 提出一份独立 `[PLAN]` 候选；只读门禁返回 `awaiting_source_confirmation`、策略 pass，此时尚无正式提交或交接。
+
+用户随后仅对这份候选 `56cafeea-c9c3-4566-92fa-2a7c63c87abc`、SHA-256 `6288226e2bdd92e1bf413407d33e5619b691166332fe2628657130ca0ffba18f` 确认来源并授权正式提交一次。重读候选及 `commit-check` 后，用同一请求 ID 一次 `confirm-candidate`、一次 `host commit`；CLI 返回 committed，generation 0→1、turn Ralph→Lisa。插件 `delivery-*` 为 accepted、游标 1；Lisa Pane 收到正式提示。Lisa 随后提出候选，但未获来源确认，未正式提交。关闭协调器后 host unclaimed、generation 1、candidate_count 2；命名 Server 已停止。
+
+该真实交接暴露了更窄的时序差：Herdr `agent get lisa` 在提示后出现 `agent_session`（`kind=id`、`source=herdr:codex`），但协调器在 `agent_prompted` 回执刚返回时读取仍为空，持久计划中的 Lisa 指纹继续为 `null`。既有代码只在该瞬间尝试记录，没有在后续心跳补存。修复后，活动心跳只对已接受过正式提示、且原指纹为空的席位观察并持久保存后来出现的引用指纹；未提示的 Lisa 不自动登记。模拟 Herdr 回归延迟揭示 Lisa 引用，检查同一交接只投递一次且后续记录取得指纹。修复后的真实再验仍待完成，不能把本次旧进程的结果写成已通过。

@@ -387,8 +387,16 @@ async function runActiveLoop(paths, initialRecord, cli, herdr, signalState = nul
     record = processControl(paths, record, cli, herdr, plan);
     if (record.phase === "active") record = checkDelivery(paths, record, cli, herdr, plan);
     if (++ticks % 5 === 0) {
-      for (const [role, kind] of [["ralph", "claude"], ["lisa", "codex"]])
-        observeSeat(herdr, plan, role, kind, false);
+      for (const [role, kind] of [["ralph", "claude"], ["lisa", "codex"]]) {
+        const nativeSession = observeSeat(herdr, plan, role, kind, false);
+        const prompted = role === "ralph" ? record.initial_status === "accepted"
+          : record.cursor_generation > 0;
+        if (prompted && !plan.seats[role].native_session_fingerprint_sha256 &&
+            nativeSession.status === "present") {
+          plan.seats[role].native_session_fingerprint_sha256 = nativeSession.fingerprint_sha256;
+          durableWrite(paths.record, record);
+        }
+      }
       const heartbeat = call(cli, ["host", "heartbeat", "--project", paths.real,
         "--lease-id", leaseId, "--owner-id", ownerId, "--json"]);
       if (hostBusy(heartbeat)) continue;

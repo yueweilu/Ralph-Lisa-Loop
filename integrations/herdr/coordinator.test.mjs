@@ -111,6 +111,7 @@ test("coordinator claims and binds observed seats, heartbeats, then releases on 
   const fakeCodex = path.join(temp, "codex");
   const prompts = path.join(temp, "prompts.jsonl");
   const busyFile = path.join(temp, "lisa-busy");
+  const lisaSessionReady = path.join(temp, "lisa-session-ready");
   fs.mkdirSync(project);
   fs.mkdirSync(configDir);
   fs.mkdirSync(stateDir);
@@ -121,7 +122,7 @@ test("coordinator claims and binds observed seats, heartbeats, then releases on 
     `const a=process.argv.slice(2);\n` +
     `if(a[0]==='--version') console.log('herdr 0.9.4');\n` +
     `else if(a[0]==='integration') console.log('claude: not installed\\ncodex: not installed');\n` +
-    `else if(a[0]==='agent'&&a[1]==='get'){const role=a[2];const prompts=require('node:fs').existsSync(process.env.FAKE_PROMPTS)?require('node:fs').readFileSync(process.env.FAKE_PROMPTS,'utf8'):'';const hasLisaSession=prompts.includes('"role":"lisa"');const agent=role==='ralph'?'claude':'codex';console.log(JSON.stringify({result:{agent:{name:role,agent,workspace_id:'w1',pane_id:role==='ralph'?'w1:p1':'w1:p2',terminal_id:role==='ralph'?(process.env.FAKE_RALPH_TERMINAL||'term-r'):'term-l',cwd:process.env.FAKE_PROJECT,agent_session:role==='ralph'||hasLisaSession?{agent,kind:'id',source:'herdr:'+agent,value:role==='ralph'?(process.env.FAKE_RALPH_SESSION||'session-123'):'lisa-session-123'}:undefined,interactive_ready:true,agent_status:role==='lisa'&&require('node:fs').existsSync(process.env.FAKE_BUSY_FILE)?'working':'idle'}}}));}\n` +
+    `else if(a[0]==='agent'&&a[1]==='get'){const role=a[2];const hasLisaSession=require('node:fs').existsSync(process.env.FAKE_LISA_SESSION_READY);const agent=role==='ralph'?'claude':'codex';console.log(JSON.stringify({result:{agent:{name:role,agent,workspace_id:'w1',pane_id:role==='ralph'?'w1:p1':'w1:p2',terminal_id:role==='ralph'?(process.env.FAKE_RALPH_TERMINAL||'term-r'):'term-l',cwd:process.env.FAKE_PROJECT,agent_session:role==='ralph'||hasLisaSession?{agent,kind:'id',source:'herdr:'+agent,value:role==='ralph'?(process.env.FAKE_RALPH_SESSION||'session-123'):'lisa-session-123'}:undefined,interactive_ready:true,agent_status:role==='lisa'&&require('node:fs').existsSync(process.env.FAKE_BUSY_FILE)?'working':'idle'}}}));}\n` +
     `else if(a[0]==='agent'&&a[1]==='prompt'){const role=a[2];require('node:fs').appendFileSync(process.env.FAKE_PROMPTS,JSON.stringify({role,message:a[3]})+'\\n');console.log(JSON.stringify({result:{type:'agent_prompted',agent:{name:role,agent:role==='ralph'?'claude':'codex',workspace_id:'w1',pane_id:role==='ralph'?'w1:p1':'w1:p2',cwd:process.env.FAKE_PROJECT,agent_status:'working'}}}));}\n` +
     `else process.exit(2);\n`);
   fs.writeFileSync(fakeClaude, `#!${process.execPath}\nconsole.log('{"loggedIn":true}');\n`);
@@ -136,7 +137,8 @@ test("coordinator claims and binds observed seats, heartbeats, then releases on 
     CLAUDE_BIN_PATH: fakeClaude, CODEX_BIN_PATH: fakeCodex,
     HERDR_PLUGIN_CONFIG_DIR: configDir, HERDR_PLUGIN_STATE_DIR: stateDir,
     HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({ workspace_id: "w1", workspace_cwd: project }),
-    FAKE_PROJECT: project, FAKE_PROMPTS: prompts, FAKE_BUSY_FILE: busyFile };
+    FAKE_PROJECT: project, FAKE_PROMPTS: prompts, FAKE_BUSY_FILE: busyFile,
+    FAKE_LISA_SESSION_READY: lisaSessionReady };
   const runWithHostBusyRetry = async (args, options = { env }) => {
     for (let attempt = 0; attempt < 20; attempt++) {
       const result = spawnSync(process.execPath, args,
@@ -279,6 +281,19 @@ test("coordinator claims and binds observed seats, heartbeats, then releases on 
     assert.equal((await host("receipt", ["--request-id", first.request_id])).request_id, first.request_id);
     await new Promise((resolve) => setTimeout(resolve, 1500));
     assert.equal(promptRows().length, 2, "polling must not replay a committed receipt");
+    assert.equal(JSON.parse(fs.readFileSync(path.join(sessionDir, "record.json"), "utf8"))
+      .plan.seats.lisa.native_session_fingerprint_sha256, null);
+    fs.writeFileSync(lisaSessionReady, "ready");
+    let capturedLisa = false;
+    for (let attempt = 0; attempt < 30; attempt++) {
+      const latest = JSON.parse(fs.readFileSync(path.join(sessionDir, "record.json"), "utf8"));
+      if (latest.plan.seats.lisa.native_session_fingerprint_sha256) {
+        capturedLisa = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    assert.equal(capturedLisa, true, "first prompted Lisa session must be persisted once Herdr reports it");
     const second = await submit("lisa", 1,
       "[NEEDS_WORK] Cover the missing case.\n\n- Issue at commands.ts:42 needs another check.\n");
     const rows = await waitForPrompts(3);
