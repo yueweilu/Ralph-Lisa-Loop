@@ -1,6 +1,6 @@
 # Herdr 宿主管理的任务更新设计（2026-11-06）
 
-> 实施状态（2026-11-09）：已在功能分支实现任务更新只读预检、正式意图/回执、混合代次链、Ralph Pane 请求适配器和协调器的一次性任务通知；本地宿主与假 Herdr 测试通过。真实 Herdr 聊天改任务、任务事件后的重启接续及故障注入矩阵尚未验收，不能据此宣称 D5 完成。
+> 实施状态（2026-11-09）：已在功能分支实现任务更新只读预检、正式意图/回执、混合代次链、Ralph Pane 请求适配器和协调器的一次性任务通知。真实 Herdr 聊天切换任务、Ralph→Lisa→Ralph 交接已在隔离会话验收；任务事件后的真实 Server 重启接续仍待验收。本地真实 CLI 写入器故障注入覆盖四个边界，不能据此宣称完整 D5 验收。
 
 ## 问题与目标
 
@@ -62,7 +62,7 @@ Ralph 在自己的 Herdr Pane 收到明确的补充或新任务时，把要求�
 
 本地覆盖了只读预检、同请求幂等、切换与补充、混合事件后继续正式提交、旧候选拒绝、错误席位拒绝、Lisa 负责时 Ralph 请求切换、一次通知和授权失效。请求队列采用先写临时文件再原子更名；未处理请求阻止停止与租约回收。任务写入或投递结果不明时保留意图并阻断自动重试。
 
-对写前中断的任务意图，`host receipt --request-id` 现在只读返回 `audit_status`、业务摘要及未匹配的固定文件名；不会重放写入，也不输出任务正文。写中和回执后故障矩阵及真实 Herdr 重启接续仍待执行。
+对写前、写中和回执边界中断留下的任务意图，`host receipt --request-id` 只读返回 `audit_status`、业务摘要及未匹配的固定文件名；不会重放写入，也不输出任务正文。真实 Herdr 重启接续仍待执行。
 
 任务更新投递确认后，协调器现在立即归档对应请求。若进程恰好在游标已前进、请求尚未归档之间退出，租约恢复仍会被待处理队列阻断。先只读核对 `host snapshot`、`host receipt --request-id`、插件 `record.json` 和 `delivery-<request-id>.json`；四者显示同一代次、同一回执且投递状态为 `accepted` 时，才可在原隔离插件环境执行 `node integrations/herdr/coordinator.mjs archive-delivered-task-request <request-id> <generation-after>`。此命令只归档该请求，不投递 Agent 提示，也不推进业务代次；证据不匹配时返回错误并保留请求。随后重新执行既有的 `recovery-check`、显式租约回收、重绑与接续。未正式提交、未确认投递或部分写入的请求不适用此命令，仍须人工核对，不得用删除队列文件的方式跳过门禁。本地回归覆盖了这一已投递中断窗口；真实 Herdr 重启验收仍待执行。
 
@@ -71,3 +71,5 @@ Ralph 在自己的 Herdr Pane 收到明确的补充或新任务时，把要求�
 若协调器在**任务写入前**退出，`host receipt` 为 `unknown`、快照保持请求的原代次与摘要、插件游标未前进且没有投递文件时，可在确认插件记录为 `needs_reconcile` 后执行 `node integrations/herdr/coordinator.mjs abandon-uncommitted-task-request <request-id> <generation-before> reviewed-no-commit`。命令再次只读核对以上事实，再把请求移入 `task-update-requests-abandoned` 审计目录；不删除正文、改业务状态或投递提示。任何意图、正式回执、摘要变化或未确认投递都会阻断。现场按这条路径处理一次后，显式回收旧租约、重绑并接续，旧提示没有重放。参见[现场记录](d5-chat-task-update-live-2026-11-09.md)。
 
 本地故障形态回归现在构造有效的任务更新意图，分别核对写前 `before`、所有业务文件已写入的 `applied`、部分业务文件被改动的 `partial`，以及 `turn.txt` 无效导致常规项目检查失败的情况。后一种情况仍返回受限的任务意图核对字段、`state_digest_observed=null` 与未匹配文件名，而非丢失证据；不输出任务正文。这是合成故障状态的只读测试，不等于真实进程在每个文件写入点被终止后的端到端验收。
+
+此外，`host-task-update-fault.test.ts` 通过预加载文件系统故障钩子调用真实 `host task-update` 写入器。钩子只在正式意图原子更名完成后启用，分别使首个 `task.md` 写入、第二个 `history.md` 写入、代次推进后的回执写入、回执完成后的意图归档失败。四种情况均返回 `NEEDS_RECONCILE`，保留活动意图；只读回执审计依次为 `before`、`partial`、`applied`、`applied`，代次依次为 0、0、1、1，快照和新的任务更新预检均阻断。该测试证明同步 I/O 异常路径的状态和门禁；它没有模拟 `SIGKILL`、系统断电或真实 Herdr Server 在投递边界重启。
