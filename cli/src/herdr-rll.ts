@@ -6,6 +6,7 @@ import { reportHerdrLaunchStatus } from "./herdr/launch-status.js";
 const args = process.argv.slice(2);
 if (args.length === 1 && ["--help", "-h"].includes(args[0])) {
   console.log('Usage: herdr-rll [--project PATH] [--full-auto] "TASK"');
+  console.log('New sessions automatically commit eligible candidates; source remains unverified.');
   console.log('       herdr-rll status [--project PATH]');
   process.exit(0);
 }

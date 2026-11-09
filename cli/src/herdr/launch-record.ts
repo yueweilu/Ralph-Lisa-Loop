@@ -44,15 +44,18 @@ function readRegular<T>(file: string): T {
   return JSON.parse(fs.readFileSync(file, "utf8")) as T;
 }
 
-/** Immutable launch intent. It never grants automatic candidate submission. */
-export function createLaunchIntent(project: string, sessionId: string, requestId: string, fullAuto: boolean): LaunchIntent {
+/** Immutable launch intent; the coordinator grants auto submission only after claiming the matching lease. */
+export function createLaunchIntent(project: string, sessionId: string, requestId: string,
+  fullAuto: boolean, autoCommitGrantedVia?: LaunchIntent["auto_commit_granted_via"]): LaunchIntent {
   if (!UUID.test(sessionId) || !UUID.test(requestId)) throw new Error("LAUNCH_ID_INVALID");
   const real = fs.realpathSync.native(project);
   const task = fs.readFileSync(stateFile(real, "task.md"));
   const intent: LaunchIntent = { schema: 1, request_id: requestId,
     project_realpath: real, session_id: sessionId,
     task_sha256: crypto.createHash("sha256").update(task).digest("hex"),
-    permission_profile: fullAuto ? "full_auto" : "interactive", auto_commit: false };
+    permission_profile: fullAuto ? "full_auto" : "interactive",
+    auto_commit: autoCommitGrantedVia !== undefined,
+    ...(autoCommitGrantedVia ? { auto_commit_granted_via: autoCommitGrantedVia } : {}) };
   writeExclusive(stateFile(real, "herdr-launch-intent.json"), intent);
   return intent;
 }

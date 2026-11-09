@@ -24,4 +24,17 @@ describe("Herdr immutable launch records", () => {
       assert.throws(() => readLaunchIntent(project, request), /LAUNCH_INTENT_MISMATCH/);
     } finally { fs.rmSync(project, { recursive: true, force: true }); }
   });
+
+  it("records the scoped automatic grant request separately from Agent permissions", () => {
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "rll-launch-auto-"));
+    try {
+      const request = crypto.randomUUID();
+      const session = initSessionIfAbsent(project, "Write a README", request);
+      const intent = createLaunchIntent(project, session, request, false, "cli_auto_host_herdr");
+      assert.equal(intent.permission_profile, "interactive");
+      assert.equal(intent.auto_commit, true);
+      assert.equal(intent.auto_commit_granted_via, "cli_auto_host_herdr");
+      assert.deepEqual(readLaunchIntent(project, request), intent);
+    } finally { fs.rmSync(project, { recursive: true, force: true }); }
+  });
 });

@@ -86,6 +86,9 @@ function reusableWorkspace(project: string): string | null {
 
 export type HerdrLaunchReceipt = {
   status: "started" | "needs_input" | "needs_reconcile" | "not_ready" | "pending";
+  auto_commit: true;
+  source_verification: "unverified";
+  permission_profile: "interactive" | "full_auto";
   request_id: string;
   project_realpath: string;
   session_id: string;
@@ -114,6 +117,9 @@ function blockedAgent(workspaceId: string, project: string):
 
 /** One launch request; an uncertain Herdr response must be inspected, never blindly retried. */
 export async function launchHerdrTask(options: HerdrLaunchOptions): Promise<HerdrLaunchReceipt> {
+  const authorization = { auto_commit: true as const,
+    source_verification: "unverified" as const,
+    permission_profile: options.fullAuto ? "full_auto" as const : "interactive" as const };
   const project = canonicalProject(path.resolve(options.project));
   if (existingState(project)) throw new HerdrLaunchError("SESSION_EXISTS");
   preflight();
@@ -124,7 +130,9 @@ export async function launchHerdrTask(options: HerdrLaunchOptions): Promise<Herd
   try {
     if (existingState(project)) throw new HerdrLaunchError("SESSION_EXISTS");
     sessionId = initSessionIfAbsent(project, options.task, requestId);
-    createLaunchIntent(project, sessionId, requestId, options.fullAuto);
+    createLaunchIntent(project, sessionId, requestId, options.fullAuto,
+      process.env.RLL_HERDR_START_ENTRYPOINT === "plugin_start_task"
+        ? "plugin_start_task" : "cli_auto_host_herdr");
   } finally { release(); }
 
   const created = reuseWorkspaceId
@@ -151,17 +159,17 @@ export async function launchHerdrTask(options: HerdrLaunchOptions): Promise<Herd
 
   for (let attempt = 0; attempt < 60; attempt++) {
     const result = readLaunchResult(project, requestId);
-    if (result) return { status: result.status, request_id: requestId, project_realpath: project,
+    if (result) return { ...authorization, status: result.status, request_id: requestId, project_realpath: project,
       session_id: sessionId, workspace_id: workspaceId, coordinator_pane_id: pane.pane_id,
       ...(result.code ? { code: result.code } : {}) };
     const blocked = blockedAgent(workspaceId, project);
-    if (blocked) return { status: "needs_input", code: "AGENT_BLOCKED",
+    if (blocked) return { ...authorization, status: "needs_input", code: "AGENT_BLOCKED",
       request_id: requestId, project_realpath: project, session_id: sessionId,
       workspace_id: workspaceId, coordinator_pane_id: pane.pane_id,
       blocked_role: blocked.role, blocked_pane_id: blocked.paneId };
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
-  return { status: "pending", code: "START_OUTCOME_UNKNOWN", request_id: requestId,
+  return { ...authorization, status: "pending", code: "START_OUTCOME_UNKNOWN", request_id: requestId,
     project_realpath: project, session_id: sessionId,
     workspace_id: workspaceId, coordinator_pane_id: pane.pane_id };
 }

@@ -221,7 +221,7 @@ function showHelp(): void {
   console.log('  ralph-lisa start --full-auto "task" Launch without permission prompts');
   console.log('  ralph-lisa auto "task"              Auto mode (tmux)');
   console.log('  ralph-lisa auto --full-auto "task"  Auto mode without permission prompts');
-  console.log('  ralph-lisa auto --host herdr "task" Launch a new task in Herdr');
+  console.log('  ralph-lisa auto --host herdr "task" Launch with session auto commits (source unverified)');
   console.log('  herdr-rll "task"                   Same Herdr launcher');
   console.log("  ralph-lisa stop                    Graceful stop (archive + cleanup)");
   console.log("  ralph-lisa stop --force            Force stop (SIGKILL)");

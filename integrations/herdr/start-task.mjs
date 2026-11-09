@@ -35,7 +35,7 @@ async function main() {
     throw new Error("SESSION_EXISTS");
   }
   process.stdout.write("Session: new. Agent turns follow formal RLL receipts.\n");
-  process.stdout.write("Candidate commits require separate source confirmation.\n");
+  process.stdout.write("This session automatically commits eligible candidates. Candidate source remains unverified.\n");
   const input = createInterface({ input: process.stdin, output: process.stdout });
   let task, fullAuto;
   try {
@@ -48,12 +48,13 @@ async function main() {
     const normalized = [...task.replace(/\s+/g, " ")];
     process.stdout.write(`Task summary: ${normalized.slice(0, 120).join("")}${normalized.length > 120 ? "…" : ""}\n`);
     process.stdout.write(`Agent permissions: ${fullAuto ? "full-auto" : "interactive"}\n`);
-    process.stdout.write("Formal candidate commits: separate source confirmation required\n");
+    process.stdout.write("Candidate commits: automatic for this session after format, policy, and test gates; source unverified\n");
     const confirmed = (await ask(input, "Start this task? [y/N]: ")).trim().toLowerCase();
     if (confirmed !== "y" && confirmed !== "yes") throw new Error("START_CANCELLED");
   }
   finally { input.close(); }
-  const env = { ...process.env, RLL_HERDR_REUSE_WORKSPACE_ID: context.workspace_id };
+  const env = { ...process.env, RLL_HERDR_REUSE_WORKSPACE_ID: context.workspace_id,
+    RLL_HERDR_START_ENTRYPOINT: "plugin_start_task" };
   delete env.RLL_HERDR_SESSION;
   const cli = path.resolve(root, "../../cli/dist/herdr-rll.js");
   const child = spawn(process.execPath, [cli, "--project", project,

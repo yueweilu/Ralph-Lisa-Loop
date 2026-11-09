@@ -54,7 +54,7 @@ test("start-task shows a preview and cancellation does not initialize a session"
     assert.match(stdout, /Session: new/);
     assert.match(stdout, /Task summary: Write a short README/);
     assert.match(stdout, /Agent permissions: full-auto/);
-    assert.match(stdout, /Formal candidate commits: separate source confirmation required/);
+    assert.match(stdout, /Candidate commits: automatic for this session.*source unverified/);
     assert.match(stderr, /START_CANCELLED/);
     assert.equal(fs.existsSync(path.join(project, ".dual-agent")), false);
   } finally { fs.rmSync(project, { recursive: true, force: true }); }
