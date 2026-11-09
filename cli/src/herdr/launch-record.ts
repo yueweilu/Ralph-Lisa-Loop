@@ -11,7 +11,7 @@ export type LaunchIntent = {
   session_id: string;
   task_sha256: string;
   permission_profile: "interactive" | "full_auto";
-  auto_commit: false;
+  auto_commit: boolean;
 };
 
 export type LaunchWorkspace = {
@@ -66,7 +66,7 @@ export function readLaunchIntent(project: string, requestId: string): LaunchInte
       identity.session_id !== intent.session_id || identity.project_realpath !== real ||
       intent.task_sha256 !== crypto.createHash("sha256").update(task).digest("hex") ||
       !["interactive", "full_auto"].includes(intent.permission_profile) ||
-      intent.auto_commit !== false) throw new Error("LAUNCH_INTENT_MISMATCH");
+      typeof intent.auto_commit !== "boolean") throw new Error("LAUNCH_INTENT_MISMATCH");
   return intent;
 }
 
