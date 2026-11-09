@@ -1,4 +1,4 @@
-/** Controlled submission after an explicit human candidate-source assertion. */
+/** Controlled submission after a human assertion or a scoped session grant. */
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -85,7 +85,7 @@ function existingOutcome(
   return outcome;
 }
 
-/** This path does not claim Herdr verified the source. A matching human assertion is required. */
+/** Neither accepted source path claims Herdr verified the candidate author. */
 export function commitHostCandidate(
   project: string, leaseId: string, requestId: string, candidateId: string,
   expectedGeneration: number, expectedBindingGeneration: number,
@@ -119,9 +119,10 @@ export function commitHostCandidate(
     if (old) return old;
     const check = checkHostCommitLocked(root, leaseId, requestId, candidateId,
       expectedGeneration, expectedBindingGeneration);
-    if (check.status !== "policy_blocked" && check.human_confirmation !== "asserted") {
+    if (check.status !== "policy_blocked" && check.human_confirmation !== "asserted" &&
+        check.auto_authorization !== "active") {
       throw new HostContractError("SOURCE_CONFIRMATION_REQUIRED", 5,
-        "Confirm this candidate source before running the gate or changing business state");
+        "Confirm this candidate source or grant this session before changing business state");
     }
     const file = path.join(host, "candidates", candidateId, "content.txt");
     let content: string;
@@ -149,8 +150,13 @@ export function commitHostCandidate(
       persistHostIntent(input);
       applySubmissionPlan(plan);
       advanceGenerationAfterIntent(host, requestId);
+      const sourceChecks = check.human_confirmation === "asserted"
+        ? { source_confirmation: "human_asserted" as const, source_verification: "unverified" as const }
+        : { source_confirmation: "session_authorized_auto" as const,
+            source_verification: "unverified" as const,
+            auto_authorization_launch_request_id: check.auto_authorization_launch_request_id! };
       const committed = persistCommittedReceipt(host, requestId, {
-        ...precheck.checks, source_confirmation: "human_asserted", source_verification: "unverified",
+        ...precheck.checks, ...sourceChecks,
       });
       archiveCommittedIntent(host, requestId);
       return committed;

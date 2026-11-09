@@ -322,7 +322,7 @@ function checkDelivery(paths, record, cli, herdr, plan) {
       receipt.turn_after !== snapshot.turn || receipt.turn_after === receipt.role ||
       receipt.round_after !== snapshot.round || receipt.step_after !== snapshot.step ||
       receipt.state_digest_after !== snapshot.state_digest ||
-      receipt.source_confirmation !== "human_asserted" ||
+      !["human_asserted", "session_authorized_auto"].includes(receipt.source_confirmation) ||
       receipt.source_verification !== "unverified")
     throw new Error(receipt?.code || "RECEIPT_MISMATCH");
   const role = receipt.turn_after;
@@ -330,7 +330,7 @@ function checkDelivery(paths, record, cli, herdr, plan) {
     `Receipt: ${receipt.request_id}. Generation: ${receipt.generation_after}. ` +
     `It is your ${role} turn in round ${receipt.round_after}. Read the current RLL state and ` +
     `work/review files before acting. ${agentCliGuidance(cli)} ` +
-    "Submit through the RLL host contract; preserve its human source confirmation gate.";
+    "Submit through the RLL host contract; it will enforce this session's source authorization and policy gates.";
   const file = deliveryFile(paths, receipt.request_id);
   submitPrompt(paths, record, herdr, plan, role, message, file,
     { request_id: receipt.request_id, generation: receipt.generation_after });

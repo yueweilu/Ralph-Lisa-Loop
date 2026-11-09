@@ -7,6 +7,7 @@ import { gateOptionsFromEnv } from "../gate.js";
 import { checkSubmission, extractLastTag } from "../submission.js";
 import { prepareLisaSubmission, prepareRalphSubmission } from "../submission-write.js";
 import { businessDigest } from "./business.js";
+import { autoAuthorizationForSeat } from "./auto-authorization.js";
 import { candidateInventory } from "./candidate.js";
 import { readHumanConfirmation } from "./confirmation.js";
 import { canonicalProject, HostContractError, inspectProject } from "./inspect.js";
@@ -18,7 +19,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 
 export interface HostCommitCheck {
   schema: 1;
-  status: "awaiting_source_confirmation" | "human_source_asserted" | "policy_blocked";
+  status: "awaiting_source_confirmation" | "human_source_asserted" | "auto_source_authorized" | "policy_blocked";
   request_id: string;
   candidate_id: string;
   session_id: string;
@@ -38,6 +39,8 @@ export interface HostCommitCheck {
   agent_target: string;
   source_verification: "unverified";
   human_confirmation: "absent" | "asserted";
+  auto_authorization: "absent" | "active";
+  auto_authorization_launch_request_id: string | null;
   commit_ready: false;
   policy: { result: "pass" | "warn" | "block"; rules: string[] };
   gate: "not_enabled" | "pending" | "skipped_policy";
@@ -118,9 +121,14 @@ export function checkHostCommitLocked(
       throw new HostContractError("DUPLICATE_CONFLICT", 5,
         "Human source assertion belongs to a different candidate or seat");
     }
+    const autoAuthorization = autoAuthorizationForSeat(host, root, initial.state_realpath,
+      intent.session_id, intent.lease_id, intent.binding_generation,
+      candidate.intended_workspace_id, intent.role, candidate.intended_pane_id,
+      candidate.intended_agent_target);
     return {
       schema: 1, status: blocked ? "policy_blocked" : humanConfirmation
-        ? "human_source_asserted" : "awaiting_source_confirmation",
+        ? "human_source_asserted" : autoAuthorization
+          ? "auto_source_authorized" : "awaiting_source_confirmation",
       request_id: intent.request_id, candidate_id: intent.candidate_id,
       session_id: intent.session_id, lease_id: intent.lease_id, role: intent.role,
       generation_before: intent.generation_before, binding_generation: intent.binding_generation,
@@ -132,6 +140,8 @@ export function checkHostCommitLocked(
       workspace_id: candidate.intended_workspace_id, pane_id: candidate.intended_pane_id,
       agent_target: candidate.intended_agent_target,
       source_verification: "unverified", human_confirmation: humanConfirmation ? "asserted" : "absent",
+      auto_authorization: autoAuthorization ? "active" : "absent",
+      auto_authorization_launch_request_id: autoAuthorization?.launch_request_id ?? null,
       commit_ready: false,
       policy: { result: blocked ? "block" : check.violations.length ? "warn" : "pass",
         rules: check.violations.map((violation) => violation.rule) },

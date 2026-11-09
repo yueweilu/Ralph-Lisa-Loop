@@ -2,6 +2,7 @@
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { readAutoAuthorization } from "./auto-authorization.js";
 import { readGeneration, type GenerationRecord } from "./generation.js";
 import { HostContractError } from "./inspect.js";
 import { assertNoPendingIntents, entryExists } from "./lease.js";
@@ -9,6 +10,13 @@ import { auditHostIntent, auditHostIntentRecord, readArchivedHostIntent, readHos
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/;
+
+function validSourceFields(source: unknown, verification: unknown, autoLaunchId: unknown): boolean {
+  if (source === undefined && verification === undefined && autoLaunchId === undefined) return true;
+  if (verification !== "unverified") return false;
+  return source === "human_asserted" && autoLaunchId === undefined ||
+    source === "session_authorized_auto" && typeof autoLaunchId === "string" && UUID.test(autoLaunchId);
+}
 
 export interface CommittedHostReceipt {
   schema: 1;
@@ -28,8 +36,9 @@ export interface CommittedHostReceipt {
   step_after: string;
   content_sha256: string;
   state_digest_after: string;
-  source_confirmation?: "human_asserted";
+  source_confirmation?: "human_asserted" | "session_authorized_auto";
   source_verification?: "unverified";
+  auto_authorization_launch_request_id?: string;
   policy: { result: "pass" | "warn"; warnings: string[] };
   gate: { result: "not_enabled" | "pass" | "warn" };
   committed_at: string;
@@ -38,8 +47,9 @@ export interface CommittedHostReceipt {
 export interface ReceiptChecks {
   policy: CommittedHostReceipt["policy"];
   gate: CommittedHostReceipt["gate"];
-  source_confirmation?: "human_asserted";
+  source_confirmation?: "human_asserted" | "session_authorized_auto";
   source_verification?: "unverified";
+  auto_authorization_launch_request_id?: string;
 }
 
 export interface CommittedReceiptLedger {
@@ -142,13 +152,21 @@ export function readCommittedReceipt(host: string, requestId: string): Committed
       typeof r.step_after !== "string" || !r.step_after ||
       typeof r.content_sha256 !== "string" || !SHA256.test(r.content_sha256) ||
       typeof r.state_digest_after !== "string" || !SHA256.test(r.state_digest_after) ||
-      ((r.source_confirmation !== undefined || r.source_verification !== undefined) &&
-        (r.source_confirmation !== "human_asserted" || r.source_verification !== "unverified")) ||
+      !validSourceFields(r.source_confirmation, r.source_verification,
+        r.auto_authorization_launch_request_id) ||
       !policy || (policy.result !== "pass" && policy.result !== "warn") ||
       !Array.isArray(policy.warnings) || !policy.warnings.every((warning) => typeof warning === "string") ||
       !gate || !["not_enabled", "pass", "warn"].includes(gate.result as string) ||
       typeof r.committed_at !== "string" || !Number.isFinite(Date.parse(r.committed_at))) {
     throw new HostContractError("NEEDS_RECONCILE", 7, "Invalid committed receipt");
+  }
+  if (r.source_confirmation === "session_authorized_auto") {
+    const authorization = readAutoAuthorization(host, r.project_realpath as string,
+      r.state_realpath as string, r.session_id as string, r.lease_id as string);
+    if (!authorization || authorization.launch_request_id !== r.auto_authorization_launch_request_id ||
+        authorization.binding_generation !== r.binding_generation) {
+      throw new HostContractError("NEEDS_RECONCILE", 7, "Auto receipt lacks its scoped authorization");
+    }
   }
   return r as unknown as CommittedHostReceipt;
 }
@@ -330,8 +348,8 @@ export function persistCommittedReceipt(
   if ((checks.policy.result !== "pass" && checks.policy.result !== "warn") ||
       !Array.isArray(checks.policy.warnings) ||
       !checks.policy.warnings.every((warning) => typeof warning === "string") ||
-      ((checks.source_confirmation !== undefined || checks.source_verification !== undefined) &&
-        (checks.source_confirmation !== "human_asserted" || checks.source_verification !== "unverified")) ||
+      !validSourceFields(checks.source_confirmation, checks.source_verification,
+        checks.auto_authorization_launch_request_id) ||
       !["not_enabled", "pass", "warn"].includes(checks.gate.result)) {
     throw new HostContractError("INVALID_ARGUMENTS", 2, "Blocked or invalid checks cannot create a committed receipt");
   }
@@ -356,6 +374,7 @@ export function persistCommittedReceipt(
         existing.state_digest_after !== intent.state_digest_after ||
         existing.source_confirmation !== checks.source_confirmation ||
         existing.source_verification !== checks.source_verification ||
+        existing.auto_authorization_launch_request_id !== checks.auto_authorization_launch_request_id ||
         JSON.stringify(existing.policy) !== JSON.stringify(checks.policy) ||
         JSON.stringify(existing.gate) !== JSON.stringify(checks.gate)) {
       throw new HostContractError("DUPLICATE_CONFLICT", 5, "Existing receipt differs from this request");
@@ -373,6 +392,9 @@ export function persistCommittedReceipt(
     ...(checks.source_confirmation ? {
       source_confirmation: checks.source_confirmation,
       source_verification: checks.source_verification,
+      ...(checks.auto_authorization_launch_request_id ? {
+        auto_authorization_launch_request_id: checks.auto_authorization_launch_request_id,
+      } : {}),
     } : {}),
     policy: checks.policy, gate: checks.gate, committed_at: new Date().toISOString(),
   };
