@@ -3,8 +3,8 @@
 ## 范围与隔离
 
 - 公开仓分支：`feat/herdr-auto-task-launch`；试验开始时本地及 fork 均为 `b7f633dc4ad2d3e7792b8161a45b70a4a0803434`。
-- Herdr 0.9.4；本仓插件 0.1.5、本仓构建的 CLI 0.3.13。三个命名 Server 分别使用 `/tmp/rhp2-Ml523e` 下独立的 `XDG_CONFIG_HOME`、`XDG_STATE_HOME` 与临时项目状态。测试项目路径每次复用前均保留前次项目目录，未覆盖旧 `.dual-agent`。
-- 任务只要求在一次性项目写一行 README。没有对候选做来源确认、正式提交或交接；没有操作默认 Herdr 会话及 `super-rll`。Claude 对 `/private/tmp/rhp2-Ml523e/project` 的目录信任由用户仅对此目录授权一次；其他权限提示未代答。
+- Herdr 0.9.4；本仓插件 0.1.5、本仓构建的 CLI 0.3.13。前三次命名 Server 分别使用 `/tmp/rhp2-Ml523e` 下独立的 `XDG_CONFIG_HOME`、`XDG_STATE_HOME` 与临时项目状态；后续复验继续使用新的隔离配置。测试项目路径每次复用前均保留前次项目目录，未覆盖旧 `.dual-agent`。
+- 任务只要求在一次性项目写一行 README。前三次启动没有对候选做来源确认、正式提交或交接；后续首交接的单份候选另获用户确认，见下文。没有操作默认 Herdr 会话及 `super-rll`。Claude 对 `/private/tmp/rhp2-Ml523e/project` 的目录信任由用户仅对此目录授权一次；其他权限提示未代答。
 - Terminal 中打开了隔离 Herdr TUI，但自动化工具不能读取该 Terminal 画面。因此这里只验收 CLI、Server 日志、插件记录及 RLL 宿主状态，不把视觉布局标为已验收。
 
 ## 三次现场结果
@@ -60,3 +60,11 @@
 插件只有一份该回执的 `delivery-*`，状态 accepted、角色 Lisa、游标 1。真实 `herdr agent get lisa` 显示 ready、working、`agent_session` 存在且来源 `herdr:codex`；活动记录在后续心跳保存 Lisa 原生引用 SHA-256 指纹。关闭协调器 Pane 后，宿主快照为 unclaimed、binding stale、generation 1；finished 记录为 `phase=released`、`stop_reason=managed_pane_closed`，Ralph/Lisa 两席指纹均存在。Lisa 另提出一份候选，未获单独来源确认，未正式提交。命名 Server 已停止，临时证据目录保留。
 
 本地插件套件 47/47 通过；修复提交 `8a7bfb95bb3bf18b063ce4533fa235ca494fa4c2` 的 [GitHub CI](https://github.com/yueweilu/Ralph-Lisa-Loop/actions/runs/42565344550) 在 Node 18/20/22 全部成功。这证实 P2 的正式首交接后原生引用持久化及受管理关闭收尾。任务输入 overlay 的视觉呈现、两个入口与本次新进程的非零游标 Server 重启接续仍需分别验收；本次没有启用自动来源授权或无人值守正式提交。
+
+### 两个任务入口的真实启动验收
+
+`herdr-rll` 短命令在新的 `config9/state9`、命名 Server `rll-p2short-ml523e` 和全新临时项目中，以 `--full-auto --project <项目> "Write README.md with exactly one sentence: P2 short entry trial."` 启动。CLI 返回 `started`、request `d7e223e5-48cf-43a6-913b-abf8b60896b7`、Workspace `w2` 和协调器 `w2:p2`。宿主为 claimed/bound、generation 0、候选 0；任务正文落入 `task.md`，仅有一份 Ralph 初始投递记录且状态 accepted。关闭协调器后宿主 unclaimed/binding stale，generation 和候选数不变；命名 Server 已停止，项目保留在 `/tmp/rhp2-Ml523e/project-short-entry`。这里的 `--full-auto` 只配置 Agent 权限模式，**没有**授权候选自动正式提交。
+
+`start-task` 插件入口在新的 `config10/state10`、命名 Server `rll-p2overlay-ml523e` 中复验。Herdr 0.9.4 对 overlay 使用当前活动 Pane：带 `--workspace w2` 或 `--target-pane w2:p1` 均返回 `invalid_params`；未显式切换焦点时，它附着到 `w1`，显示 `/Users/fugur`。该空输入页未提交任务，已关闭。显式聚焦测试项目 Workspace `w2` 后，以 `plugin pane open --plugin ralph-lisa.loop --entrypoint start-task --placement overlay --focus` 打开 `w2:p2`，输入页显示正确项目 `/private/tmp/rhp2-Ml523e/project`；输入一次 `Write README.md with exactly one sentence: P2 overlay entry trial.` 后输入页退出。启动结果为 `started`，request `25a19330-2ab7-4d09-aece-77af7a27cfe0`；双席出现在同一项目 Workspace，协调器在 `w2:p4`。宿主为 claimed/bound、generation 0、候选 0；只有一份 Ralph 初始投递记录，状态 accepted。控制端未连接默认 Server：测试 Pane 的 `HERDR_SOCKET_PATH` 指向 `config10` 下命名会话 socket。
+
+Ralph 随后停在读取会话状态文件的权限提示；这不是目录信任提示，未代用户确认，也没有候选、正式提交或轮次交接。关闭协调器后宿主为 unclaimed/binding stale、generation 0、候选 0；finished 记录为 `phase=released`、`stop_reason=managed_pane_closed`。命名 Server 已停止，临时证据保留。该验收证明插件输入页的**功能路径**与短命令入口均可启动；Terminal 画面仍无法由自动化工具读取，视觉布局未验收。overlay 对活动 Workspace 的依赖应在界面与使用说明中明确；不能把 `--workspace` 作为 0.9.4 overlay 的定址参数。
