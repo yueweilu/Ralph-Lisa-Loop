@@ -69,3 +69,5 @@ Ralph 在自己的 Herdr Pane 收到明确的补充或新任务时，把要求�
 真实测试还发现 Claude 执行受权限审批的 Bash 时，Herdr 可能将其标为 `blocked`；Pane 适配器现在只在有匹配原生 Claude 会话、交互就绪、当前 Pane/终端/项目均相符时接受该状态。`idle` 和错误席位仍拒绝。协调器若遇到 Ralph 正在完成发起请求的聊天轮次，会等待其 `idle/done`，不把 `AGENT_NOT_READY` 当成需要回收租约的故障。与原生会话有关的检查是席位连续性证据，不是候选作者证明。
 
 若协调器在**任务写入前**退出，`host receipt` 为 `unknown`、快照保持请求的原代次与摘要、插件游标未前进且没有投递文件时，可在确认插件记录为 `needs_reconcile` 后执行 `node integrations/herdr/coordinator.mjs abandon-uncommitted-task-request <request-id> <generation-before> reviewed-no-commit`。命令再次只读核对以上事实，再把请求移入 `task-update-requests-abandoned` 审计目录；不删除正文、改业务状态或投递提示。任何意图、正式回执、摘要变化或未确认投递都会阻断。现场按这条路径处理一次后，显式回收旧租约、重绑并接续，旧提示没有重放。参见[现场记录](d5-chat-task-update-live-2026-11-09.md)。
+
+本地故障形态回归现在构造有效的任务更新意图，分别核对写前 `before`、所有业务文件已写入的 `applied`、部分业务文件被改动的 `partial`，以及 `turn.txt` 无效导致常规项目检查失败的情况。后一种情况仍返回受限的任务意图核对字段、`state_digest_observed=null` 与未匹配文件名，而非丢失证据；不输出任务正文。这是合成故障状态的只读测试，不等于真实进程在每个文件写入点被终止后的端到端验收。

@@ -11,7 +11,8 @@ import { businessDigest } from "./business.js";
 import { candidateInventory } from "./candidate.js";
 import { rejectedReceiptInventory } from "./rejection.js";
 import { humanConfirmationInventory } from "./confirmation.js";
-import { auditTaskUpdateIntent, readTaskUpdateIntent, readTaskUpdateReceipt } from "./task-update-record.js";
+import { auditTaskUpdateIntent, readTaskUpdateIntent, readTaskUpdateReceipt,
+  type TaskUpdateIntent } from "./task-update-record.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -50,6 +51,21 @@ function reconcile(requestId: string, sessionId: string | null, reason: string):
     session_id: sessionId, code: "NEEDS_RECONCILE", reason };
 }
 
+function pendingTaskUpdateStatus(intent: TaskUpdateIntent): HostReceiptStatus {
+  const audit = auditTaskUpdateIntent(intent);
+  return { ...reconcile(intent.request_id, intent.session_id, "pending_task_update_intent"),
+    task_update_intent: {
+      mode: intent.mode, generation_before: intent.generation_before,
+      task_version_before: intent.task_version_before,
+      content_sha256: intent.content_sha256,
+      state_digest_before: intent.state_digest_before,
+      state_digest_after: intent.state_digest_after,
+      audit_status: audit.status, state_digest_observed: audit.state_digest_observed,
+      unmatched_files: audit.files.filter((file) => !file.matches_before && !file.matches_after)
+        .map((file) => file.name),
+    } };
+}
+
 /** A pending write anywhere in the session prevents claiming any request is unknown. */
 export function receiptStatus(project: string, requestId: string): HostReceiptStatus {
   if (!UUID.test(requestId)) throw new HostContractError("INVALID_ARGUMENTS", 2, "--request-id must be a UUID");
@@ -63,6 +79,12 @@ export function receiptStatus(project: string, requestId: string): HostReceiptSt
     } catch (error) {
       // A torn business file can make ordinary inspection fail after an intent was written.
       const host = path.join(root, STATE_DIR, "host");
+      try {
+        const taskIntent = readTaskUpdateIntent(host, requestId);
+        if (taskIntent?.project_realpath === root &&
+            taskIntent.state_realpath === path.join(root, STATE_DIR))
+          return pendingTaskUpdateStatus(taskIntent);
+      } catch { /* Preserve the conservative generic reconciliation below. */ }
       if (entryExists(path.join(host, "intents")) ||
           entryExists(path.join(host, "archived-intents")) ||
           entryExists(path.join(host, "receipts")) ||
@@ -101,20 +123,7 @@ export function receiptStatus(project: string, requestId: string): HostReceiptSt
     try {
       const taskReceipt = readTaskUpdateReceipt(host, requestId);
       const taskIntent = readTaskUpdateIntent(host, requestId);
-      if (taskIntent) {
-        const audit = auditTaskUpdateIntent(taskIntent);
-        return { ...reconcile(requestId, sessionId, "pending_task_update_intent"),
-          task_update_intent: {
-            mode: taskIntent.mode, generation_before: taskIntent.generation_before,
-            task_version_before: taskIntent.task_version_before,
-            content_sha256: taskIntent.content_sha256,
-            state_digest_before: taskIntent.state_digest_before,
-            state_digest_after: taskIntent.state_digest_after,
-            audit_status: audit.status, state_digest_observed: audit.state_digest_observed,
-            unmatched_files: audit.files.filter((file) => !file.matches_before && !file.matches_after)
-              .map((file) => file.name),
-          } };
-      }
+      if (taskIntent) return pendingTaskUpdateStatus(taskIntent);
       if (taskReceipt) {
         committedReceiptLedger(host, root, current.state_realpath, sessionId, generation);
         if (!generation || generation.generation < taskReceipt.generation_after)

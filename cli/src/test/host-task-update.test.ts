@@ -115,6 +115,16 @@ describe("host-managed task update", () => {
       const finalSnapshot = run("host", "snapshot", "--project", project, "--json");
       assert.equal(finalSnapshot.generation, 4);
       const host = path.join(state, "host");
+      const appliedId = crypto.randomUUID();
+      const latestIntent = JSON.parse(fs.readFileSync(path.join(host, "task-update-archived",
+        `${switchArgs[switchArgs.indexOf("--request-id") + 1]}.json`), "utf8"));
+      fs.writeFileSync(path.join(host, "task-update-intents", `${appliedId}.json`),
+        JSON.stringify({ ...latestIntent, request_id: appliedId }));
+      const applied = invoke("host", "receipt", "--project", project,
+        "--request-id", appliedId, "--json");
+      assert.equal(applied.status, 7);
+      assert.equal(JSON.parse(applied.stdout).task_update_intent.audit_status, "applied");
+      fs.unlinkSync(path.join(host, "task-update-intents", `${appliedId}.json`));
       const pendingId = crypto.randomUUID();
       const oldIntent = JSON.parse(fs.readFileSync(path.join(host, "task-update-archived",
         `${requestId}.json`), "utf8"));
@@ -141,6 +151,20 @@ describe("host-managed task update", () => {
       assert.equal(evidence.task_update_intent.audit_status, "before");
       assert.deepEqual(evidence.task_update_intent.unmatched_files, []);
       assert.equal(invoke("host", "snapshot", "--project", project, "--json").status, 7);
+      fs.appendFileSync(path.join(state, "task.md"), "\ninterrupted write\n");
+      const partial = invoke("host", "receipt", "--project", project,
+        "--request-id", pendingId, "--json");
+      assert.equal(partial.status, 7);
+      assert.equal(JSON.parse(partial.stdout).task_update_intent.audit_status, "partial");
+      assert.deepEqual(JSON.parse(partial.stdout).task_update_intent.unmatched_files, ["task.md"]);
+      fs.writeFileSync(path.join(state, "turn.txt"), "invalid\n");
+      const torn = invoke("host", "receipt", "--project", project,
+        "--request-id", pendingId, "--json");
+      assert.equal(torn.status, 7);
+      assert.equal(JSON.parse(torn.stdout).task_update_intent.audit_status, "partial");
+      assert.equal(JSON.parse(torn.stdout).task_update_intent.state_digest_observed, null);
+      assert.deepEqual(JSON.parse(torn.stdout).task_update_intent.unmatched_files,
+        ["task.md", "turn.txt"]);
     } finally { fs.rmSync(project, { recursive: true, force: true }); }
   });
 });
