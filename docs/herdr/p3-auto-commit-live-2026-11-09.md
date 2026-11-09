@@ -26,5 +26,18 @@
 ## 本轮发现与修复边界
 
 1. 旧 `policy check-consensus` 和 `policy check-next-step` 在多轮 `review.md` 中取了首个 `[NEEDS_WORK]`，与最新 `[PASS]/[CONSENSUS]` 不符。提交 `745fdc6` 改为读取最后一个规范轮次区块；CLI 回归 181/181 通过，真实归档上的两个只读命令随后均返回共识成立。
-2. 旧协调器没有共识停止分支，generation 6 后仍保存并接受了一份目标 Ralph 的交接。后续代码仅在 Lisa 的正式回执后、RLL 完成检查通过且快照未变化时记录完成并释放租约；模拟 Herdr 的完成测试通过，**尚未在第二个真实会话复验自动停止**。
+2. 旧协调器没有共识停止分支，generation 6 后仍保存并接受了一份目标 Ralph 的交接。后续代码仅在 Lisa 的正式回执后、RLL 完成检查通过且快照未变化时记录完成并释放租约；模拟 Herdr 的完成测试通过，第二个真实会话的自动停止结果见下节。
 3. 本次真实运行证明自动候选提交、双向交接、NEEDS_WORK 修复、PASS 和双方共识可从 CLI 入口连续发生；不证明聊天中改任务、Server 重启后自动授权接续或长期运行稳定性。`--full-auto` 仍不能跳过 Claude 首次目录信任。
+
+## 自动停止修复的第二次真实复验
+
+固定本仓提交 `9780a25b68a4827a3b5ced231ee9809e7676b8aa`，在同一隔离 XDG 根目录的**新命名 Server** `rll-ha-done` 和**新项目** `/private/tmp/ha-Oa8998/project-complete` 启动 `herdr-rll --full-auto`。用户只授权此新目录的 Claude 信任。任务要求创建字节精确的 `README.md`，两席完成后各自给出 `[CONSENSUS]`。本次没有人工代写候选或逐份确认。
+
+| generation | 真实席位行为 | 正式结果 |
+|---:|---|---|
+| 0→1 | Ralph `[PLAN]` | 自动提交，向 Lisa 投递一次 |
+| 1→2 | Lisa `[NEEDS_WORK]`：README 尚未创建 | 自动提交，向 Ralph 投递一次 |
+| 2→3 | Ralph 创建 README 并验证其为 `Done.` 的 5 字节，提交 `[CONSENSUS]` | 自动提交，向 Lisa 投递一次 |
+| 3→4 | Lisa 独立读出 `446f6e652e` 并提交 `[CONSENSUS]` | 自动提交，协调器写 `phase=completed`，释放租约；**没有 generation 4 的 Ralph 投递文件** |
+
+最终只读 `host receipt` 确认 Lisa 回执 `fa0be676-833e-5698-95e5-0db4fb0f6473` 为 `session_authorized_auto`、`source_verification=unverified`，generation 3→4。`host snapshot` 为 `host_state=unclaimed`、generation 4、最新回执相同。归档协调器记录的游标为 4、阶段 `completed`；只存在前三份回执的交接文件。`policy check-next-step` 退出 0，`printf 'Done.' | cmp -s - README.md` 退出 0，`wc -c README.md` 为 5。命名 Server 已停止。此复验确认正常收敛路径的自动停止；不覆盖异常重启、聊天改任务或长期运行。
