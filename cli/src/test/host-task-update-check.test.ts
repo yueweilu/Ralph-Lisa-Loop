@@ -49,6 +49,13 @@ describe("host task-update read-only preflight", () => {
       assert.deepEqual(check.stale_candidate_ids, [proposed.candidate_id]);
       assert.equal(check.content_sha256, hash);
       assert.deepEqual(fs.readFileSync(path.join(state, "task.md")), taskBefore);
+      const publicCheck = run("host", "task-update-check", "--project", project,
+        "--lease-id", lease.lease_id, "--request-id", crypto.randomUUID(),
+        "--expected-generation", "0", "--expected-binding-generation",
+        String(bound.binding_generation), "--expected-digest", baseline.state_digest,
+        "--mode", "supplement", "--file", taskFile, "--content-sha256", hash, "--json");
+      assert.equal(publicCheck.target_role, "ralph");
+      assert.equal(publicCheck.mode, "supplement");
       assert.equal(run("host", "snapshot", "--project", project, "--json").generation, 0);
       assert.throws(() => checkTaskUpdate(project, lease.lease_id, crypto.randomUUID(), 0,
         bound.binding_generation, baseline.state_digest, "switch", taskFile, "0".repeat(64)),

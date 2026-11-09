@@ -11,6 +11,7 @@ import { checkHostCommit } from "./commit-check.js";
 import { confirmCandidateSource } from "./confirmation.js";
 import { commitHostCandidate } from "./commit.js";
 import { grantAutoAuthorization } from "./auto-authorization.js";
+import { checkTaskUpdate, type TaskUpdateMode } from "./task-update-check.js";
 import { commandLockCheck, retireCommandLock } from "./command-lock-recovery.js";
 
 function options(args: string[], names: string[]): Record<string, string> {
@@ -127,6 +128,16 @@ export function cmdHost(args: string[]): void {
           decimal(opts["--expected-binding-generation"]));
         break;
       }
+      case "task-update-check": {
+        const opts = options(args.slice(1), ["--project", "--lease-id", "--request-id",
+          "--expected-generation", "--expected-binding-generation", "--expected-digest",
+          "--mode", "--file", "--content-sha256"]);
+        result = checkTaskUpdate(opts["--project"], opts["--lease-id"], opts["--request-id"],
+          decimal(opts["--expected-generation"]), decimal(opts["--expected-binding-generation"]),
+          opts["--expected-digest"], opts["--mode"] as TaskUpdateMode,
+          opts["--file"], opts["--content-sha256"]);
+        break;
+      }
       case "confirm-candidate": {
         const opts = options(args.slice(1), ["--project", "--lease-id", "--request-id",
           "--candidate-id", "--expected-generation", "--expected-binding-generation",
@@ -169,7 +180,7 @@ export function cmdHost(args: string[]): void {
         break;
       }
       default:
-        throw new HostContractError("UNKNOWN_HOST_COMMAND", 2, "Usage: ralph-lisa host <inspect|adopt|confirm-adoption|claim|heartbeat|command-lock-check|retire-command-lock|recover-lease|bind-seat|snapshot|prepare-generation|propose|candidates|candidate-show|commit-check|confirm-candidate|authorize-auto|commit|receipt|release> ... --json");
+        throw new HostContractError("UNKNOWN_HOST_COMMAND", 2, "Usage: ralph-lisa host <inspect|adopt|confirm-adoption|claim|heartbeat|command-lock-check|retire-command-lock|recover-lease|bind-seat|snapshot|prepare-generation|propose|candidates|candidate-show|commit-check|task-update-check|confirm-candidate|authorize-auto|commit|receipt|release> ... --json");
     }
     console.log(JSON.stringify(result));
   } catch (error) {
