@@ -37,13 +37,14 @@ function call(argv, args, options = {}) {
   delete env.TMUX_PANE;
   delete env.RL_STATE_DIR;
   const result = spawnSync(argv[0], [...argv.slice(1), ...args], {
-    cwd: root, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+    cwd: options.cwd ?? root, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
     timeout: options.timeoutMs ?? 10000,
   });
   let value = null;
   try { value = JSON.parse((result.stdout || result.stderr || "").trim()); }
   catch { /* Fail closed below. */ }
-  return { code: result.status, value, error: result.error?.code ?? null };
+  return { code: result.status, value, output: (result.stdout || result.stderr || "").trim(),
+    error: result.error?.code ?? null };
 }
 
 function config() {
@@ -330,6 +331,35 @@ function checkDelivery(paths, record, cli, herdr, plan) {
       !["human_asserted", "session_authorized_auto"].includes(receipt.source_confirmation) ||
       receipt.source_verification !== "unverified")
     throw new Error(receipt?.code || "RECEIPT_MISMATCH");
+  if (record.auto_commit === true && receipt.role === "lisa") {
+    const completion = call(cli, ["policy", "check-next-step"], { cwd: paths.real });
+    if (completion.code !== 1 || !completion.output.startsWith("Not ready to proceed:")) {
+      if (completion.code !== 0 || !completion.output.startsWith("Ready to proceed:"))
+        throw new Error("COMPLETION_CHECK_UNCERTAIN");
+      const confirmedRead = call(cli, ["host", "snapshot", "--project", paths.real, "--json"]);
+      if (hostBusy(confirmedRead)) return record;
+      const confirmed = requireActiveSnapshot(confirmedRead, paths, record, plan);
+      if (confirmed.generation !== snapshot.generation ||
+          confirmed.last_receipt_id !== snapshot.last_receipt_id ||
+          confirmed.state_digest !== snapshot.state_digest)
+        throw new Error("COMPLETION_STATE_CHANGED");
+      const pending = { ...record, phase: "completion_pending",
+        cursor_generation: receipt.generation_after, cursor_receipt_id: receipt.request_id,
+        cursor_turn: receipt.turn_after, completion_state_digest: snapshot.state_digest,
+        completed_at: new Date().toISOString() };
+      durableWrite(paths.record, pending);
+      const released = call(cli, ["host", "release", "--project", paths.real,
+        "--lease-id", record.lease_id, "--json"]);
+      if (released.code !== 0 || released.value?.status !== "released")
+        throw new Error("COMPLETION_RELEASE_UNCERTAIN");
+      const completed = { ...pending, phase: "completed" };
+      durableWrite(paths.record, completed);
+      fs.renameSync(paths.record, path.join(paths.dir, `finished-${record.owner_id}.json`));
+      emit({ status: "completed", project: paths.real, request_id: receipt.request_id,
+        generation: receipt.generation_after });
+      return completed;
+    }
+  }
   const role = receipt.turn_after;
   const message = `Ralph-Lisa committed handoff. Project: ${paths.real}. Session: ${record.session_id}. ` +
     `Receipt: ${receipt.request_id}. Generation: ${receipt.generation_after}. ` +
@@ -488,6 +518,7 @@ async function runActiveLoop(paths, initialRecord, cli, herdr, signalState = nul
     record = processControl(paths, record, cli, herdr, plan);
     if (record.phase === "active") {
       record = checkDelivery(paths, record, cli, herdr, plan);
+      if (record.phase === "completed") return;
       if (record.auto_commit === true) record = checkAutoCandidate(paths, record, cli, herdr, plan);
     }
     if (++ticks % 5 === 0) {

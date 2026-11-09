@@ -57,10 +57,11 @@ function waitForStatus(child, expected, timeoutMs = 15000) {
   });
 }
 
-for (const scenario of ["normal", "hangup", "changed", "before_prompt", "authorized"]) test(
+for (const scenario of ["normal", "hangup", "changed", "before_prompt", "authorized", "completed"]) test(
   scenario === "changed" ? "managed close retains the lease when business state changed" :
     scenario === "before_prompt" ? "managed close before initial prompt retains the lease without delivery" :
     scenario === "authorized" ? "managed launch records a scoped auto grant before the first prompt" :
+    scenario === "completed" ? "managed auto loop stops after formal Lisa consensus" :
     scenario === "hangup" ? "managed pane hangup releases a matching lease" :
     "closing a managed coordinator releases only a matching cursor", async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "rll-managed-stop-"));
@@ -104,8 +105,9 @@ for (const scenario of ["normal", "hangup", "changed", "before_prompt", "authori
     request_id: requestId, project_realpath: fs.realpathSync.native(project),
     session_id: identity.session_id,
     task_sha256: crypto.createHash("sha256").update(fs.readFileSync(path.join(state, "task.md"))).digest("hex"),
-    permission_profile: "interactive", auto_commit: scenario === "authorized",
-    ...(scenario === "authorized" ? { auto_commit_granted_via: "cli_auto_host_herdr" } : {}) }));
+    permission_profile: "interactive", auto_commit: ["authorized", "completed"].includes(scenario),
+    ...(["authorized", "completed"].includes(scenario)
+      ? { auto_commit_granted_via: "cli_auto_host_herdr" } : {}) }));
   fs.writeFileSync(path.join(state, "herdr-launch-workspace.json"), JSON.stringify({ schema: 1,
     request_id: requestId, workspace_id: "w1", root_pane_id: "w1:p1", root_terminal_id: "term-r" }));
   const env = { ...process.env, HERDR_BIN_PATH: fakeHerdr,
@@ -127,6 +129,31 @@ for (const scenario of ["normal", "hangup", "changed", "before_prompt", "authori
     } else {
       assert.equal(started.status, "started", JSON.stringify(started));
       assert.equal(JSON.parse(fs.readFileSync(path.join(state, "herdr-launch-result.json"))).status, "started");
+      if (scenario === "completed") {
+        const toLisa = waitForStatus(child, "handed_off", 15000);
+        fs.writeFileSync(path.join(project, "ralph-consensus.md"),
+          "[CONSENSUS] The disposable task is complete.\n");
+        proposeWhenUnlocked(project, "ralph", "ralph-consensus.md");
+        assert.equal((await toLisa).role, "lisa");
+        const completed = waitForStatus(child, "completed", 15000);
+        fs.writeFileSync(path.join(project, "lisa-consensus.md"),
+          "[CONSENSUS] I independently agree the disposable task is complete.\n");
+        proposeWhenUnlocked(project, "lisa", "lisa-consensus.md");
+        const completion = await completed;
+        assert.equal(completion.status, "completed", JSON.stringify(completion));
+        assert.equal(completion.generation, 2);
+        const snapshot = spawnSync(process.execPath, [cli, "host", "snapshot",
+          "--project", project, "--json"], { encoding: "utf8" });
+        assert.equal(snapshot.status, 0, snapshot.stdout + snapshot.stderr);
+        assert.equal(JSON.parse(snapshot.stdout).host_state, "unclaimed");
+        assert.equal(JSON.parse(snapshot.stdout).generation, 2);
+        const sessionDir = path.join(pluginState, "sessions",
+          fs.readdirSync(path.join(pluginState, "sessions"))[0]);
+        assert.equal(fs.readdirSync(sessionDir).filter((name) => name.startsWith("delivery-")).length, 1);
+        const finished = fs.readdirSync(sessionDir).find((name) => name.startsWith("finished-"));
+        assert.equal(JSON.parse(fs.readFileSync(path.join(sessionDir, finished))).phase, "completed");
+        return;
+      }
       if (scenario === "authorized") {
         const active = JSON.parse(fs.readFileSync(path.join(pluginState, "sessions",
           fs.readdirSync(path.join(pluginState, "sessions"))[0], "record.json")));
