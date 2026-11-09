@@ -63,3 +63,5 @@ Ralph 在自己的 Herdr Pane 收到明确的补充或新任务时，把要求�
 本地覆盖了只读预检、同请求幂等、切换与补充、混合事件后继续正式提交、旧候选拒绝、错误席位拒绝、Lisa 负责时 Ralph 请求切换、一次通知和授权失效。请求队列采用先写临时文件再原子更名；未处理请求阻止停止与租约回收。任务写入或投递结果不明时保留意图并阻断自动重试。
 
 对写前中断的任务意图，`host receipt --request-id` 现在只读返回 `audit_status`、业务摘要及未匹配的固定文件名；不会重放写入，也不输出任务正文。写中和回执后故障矩阵及真实 Herdr 重启接续仍待执行。
+
+任务更新投递确认后，协调器现在立即归档对应请求。若进程恰好在游标已前进、请求尚未归档之间退出，租约恢复仍会被待处理队列阻断。先只读核对 `host snapshot`、`host receipt --request-id`、插件 `record.json` 和 `delivery-<request-id>.json`；四者显示同一代次、同一回执且投递状态为 `accepted` 时，才可在原隔离插件环境执行 `node integrations/herdr/coordinator.mjs archive-delivered-task-request <request-id> <generation-after>`。此命令只归档该请求，不投递 Agent 提示，也不推进业务代次；证据不匹配时返回错误并保留请求。随后重新执行既有的 `recovery-check`、显式租约回收、重绑与接续。未正式提交、未确认投递或部分写入的请求不适用此命令，仍须人工核对，不得用删除队列文件的方式跳过门禁。本地回归覆盖了这一已投递中断窗口；真实 Herdr 重启验收仍待执行。

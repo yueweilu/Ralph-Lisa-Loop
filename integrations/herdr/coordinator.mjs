@@ -411,6 +411,7 @@ function checkDelivery(paths, record, cli, herdr, plan) {
       cursor_receipt_id: receipt.request_id, cursor_turn: role,
       auto_commit: false, auto_commit_revoked_by_task_update: receipt.request_id };
     durableWrite(paths.record, next);
+    archiveTaskRequest(paths, receipt.request_id);
     emit({ status: "task_updated_delivered", project: paths.real,
       request_id: receipt.request_id, generation: receipt.generation_after,
       task_version: receipt.task_version_after, role });
@@ -541,6 +542,55 @@ function processTaskRequest(paths, record, cli, herdr, plan) {
   emit({ status: "task_update_committed", project: paths.real,
     request_id: request.request_id, generation: request.generation + 1 });
   return record;
+}
+
+/** Close only a request whose host receipt, accepted prompt, and plugin cursor agree. */
+function archiveDeliveredTaskRequest(paths, requestId, expectedGeneration) {
+  if (!UUID.test(requestId ?? "") || !Number.isSafeInteger(expectedGeneration) ||
+      expectedGeneration < 1) throw new Error("TASK_REQUEST_ARCHIVE_ARGUMENTS_INVALID");
+  const record = readRecord(paths.record);
+  const request = pendingTaskRequest(paths);
+  if (!request || request.request_id !== requestId ||
+      request.project_realpath !== paths.real || request.session_id !== record.session_id ||
+      request.generation + 1 !== expectedGeneration ||
+      !["active", "paused", "needs_reconcile"].includes(record.phase) ||
+      record.cursor_generation !== expectedGeneration ||
+      record.cursor_receipt_id !== requestId ||
+      record.lease_id === undefined || !UUID.test(record.lease_id) ||
+      record.binding_generation !== request.binding_generation)
+    throw new Error("TASK_REQUEST_ARCHIVE_EVIDENCE_MISMATCH");
+  const delivery = readRecord(deliveryFile(paths, requestId));
+  if (delivery.status !== "accepted" || delivery.request_id !== requestId ||
+      delivery.generation !== expectedGeneration ||
+      delivery.lease_id !== record.lease_id || delivery.owner_id !== record.owner_id ||
+      delivery.role !== record.cursor_turn ||
+      delivery.workspace_id !== record.plan?.workspace_id ||
+      delivery.pane_id !== record.plan?.seats?.[delivery.role]?.pane_id)
+    throw new Error("TASK_REQUEST_ARCHIVE_DELIVERY_MISMATCH");
+  const cli = config().cli;
+  const observed = call(cli, ["host", "snapshot", "--project", paths.real, "--json"]);
+  const snapshot = requireActiveSnapshot(observed, paths, record, record.plan);
+  const result = call(cli, ["host", "receipt", "--project", paths.real,
+    "--request-id", requestId, "--json"]);
+  const receipt = result.value;
+  if (result.code !== 0 || receipt?.status !== "task_updated" ||
+      receipt.request_id !== requestId || receipt.project_realpath !== paths.real ||
+      receipt.lease_id !== record.lease_id ||
+      receipt.binding_generation !== record.binding_generation ||
+      receipt.session_id !== record.session_id ||
+      receipt.mode !== request.mode ||
+      receipt.content_sha256 !== request.content_sha256 ||
+      receipt.source_verification !== "unverified" ||
+      receipt.generation_before !== request.generation ||
+      receipt.generation_after !== expectedGeneration ||
+      receipt.turn_after !== delivery.role ||
+      receipt.state_digest_after !== snapshot.state_digest ||
+      snapshot.generation !== expectedGeneration || snapshot.last_receipt_id !== requestId ||
+      snapshot.turn !== delivery.role)
+    throw new Error("TASK_REQUEST_ARCHIVE_RECEIPT_MISMATCH");
+  archiveTaskRequest(paths, requestId);
+  return { status: "task_request_archived", project: paths.real,
+    request_id: requestId, generation: expectedGeneration, replay: "not_replayed" };
 }
 
 function autoCommitRequestId(sessionId, generation, candidateId) {
@@ -1539,6 +1589,11 @@ try {
   else if (process.argv[2] === "rebind") await rebind(process.argv[3], process.argv[4]);
   else if (process.argv[2] === "continue")
     await continueRebound(process.argv[3], process.argv[4]);
+  else if (process.argv[2] === "archive-delivered-task-request") {
+    const project = projectFromContext();
+    if (!project) throw new Error("PROJECT_REQUIRED");
+    emit(archiveDeliveredTaskRequest(files(project), process.argv[3], Number(process.argv[4])));
+  }
   else if (["pause", "resume"].includes(process.argv[2])) await control(process.argv[2]);
   else emit({ status: "error", code: "UNKNOWN_ACTION" }, 2);
 } catch (error) {
