@@ -164,6 +164,9 @@ function readDeliveryRecords(dir, record, plan, digest) {
 function recoverableCoordinatorPhase(record, stateDigest, generation,
   receiptId, turn) {
   if (record.phase === "needs_reconcile") return true;
+  if (record.phase === "active")
+    return record.cursor_generation === generation &&
+      record.cursor_receipt_id === receiptId && record.cursor_turn === turn;
   return record.phase === "paused" &&
     typeof record.paused_at === "string" && !!record.paused_at &&
     record.pause_state_digest === stateDigest &&

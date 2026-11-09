@@ -77,3 +77,5 @@ Ralph 在自己的 Herdr Pane 收到明确的补充或新任务时，把要求�
 任务事件后的隔离真实 Herdr 试验见[停机与异常退出记录](d5-task-event-restart-trial-2026-11-09.md)：Ralph 聊天更新正式推进到 generation 1，任务提示只有一份 `accepted` 投递；正常停止和仅对命名 Server 执行 `SIGKILL` 都触发托管协调器的安全释放，未留下待重绑租约。后续单独模拟协调器异常退出的项目遇到 Claude API `402 Insufficient Balance`，未生成任务事件。非零游标重绑接续需在 Agent 可调用后另行验收，不能由上述停机结果推断通过。
 
 模拟 Herdr 的协调器回归新增 `server-restart-task-update`：由排队请求生成真实 CLI 任务事件、确认 generation 1 与 Ralph 一次投递后，模拟 Server 终端身份变化使旧协调器退出。随后走 `recovery-check`、带证据的租约回收、`rebind-check`、重绑和 `continuation-check`，核对旧提示不重发、游标仍为 1，并在接续后验证下一次正常交接。此项只证明模拟环境中的协议路径；真实 Herdr 的同一场景仍以现场验收为准。
+
+同日续验已在[停机与异常退出记录](d5-task-event-restart-trial-2026-11-09.md)补齐：修复 Claude 集成注册后，真实 Ralph 聊天任务事件推进至 generation 1；仅对协调器执行 `SIGKILL`、重启命名 Herdr Server，按单独人工确认完成旧租约回收、重绑与接续。现场暴露的 `active` 记录阻断已限定为游标一致且旧 PID、回收证明、投递链和原生会话指纹均通过校验时才可恢复。模拟崩溃回归还验证了游标不一致拒绝。真实试验确认旧提示不重发、游标不变及短时心跳接续；后续候选交接和长期稳定性仍未由这次试验证明。

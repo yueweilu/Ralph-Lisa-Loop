@@ -423,7 +423,8 @@ for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commi
   "server-restart", "server-restart-bind-failure", "server-restart-continue",
   "server-restart-continue-failure", "server-restart-continue-uncertain",
   "server-restart-nonzero-continue", "server-restart-nonzero-paused",
-  "server-restart-nonzero-rebind-twice", "server-restart-task-update"]) test(
+  "server-restart-nonzero-rebind-twice", "server-restart-task-update",
+  "server-restart-task-update-crash"]) test(
   `${failure} Herdr prompt keeps one durable intent and stops without replay`, async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "rll-herdr-uncertain-"));
   const project = path.join(temp, "project");
@@ -443,7 +444,7 @@ for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commi
     `if(a[0]==='--version')console.log('herdr 0.9.4');` +
     `else if(a[0]==='integration')console.log('claude: current (v10)\\ncodex: current (v9)');` +
     `else if(a[0]==='agent'&&a[1]==='get'){const role=a[2];const fs=require('node:fs');const changed=fs.existsSync(process.env.FAKE_SERVER_RESTARTED);const marker=process.env.FAKE_AUDIT_MUTATION;if(role==='ralph'&&marker&&fs.existsSync(marker)){const target=fs.readFileSync(marker,'utf8').trim()==='lease'?process.env.FAKE_LEASE_PATH:process.env.FAKE_RECORD_PATH;const value=JSON.parse(fs.readFileSync(target,'utf8'));if(target===process.env.FAKE_LEASE_PATH)value.heartbeat_seq++;else value.error='changed-during-audit';fs.writeFileSync(target,JSON.stringify(value));fs.unlinkSync(marker);}const rebindMarker=process.env.FAKE_REBIND_MARKER;const continuationMarker=process.env.FAKE_CONTINUATION_MARKER;const fail=(rebindMarker&&fs.existsSync(rebindMarker)&&JSON.parse(fs.readFileSync(rebindMarker,'utf8')).status==='claimed')||(continuationMarker&&fs.existsSync(continuationMarker));const lisaSession=role==='lisa'&&process.env.FAKE_PROMPT_FAILURE==='server-restart-nonzero-continue'&&fs.existsSync(process.env.FAKE_PROMPTS)&&fs.readFileSync(process.env.FAKE_PROMPTS,'utf8').includes('lisa\\n');console.log(JSON.stringify({result:{agent:{name:role,agent:role==='ralph'?'claude':'codex',workspace_id:'w1',pane_id:role==='ralph'?'w1:p1':'w1:p2',terminal_id:(fail?'bad-':changed?'new-':'term-')+role,cwd:process.env.FAKE_PROJECT,agent_session:role==='ralph'?{agent:'claude',kind:'id',source:'herdr:claude',value:process.env.FAKE_RALPH_SESSION||'ralph-session-1'}:lisaSession?{agent:'codex',kind:'id',source:'herdr:codex',value:'lisa-session-1'}:undefined,interactive_ready:true,agent_status:'idle'}}}));}` +
-    `else if(a[0]==='agent'&&a[1]==='prompt'){require('node:fs').appendFileSync(process.env.FAKE_PROMPTS,a[2]+'\\n');if((a[2]==='ralph'&&process.env.FAKE_PROMPT_FAILURE==='initial-timeout')||(a[2]==='lisa'&&process.env.FAKE_PROMPT_FAILURE==='timeout')){console.error(JSON.stringify({error:{code:'timeout'}}));process.exitCode=1;}else if(a[2]==='ralph')console.log(JSON.stringify({result:{type:'agent_prompted',agent:{name:'ralph',agent:'claude',workspace_id:'w1',pane_id:'w1:p1',cwd:process.env.FAKE_PROJECT}}}));else console.log(JSON.stringify({result:{type:'agent_prompted',agent:{name:a[2],agent:'codex',workspace_id:'w1',pane_id:['server-restart-continue','server-restart-nonzero-continue','server-restart-task-update'].includes(process.env.FAKE_PROMPT_FAILURE)?'w1:p2':'w1:p9',cwd:process.env.FAKE_PROJECT}}}));}` +
+    `else if(a[0]==='agent'&&a[1]==='prompt'){require('node:fs').appendFileSync(process.env.FAKE_PROMPTS,a[2]+'\\n');if((a[2]==='ralph'&&process.env.FAKE_PROMPT_FAILURE==='initial-timeout')||(a[2]==='lisa'&&process.env.FAKE_PROMPT_FAILURE==='timeout')){console.error(JSON.stringify({error:{code:'timeout'}}));process.exitCode=1;}else if(a[2]==='ralph')console.log(JSON.stringify({result:{type:'agent_prompted',agent:{name:'ralph',agent:'claude',workspace_id:'w1',pane_id:'w1:p1',cwd:process.env.FAKE_PROJECT}}}));else console.log(JSON.stringify({result:{type:'agent_prompted',agent:{name:a[2],agent:'codex',workspace_id:'w1',pane_id:['server-restart-continue','server-restart-nonzero-continue','server-restart-task-update','server-restart-task-update-crash'].includes(process.env.FAKE_PROMPT_FAILURE)?'w1:p2':'w1:p9',cwd:process.env.FAKE_PROJECT}}}));}` +
     `else process.exitCode=2;\n`);
   fs.writeFileSync(fakeClaude, `#!${process.execPath}\nconsole.log('{"loggedIn":true}');\n`);
   fs.writeFileSync(fakeCodex, `#!${process.execPath}\nconsole.log('Logged in using ChatGPT');\n`);
@@ -564,8 +565,10 @@ for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commi
     if (failure.startsWith("server-restart")) {
       const nonzero = ["server-restart-nonzero-continue",
         "server-restart-nonzero-paused",
-        "server-restart-nonzero-rebind-twice", "server-restart-task-update"].includes(failure);
-      const taskUpdate = failure === "server-restart-task-update";
+        "server-restart-nonzero-rebind-twice", "server-restart-task-update",
+        "server-restart-task-update-crash"].includes(failure);
+      const taskUpdate = failure.startsWith("server-restart-task-update");
+      const crash = failure === "server-restart-task-update-crash";
       let priorReceipt = null;
       if (nonzero) {
         const hostBeforeRestart = async (action, args = []) => {
@@ -647,6 +650,11 @@ for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commi
         if (child.exitCode === null)
           await new Promise((resolve) => child.once("exit", resolve));
         fs.writeFileSync(restartedFile, "restarted");
+      } else if (crash) {
+        child.kill("SIGKILL");
+        if (child.exitCode === null)
+          await new Promise((resolve) => child.once("exit", resolve));
+        fs.writeFileSync(restartedFile, "restarted");
       } else {
         const failed = waitForLine(child, (value) => value.status === "needs_reconcile");
         fs.writeFileSync(restartedFile, "restarted");
@@ -666,8 +674,8 @@ for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commi
       const sessionDir = path.join(stateDir, "sessions",
         fs.readdirSync(path.join(stateDir, "sessions"))[0]);
       const record = JSON.parse(fs.readFileSync(path.join(sessionDir, "record.json"), "utf8"));
-      assert.equal(record.phase, failure === "server-restart-nonzero-paused" ?
-        "paused" : "needs_reconcile");
+      assert.equal(record.phase, crash ? "active" :
+        failure === "server-restart-nonzero-paused" ? "paused" : "needs_reconcile");
       assert.equal(record.cursor_generation, expectedGeneration);
       const audit = spawnSync(process.execPath,
         [path.join(root, "actions.mjs"), "recovery-check"], { env, encoding: "utf8" });
@@ -690,6 +698,17 @@ for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commi
       assert.equal(recovered.status, 0, recovered.stdout + recovered.stderr);
       const pluginRecordFile = path.join(sessionDir, "record.json");
       const pluginRecordBefore = fs.readFileSync(pluginRecordFile, "utf8");
+      if (crash) {
+        fs.writeFileSync(pluginRecordFile, JSON.stringify({
+          ...JSON.parse(pluginRecordBefore), cursor_generation: 0,
+        }));
+        const staleCursor = spawnSync(process.execPath,
+          [path.join(root, "actions.mjs"), "rebind-check"],
+        { env, encoding: "utf8" });
+        assert.equal(staleCursor.status, 7, staleCursor.stdout + staleCursor.stderr);
+        assert.equal(JSON.parse(staleCursor.stdout).code, "PLUGIN_RECORD_INVALID");
+        fs.writeFileSync(pluginRecordFile, pluginRecordBefore);
+      }
       if (failure === "server-restart-nonzero-paused") {
         fs.writeFileSync(pluginRecordFile, JSON.stringify({
           ...JSON.parse(pluginRecordBefore), pause_state_digest: "0".repeat(64),
@@ -862,7 +881,8 @@ for (const failure of ["initial-timeout", "timeout", "wrong-pane", "paused-commi
       if (["server-restart-continue", "server-restart-continue-uncertain",
         "server-restart-nonzero-continue",
         "server-restart-nonzero-paused",
-        "server-restart-nonzero-rebind-twice", "server-restart-task-update"].includes(failure)) {
+        "server-restart-nonzero-rebind-twice", "server-restart-task-update",
+        "server-restart-task-update-crash"].includes(failure)) {
         const active = spawn(process.execPath, [coordinator, "continue",
           continuationPlan.evidence_sha256, "reviewed-cursor-no-replay"], {
             env: { ...env, FAKE_PROMPT_FAILURE:
