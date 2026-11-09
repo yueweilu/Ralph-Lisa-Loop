@@ -43,4 +43,8 @@
 
 随后用新的 `config5/state5` 与命名 Server `rll-p2handoff-ml523e` 试行 CLI `auto --host herdr --full-auto`。Ralph 就绪，但 Lisa Pane 中 Codex CLI 0.167.0 明确报 `unexpected argument '--full-auto'`；启动结果为 `START_OUTCOME_UNKNOWN`，只读复核显示插件记录最终为 `needs_reconcile`、原因 `timeout`，宿主仍 unclaimed、generation 为 null、候选 0、没有初始投递。Server 已停止，失败项目单独保留；没有重复执行同一请求。
 
-本机 `codex --help` 显示支持 `--sandbox workspace-write`、`--ask-for-approval never` 与 `--no-daemon`。插件将 Codex 的 `full_auto` 启动参数改为这组三项；模拟 Herdr 回归检查实际转发的参数。新的 `config6/state6` 与命名 Server `rll-p2handoff2-ml523e` 在另一份新建临时项目上实测返回 `started`：两席绑定、初始任务接受一次、host claimed、generation 0、候选 0。此时还未正式提交候选或验证 Lisa 的首次交接原生引用；该 Server 保持运行以继续验收。
+本机 `codex --help` 显示支持 `--sandbox workspace-write`、`--ask-for-approval never` 与 `--no-daemon`。插件将 Codex 的 `full_auto` 启动参数改为这组三项；模拟 Herdr 回归检查实际转发的参数。新的 `config6/state6` 与命名 Server `rll-p2handoff2-ml523e` 在另一份新建临时项目上实测返回 `started`：两席绑定、初始任务接受一次、host claimed、generation 0、候选 0。此时还未正式提交候选或验证 Lisa 的首次交接原生引用。
+
+该 `config6/state6` 会话随后收到 Ralph 候选，但候选正文直接是 README 的一句话，缺少 planning 轮次的 `[PLAN]` 首行。只读 `commit-check` 返回 `INVALID_SUBMISSION`；未做来源确认、正式提交或交接。关闭受管理协调器 Pane 后，租约正常释放；最终 generation 0、候选 1，Server 已停止。该失败项目已单独保留。
+
+初始 Ralph 提示因此明确区分交付文件和 RLL 评审候选，并要求 planning 候选以 `[PLAN]` 开头、包含测试命令与覆盖范围，先做只读 `commit-check`。新的 `config7/state7` 命名会话 `rll-p2handoff3-ml523e` 已在新项目中启动，Ralph 提出一份独立 `[PLAN]` 候选；只读门禁返回 `awaiting_source_confirmation`、策略 pass，尚无正式提交或交接。该隔离 Server 暂时保持运行，等待逐份人工来源决定。

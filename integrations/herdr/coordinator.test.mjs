@@ -158,6 +158,9 @@ test("coordinator claims and binds observed seats, heartbeats, then releases on 
     assert.equal(fs.readFileSync(prompts, "utf8").trim().split("\n").length, 1);
     const initialPrompt = JSON.parse(fs.readFileSync(prompts, "utf8").trim()).message;
     assert.match(initialPrompt, /task\.md/);
+    assert.match(initialPrompt, /separate RLL review candidate file/);
+    assert.match(initialPrompt, /\[PLAN\].*first line/);
+    assert.match(initialPrompt, /Test Plan with a test command and coverage scope/);
     assert.ok(initialPrompt.includes(cli));
     const recovery = await runWithHostBusyRetry([path.join(root, "actions.mjs"), "recovery-check"]);
     assert.equal(recovery.status, 0, recovery.stdout + recovery.stderr);

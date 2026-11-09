@@ -279,7 +279,11 @@ function deliverInitial(paths, record, cli, herdr, plan, taskFile) {
     throw new Error("INITIAL_STATE_CHANGED");
   const message = `Initial Ralph-Lisa task. Project: ${paths.real}. Session: ${record.session_id}. ` +
     `You are Ralph in round ${snapshot.round}. Read ${taskFile} and the current RLL state, ` +
-    "then work in the project. Prepare a candidate file and follow the RLL host contract. " +
+    "then work in the project. Prepare a separate RLL review candidate file; do not propose " +
+    "the deliverable file as the candidate. This planning turn's candidate must start with " +
+    "[PLAN] on its first line and include a Test Plan with a test command and coverage scope. " +
+    "Propose that candidate through the RLL host contract and run its read-only commit-check " +
+    "before requesting human review. " +
     `${agentCliGuidance(cli)} ` +
     "The current source gate requires a human to review and confirm each candidate before commit; do not bypass it.";
   submitPrompt(paths, record, herdr, plan, "ralph", message,
