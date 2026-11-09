@@ -59,3 +59,16 @@ test("start-task shows a preview and cancellation does not initialize a session"
     assert.equal(fs.existsSync(path.join(project, ".dual-agent")), false);
   } finally { fs.rmSync(project, { recursive: true, force: true }); }
 });
+
+test("start-task treats closed input as cancellation", () => {
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), "rll-start-task-"));
+  try {
+    const result = spawnSync(process.execPath, [script], { encoding: "utf8",
+      input: "Write a short README\n",
+      env: { ...process.env, HERDR_WORKSPACE_ID: "w1",
+        HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({ workspace_id: "w1", workspace_cwd: project }) } });
+    assert.equal(result.status, 3, result.stdout + result.stderr);
+    assert.match(result.stderr, /START_CANCELLED/);
+    assert.equal(fs.existsSync(path.join(project, ".dual-agent")), false);
+  } finally { fs.rmSync(project, { recursive: true, force: true }); }
+});

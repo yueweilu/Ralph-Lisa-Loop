@@ -6,6 +6,17 @@ import { fileURLToPath } from "node:url";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 
+async function ask(input, prompt) {
+  if (input.closed) throw new Error("START_CANCELLED");
+  let onClose;
+  const closed = new Promise((_, reject) => {
+    onClose = () => reject(new Error("START_CANCELLED"));
+    input.once("close", onClose);
+  });
+  try { return await Promise.race([input.question(prompt), closed]); }
+  finally { input.off("close", onClose); }
+}
+
 async function main() {
   let context;
   try { context = JSON.parse(process.env.HERDR_PLUGIN_CONTEXT_JSON || "null"); }
@@ -28,9 +39,9 @@ async function main() {
   const input = createInterface({ input: process.stdin, output: process.stdout });
   let task, fullAuto;
   try {
-    task = (await input.question("Task: ")).trim();
+    task = (await ask(input, "Task: ")).trim();
     if (!task) throw new Error("TASK_REQUIRED");
-    const permission = (await input.question("Agent permissions [interactive/full-auto] (default interactive): ")).trim().toLowerCase();
+    const permission = (await ask(input, "Agent permissions [interactive/full-auto] (default interactive): ")).trim().toLowerCase();
     if (permission && permission !== "interactive" && permission !== "full-auto")
       throw new Error("PERMISSION_PROFILE_INVALID");
     fullAuto = permission === "full-auto";
@@ -38,7 +49,7 @@ async function main() {
     process.stdout.write(`Task summary: ${normalized.slice(0, 120).join("")}${normalized.length > 120 ? "…" : ""}\n`);
     process.stdout.write(`Agent permissions: ${fullAuto ? "full-auto" : "interactive"}\n`);
     process.stdout.write("Formal candidate commits: separate source confirmation required\n");
-    const confirmed = (await input.question("Start this task? [y/N]: ")).trim().toLowerCase();
+    const confirmed = (await ask(input, "Start this task? [y/N]: ")).trim().toLowerCase();
     if (confirmed !== "y" && confirmed !== "yes") throw new Error("START_CANCELLED");
   }
   finally { input.close(); }
