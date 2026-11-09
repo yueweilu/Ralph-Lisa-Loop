@@ -2929,7 +2929,11 @@ function cmdPolicyCheckNextStep(): void {
  * that starts with a [TAG] line.
  */
 function extractSubmissionContent(raw: string): string {
-  const lines = raw.split("\n");
+  const canonicalHeader = /^## \[\w+\] Round \d+ \| Step: /gm;
+  let latestHeader = -1;
+  let match: RegExpExecArray | null;
+  while ((match = canonicalHeader.exec(raw)) !== null) latestHeader = match.index;
+  const lines = raw.slice(latestHeader < 0 ? 0 : latestHeader).split("\n");
   for (let i = 0; i < lines.length; i++) {
     if (extractTag(lines[i])) {
       return lines.slice(i).join("\n");

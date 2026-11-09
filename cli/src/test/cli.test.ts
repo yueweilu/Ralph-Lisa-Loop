@@ -61,6 +61,16 @@ describe("CLI: policy check-consensus", () => {
     assert.strictEqual(r.exitCode, 1);
     assert.ok(r.stdout.includes("Lisa"));
   });
+
+  it("uses Lisa's latest canonical review after earlier NEEDS_WORK", () => {
+    run("submit-ralph", "[PLAN] Make README\n\nTest Plan: compare README bytes and scope");
+    run("submit-lisa", "[NEEDS_WORK] Fix test\n\nReason: plan.md:1 misses the final newline");
+    run("submit-ralph", "[FIX] Compare exact bytes\n\nTest Results: Exit code: 0\n- README.md:1");
+    run("submit-lisa", "[CONSENSUS] Exact README verified");
+    run("submit-ralph", "[CONSENSUS] Agreed");
+    const r = run("policy", "check-consensus");
+    assert.strictEqual(r.exitCode, 0, r.stdout);
+  });
 });
 
 describe("CLI: policy check-next-step", () => {
@@ -112,6 +122,16 @@ describe("CLI: policy check-next-step", () => {
     const r = run("policy", "check-next-step");
     assert.strictEqual(r.exitCode, 1);
     assert.ok(r.stdout.includes("Consensus not reached"));
+  });
+
+  it("checks the latest review after a prior NEEDS_WORK", () => {
+    run("submit-ralph", "[PLAN] Make README\n\nTest Plan: compare README bytes and scope");
+    run("submit-lisa", "[NEEDS_WORK] Fix test\n\nReason: plan.md:1 misses the final newline");
+    run("submit-ralph", "[FIX] Compare exact bytes\n\nTest Results: Exit code: 0\n- README.md:1");
+    run("submit-lisa", "[PASS] Verified README.md:1\n\nReason: exact bytes match");
+    run("submit-ralph", "[CONSENSUS] Agreed");
+    const r = run("policy", "check-next-step");
+    assert.strictEqual(r.exitCode, 0, r.stdout);
   });
 });
 
