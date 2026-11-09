@@ -21,7 +21,7 @@ function proposeWhenUnlocked(project, role, file) {
     try { response = JSON.parse(result.stdout); } catch { /* Assertion below includes output. */ }
     if (result.status !== 4 || response?.code !== "HOST_BUSY") {
       assert.equal(result.status, 0, result.stdout + result.stderr);
-      return;
+      return candidateId;
     }
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
   }
@@ -57,10 +57,11 @@ function waitForStatus(child, expected, timeoutMs = 15000) {
   });
 }
 
-for (const scenario of ["normal", "hangup", "changed", "before_prompt", "authorized", "completed"]) test(
+for (const scenario of ["normal", "hangup", "changed", "before_prompt", "authorized", "task_update", "completed"]) test(
   scenario === "changed" ? "managed close retains the lease when business state changed" :
     scenario === "before_prompt" ? "managed close before initial prompt retains the lease without delivery" :
     scenario === "authorized" ? "managed launch records a scoped auto grant before the first prompt" :
+    scenario === "task_update" ? "Ralph task update commits once, delivers once, and ends the old auto grant" :
     scenario === "completed" ? "managed auto loop stops after formal Lisa consensus" :
     scenario === "hangup" ? "managed pane hangup releases a matching lease" :
     "closing a managed coordinator releases only a matching cursor", async () => {
@@ -105,8 +106,8 @@ for (const scenario of ["normal", "hangup", "changed", "before_prompt", "authori
     request_id: requestId, project_realpath: fs.realpathSync.native(project),
     session_id: identity.session_id,
     task_sha256: crypto.createHash("sha256").update(fs.readFileSync(path.join(state, "task.md"))).digest("hex"),
-    permission_profile: "interactive", auto_commit: ["authorized", "completed"].includes(scenario),
-    ...(["authorized", "completed"].includes(scenario)
+    permission_profile: "interactive", auto_commit: ["authorized", "task_update", "completed"].includes(scenario),
+    ...(["authorized", "task_update", "completed"].includes(scenario)
       ? { auto_commit_granted_via: "cli_auto_host_herdr" } : {}) }));
   fs.writeFileSync(path.join(state, "herdr-launch-workspace.json"), JSON.stringify({ schema: 1,
     request_id: requestId, workspace_id: "w1", root_pane_id: "w1:p1", root_terminal_id: "term-r" }));
@@ -182,15 +183,94 @@ for (const scenario of ["normal", "hangup", "changed", "before_prompt", "authori
         assert.equal(back.generation, 2);
         assert.equal(fs.existsSync(path.join(state, "host", "confirmations")), false);
       }
+      if (scenario === "task_update") {
+        const toLisa = waitForStatus(child, "handed_off", 15000);
+        fs.writeFileSync(path.join(project, "initial-plan.md"),
+          "[PLAN] Complete the initial disposable task.\n\nTest Plan: inspect the result.\n");
+        proposeWhenUnlocked(project, "ralph", "initial-plan.md");
+        assert.equal((await toLisa).role, "lisa");
+        const sessionDir = path.join(pluginState, "sessions",
+          fs.readdirSync(path.join(pluginState, "sessions"))[0]);
+        const active = JSON.parse(fs.readFileSync(path.join(sessionDir, "record.json")));
+        let before;
+        for (let attempt = 0; attempt < 20 && !before; attempt++) {
+          const read = spawnSync(process.execPath, [cli, "host", "snapshot",
+            "--project", project, "--json"], { encoding: "utf8" });
+          if (read.status === 0) before = JSON.parse(read.stdout);
+          else {
+            assert.equal(JSON.parse(read.stdout).code, "HOST_BUSY", read.stdout + read.stderr);
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+          }
+        }
+        assert.ok(before);
+        assert.equal(active.plan.seats.ralph.pane_id, "w1:p1");
+        assert.equal(active.plan.seats.ralph.terminal_id, "term-r");
+        assert.equal(active.session_id, before.session_id);
+        assert.equal(active.cursor_generation, before.generation);
+        const body = "Build a homepage instead.\n";
+        const taskFile = path.join(project, "task-update.txt");
+        fs.writeFileSync(taskFile, body);
+        const changeId = crypto.randomUUID();
+        const queue = path.join(state, "host", "task-update-requests");
+        fs.mkdirSync(queue);
+        const committed = waitForStatus(child, "task_update_committed", 15000);
+        const delivered = waitForStatus(child, "task_updated_delivered", 15000);
+        fs.writeFileSync(path.join(queue, `${changeId}.json`), JSON.stringify({
+          schema: 1, status: "requested", request_id: changeId,
+          project_realpath: before.project_realpath, session_id: before.session_id,
+          workspace_id: "w1", pane_id: "w1:p1", terminal_id: "term-r",
+          agent_target: "ralph", generation: before.generation,
+          binding_generation: before.binding_generation, state_digest: before.state_digest,
+          last_receipt_id: before.last_receipt_id, mode: "switch", file: fs.realpathSync.native(taskFile),
+          content_sha256: crypto.createHash("sha256").update(body).digest("hex"),
+          source_verification: "unverified", requested_at: new Date().toISOString(),
+        }));
+        const committedEvent = await committed;
+        assert.equal(committedEvent.status, "task_update_committed", JSON.stringify(committedEvent));
+        assert.equal(committedEvent.request_id, changeId);
+        const delivery = await delivered;
+        assert.equal(delivery.request_id, changeId);
+        assert.equal(delivery.generation, 2);
+        const after = JSON.parse(spawnSync(process.execPath, [cli, "host", "snapshot",
+          "--project", project, "--json"], { encoding: "utf8" }).stdout);
+        assert.equal(after.generation, 2);
+        assert.equal(after.turn, "ralph");
+        assert.equal(fs.readFileSync(prompts, "utf8"), "111");
+        assert.equal(JSON.parse(fs.readFileSync(path.join(sessionDir, "record.json"))).auto_commit, false);
+        assert.equal(fs.readFileSync(path.join(state, "task.md"), "utf8").includes(body.trim()), true);
+        const archived = path.join(state, "host", "task-update-requests-archived", `${changeId}.json`);
+        for (let i = 0; i < 30 && !fs.existsSync(archived); i++)
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        assert.equal(fs.existsSync(archived), true);
+        fs.writeFileSync(path.join(project, "after-change.md"),
+          "[PLAN] Work on the new homepage task.\n\nTest Plan: inspect the page.\n");
+        const candidateId = proposeWhenUnlocked(project, "ralph", "after-change.md");
+        let gate;
+        for (let i = 0; i < 20 && !gate; i++) {
+          const result = spawnSync(process.execPath, [cli, "host", "commit-check",
+            "--project", project, "--lease-id", active.lease_id,
+            "--request-id", crypto.randomUUID(), "--candidate-id", candidateId,
+            "--expected-generation", "2", "--expected-binding-generation",
+            String(before.binding_generation), "--json"], { encoding: "utf8" });
+          const value = JSON.parse(result.stdout);
+          if (value.code === "HOST_BUSY") {
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+            continue;
+          }
+          assert.equal(result.status, 0, result.stdout + result.stderr);
+          gate = value;
+        }
+        assert.equal(gate?.status, "awaiting_source_confirmation");
+      }
       if (scenario === "changed") fs.writeFileSync(path.join(state, "work.md"), "Changed after baseline");
       child.kill(scenario === "hangup" ? "SIGHUP" : "SIGTERM");
     }
     const stopped = scenario === "before_prompt" ? started :
       await waitForStatus(child, scenario === "changed" ? "needs_reconcile" : "stopped");
-    assert.equal(stopped.status, ["normal", "hangup", "authorized"].includes(scenario) ? "stopped" : "needs_reconcile", JSON.stringify(stopped));
+    assert.equal(stopped.status, ["normal", "hangup", "authorized", "task_update"].includes(scenario) ? "stopped" : "needs_reconcile", JSON.stringify(stopped));
     const sessionDir = path.join(pluginState, "sessions",
       fs.readdirSync(path.join(pluginState, "sessions"))[0]);
-    if (!["normal", "hangup", "authorized"].includes(scenario)) {
+    if (!["normal", "hangup", "authorized", "task_update"].includes(scenario)) {
       assert.equal(fs.existsSync(path.join(state, "host", "lease")), true);
       assert.equal(JSON.parse(fs.readFileSync(path.join(sessionDir, "record.json"))).phase,
         "needs_reconcile");
@@ -208,7 +288,8 @@ for (const scenario of ["normal", "hangup", "changed", "before_prompt", "authori
         "--project", project, "--json"], { encoding: "utf8" });
       assert.equal(snapshot.status, 0, snapshot.stdout + snapshot.stderr);
       assert.equal(JSON.parse(snapshot.stdout).host_state, "unclaimed");
-      assert.equal(JSON.parse(snapshot.stdout).generation, scenario === "authorized" ? 2 : 0);
+      assert.equal(JSON.parse(snapshot.stdout).generation, scenario === "authorized" ? 2 :
+        scenario === "task_update" ? 2 : 0);
       const finished = fs.readdirSync(sessionDir).find((name) => name.startsWith("finished-"));
       assert.ok(finished);
       assert.equal(JSON.parse(fs.readFileSync(path.join(sessionDir, finished))).stop_reason,

@@ -83,6 +83,36 @@ describe("host-managed task update", () => {
         "--expected-content-sha256", commitCheck.content_sha256,
         "--decision", "reviewed_candidate_source", "--json");
       assert.equal(run("host", "commit", ...commitArgs).generation_after, 2);
+      const lisaTurn = run("host", "snapshot", "--project", project, "--json");
+      assert.equal(lisaTurn.turn, "lisa");
+      const supplement = "Also check the page title.\n";
+      fs.writeFileSync(taskFile, supplement);
+      const supplementHash = crypto.createHash("sha256").update(supplement).digest("hex");
+      const supplementArgs = ["--project", project, "--lease-id", lease.lease_id,
+        "--request-id", crypto.randomUUID(), "--expected-generation", "2",
+        "--expected-binding-generation", String(binding.binding_generation),
+        "--expected-digest", lisaTurn.state_digest, "--mode", "supplement",
+        "--file", taskFile, "--content-sha256", supplementHash, "--json"];
+      assert.equal(run("host", "task-update-check", ...supplementArgs).target_role, "lisa");
+      const supplemented = run("host", "task-update", ...supplementArgs);
+      assert.equal(supplemented.generation_after, 3);
+      assert.equal(supplemented.task_version_after, 3);
+      const afterSupplement = run("host", "snapshot", "--project", project, "--json");
+      assert.equal(afterSupplement.turn, "lisa");
+      assert.equal(afterSupplement.round, lisaTurn.round);
+      const switchText = "Build a settings page instead.\n";
+      fs.writeFileSync(taskFile, switchText);
+      const switchHash = crypto.createHash("sha256").update(switchText).digest("hex");
+      const switchArgs = ["--project", project, "--lease-id", lease.lease_id,
+        "--request-id", crypto.randomUUID(), "--expected-generation", "3",
+        "--expected-binding-generation", String(binding.binding_generation),
+        "--expected-digest", afterSupplement.state_digest, "--mode", "switch",
+        "--file", taskFile, "--content-sha256", switchHash, "--json"];
+      const switched = run("host", "task-update", ...switchArgs);
+      assert.equal(switched.task_version_after, 4);
+      assert.equal(switched.turn_after, "ralph");
+      assert.equal(switched.round_after, 1);
+      assert.equal(run("host", "snapshot", "--project", project, "--json").generation, 4);
     } finally { fs.rmSync(project, { recursive: true, force: true }); }
   });
 });

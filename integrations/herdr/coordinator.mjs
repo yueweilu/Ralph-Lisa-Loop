@@ -211,6 +211,56 @@ function deliveryFile(paths, requestId) {
   return path.join(paths.dir, `delivery-${requestId.toLowerCase()}.json`);
 }
 
+function taskRequestDir(paths) {
+  return path.join(paths.real, ".dual-agent", "host", "task-update-requests");
+}
+
+function hasTaskRequestEntries(paths) {
+  const dir = taskRequestDir(paths);
+  if (!fs.existsSync(dir)) return false;
+  const stat = fs.lstatSync(dir);
+  if (!stat.isDirectory() || stat.isSymbolicLink() || fs.realpathSync.native(dir) !== dir)
+    throw new Error("TASK_REQUEST_STORE_INVALID");
+  return fs.readdirSync(dir).length > 0;
+}
+
+function pendingTaskRequest(paths) {
+  const dir = taskRequestDir(paths);
+  if (!fs.existsSync(dir)) return null;
+  const stat = fs.lstatSync(dir);
+  if (!stat.isDirectory() || stat.isSymbolicLink() || fs.realpathSync.native(dir) !== dir)
+    throw new Error("TASK_REQUEST_STORE_INVALID");
+  const names = fs.readdirSync(dir);
+  if (names.length === 0) return null;
+  if (names.length === 1 && /^([0-9a-f-]{36})\.json\.pending$/.test(names[0])) {
+    const stat = fs.lstatSync(path.join(dir, names[0]));
+    if (Date.now() - stat.mtimeMs < 5000) return null;
+    throw new Error("TASK_REQUEST_PARTIAL");
+  }
+  if (names.length !== 1 || !/^([0-9a-f-]{36})\.json$/.test(names[0]) ||
+      !UUID.test(names[0].slice(0, -5))) throw new Error("TASK_REQUEST_AMBIGUOUS");
+  const request = readRecord(path.join(dir, names[0]));
+  if (request.request_id !== names[0].slice(0, -5))
+    throw new Error("TASK_REQUEST_FILENAME_MISMATCH");
+  return request;
+}
+
+function archiveTaskRequest(paths, requestId) {
+  const source = path.join(taskRequestDir(paths), `${requestId}.json`);
+  const archived = path.join(paths.real, ".dual-agent", "host", "task-update-requests-archived");
+  if (!fs.existsSync(archived)) fs.mkdirSync(archived, { mode: 0o700 });
+  const archivedStat = fs.lstatSync(archived);
+  if (!archivedStat.isDirectory() || archivedStat.isSymbolicLink() ||
+      fs.realpathSync.native(archived) !== archived) throw new Error("TASK_REQUEST_ARCHIVE_INVALID");
+  const target = path.join(archived, `${requestId}.json`);
+  if (fs.existsSync(target)) throw new Error("TASK_REQUEST_ARCHIVE_CONFLICT");
+  fs.renameSync(source, target);
+  for (const dir of [taskRequestDir(paths), archived]) {
+    const fd = fs.openSync(dir, "r");
+    try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+  }
+}
+
 function initialFile(paths, sessionId) {
   if (!UUID.test(sessionId)) throw new Error("INVALID_SESSION_ID");
   return path.join(paths.dir, `initial-${sessionId.toLowerCase()}.json`);
@@ -276,6 +326,16 @@ function requireTaskFile(snapshot) {
   return task;
 }
 
+function taskUpdateGuidance(paths) {
+  const quote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
+  return `If the user explicitly changes the task in this Ralph chat, write the new requirement ` +
+    `to a plain-text file inside this project, then run node ${quote(path.join(root, "task-update-request.mjs"))} ` +
+    `request --project ${quote(paths.real)} --file <absolute-task-file> ` +
+    "--mode <supplement|switch> --request-id <fresh-uuid>. " +
+    "A supplement adds constraints; a switch replaces the active task. After requesting, stop and wait " +
+    "for the task-update receipt and coordinator prompt before proposing another candidate. ";
+}
+
 function deliverInitial(paths, record, cli, herdr, plan, taskFile) {
   const observed = call(cli, ["host", "snapshot", "--project", paths.real, "--json"]);
   const snapshot = requireActiveSnapshot(observed, paths, record, plan);
@@ -288,7 +348,7 @@ function deliverInitial(paths, record, cli, herdr, plan, taskFile) {
     "the deliverable file as the candidate. This planning turn's candidate must start with " +
     "[PLAN] on its first line and include a Test Plan with a test command and coverage scope. " +
     "Propose that candidate through the RLL host contract using a new UUID. " +
-    `${agentCliGuidance(cli)} ` +
+    `${agentCliGuidance(cli)} ${taskUpdateGuidance(paths)}` +
     (record.auto_commit === true
       ? `Use host propose --project '${paths.real.replaceAll("'", "'\\''")}' --role ralph --file <relative-candidate-file> --candidate-id <fresh-uuid> --json. ` +
         "The coordinator runs commit-check and commits eligible candidates. After proposing, stop and wait for the handoff; do not call host commit yourself. Candidate source is recorded as unverified."
@@ -318,6 +378,44 @@ function checkDelivery(paths, record, cli, herdr, plan) {
     "--request-id", snapshot.last_receipt_id, "--json"]);
   if (hostBusy(result)) return record;
   const receipt = result.value;
+  if (result.code === 0 && receipt?.status === "task_updated") {
+    if (receipt.request_id !== snapshot.last_receipt_id ||
+        receipt.project_realpath !== paths.real || receipt.session_id !== record.session_id ||
+        receipt.lease_id !== record.lease_id ||
+        receipt.binding_generation !== record.binding_generation ||
+        receipt.generation_before !== record.cursor_generation ||
+        receipt.generation_after !== snapshot.generation ||
+        receipt.turn_after !== snapshot.turn || receipt.round_after !== snapshot.round ||
+        receipt.step_after !== snapshot.step || receipt.state_digest_after !== snapshot.state_digest ||
+        !["supplement", "switch"].includes(receipt.mode) ||
+        receipt.source_verification !== "unverified")
+      throw new Error("TASK_UPDATE_RECEIPT_MISMATCH");
+    const role = receipt.turn_after;
+    const live = call(herdr, ["agent", "get", role]);
+    if (live.code !== 0 || live.value?.result?.agent?.name !== role)
+      throw new Error("TASK_UPDATE_AGENT_UNAVAILABLE");
+    if (!["idle", "done"].includes(live.value.result.agent.agent_status)) return record;
+    const task = requireTaskFile(snapshot);
+    const message = `Ralph-Lisa task updated. Project: ${paths.real}. Session: ${record.session_id}. ` +
+      `Task version: ${receipt.task_version_after}. Mode: ${receipt.mode}. ` +
+      `Receipt: ${receipt.request_id}. Generation: ${receipt.generation_after}. ` +
+      `Read the current ${task} before acting. Previous candidates are stale. ` +
+      (receipt.mode === "switch" ? "Ralph begins a new planning cycle. " : "Continue the current turn. ") +
+      `${agentCliGuidance(cli)} Submit the next candidate through the host contract; ` +
+      "the task change ended the earlier automatic candidate grant, so source confirmation is required. " +
+      (role === "ralph" ? taskUpdateGuidance(paths) : "");
+    submitPrompt(paths, record, herdr, plan, role, message,
+      deliveryFile(paths, receipt.request_id),
+      { request_id: receipt.request_id, generation: receipt.generation_after });
+    const next = { ...record, cursor_generation: receipt.generation_after,
+      cursor_receipt_id: receipt.request_id, cursor_turn: role,
+      auto_commit: false, auto_commit_revoked_by_task_update: receipt.request_id };
+    durableWrite(paths.record, next);
+    emit({ status: "task_updated_delivered", project: paths.real,
+      request_id: receipt.request_id, generation: receipt.generation_after,
+      task_version: receipt.task_version_after, role });
+    return next;
+  }
   if (result.code !== 0 || receipt?.status !== "committed" ||
       receipt.request_id !== snapshot.last_receipt_id ||
       receipt.project_realpath !== paths.real || receipt.session_id !== record.session_id ||
@@ -366,6 +464,7 @@ function checkDelivery(paths, record, cli, herdr, plan) {
     `Receipt: ${receipt.request_id}. Generation: ${receipt.generation_after}. ` +
     `It is your ${role} turn in round ${receipt.round_after}. Read the current RLL state and ` +
     `work/review files before acting. ${agentCliGuidance(cli)} ` +
+    (role === "ralph" ? taskUpdateGuidance(paths) : "") +
     (record.auto_commit === true
       ? `Write a separate review candidate file, then use host propose --project '${paths.real.replaceAll("'", "'\\''")}' --role ${role} --file <relative-candidate-file> --candidate-id <fresh-uuid> --json. ` +
         "The coordinator handles eligibility checks, commits, and the next handoff; do not call host commit yourself. Candidate source remains unverified."
@@ -379,6 +478,69 @@ function checkDelivery(paths, record, cli, herdr, plan) {
   emit({ status: "handed_off", project: paths.real, request_id: receipt.request_id,
     generation: receipt.generation_after, role, pane_id: plan.seats[role].pane_id });
   return next;
+}
+
+function processTaskRequest(paths, record, cli, herdr, plan) {
+  const request = pendingTaskRequest(paths);
+  if (!request) return record;
+  if (request.schema !== 1 || request.status !== "requested" ||
+      !UUID.test(request.request_id ?? "") ||
+      request.project_realpath !== paths.real || request.session_id !== record.session_id ||
+      request.workspace_id !== plan.workspace_id ||
+      request.pane_id !== plan.seats.ralph.pane_id ||
+      request.terminal_id !== plan.seats.ralph.terminal_id ||
+      request.agent_target !== "ralph" ||
+      !["supplement", "switch"].includes(request.mode) ||
+      !/^[0-9a-f]{64}$/.test(request.content_sha256 ?? "") ||
+      request.source_verification !== "unverified")
+    throw new Error("TASK_REQUEST_MISMATCH");
+  if (record.cursor_receipt_id === request.request_id &&
+      record.cursor_generation === request.generation + 1) {
+    archiveTaskRequest(paths, request.request_id);
+    return record;
+  }
+  const observed = call(cli, ["host", "snapshot", "--project", paths.real, "--json"]);
+  if (hostBusy(observed)) return record;
+  const snapshot = requireActiveSnapshot(observed, paths, record, plan);
+  if (snapshot.generation !== record.cursor_generation ||
+      snapshot.last_receipt_id !== record.cursor_receipt_id) return record;
+  if (request.generation !== snapshot.generation ||
+      request.binding_generation !== record.binding_generation ||
+      request.state_digest !== snapshot.state_digest ||
+      request.last_receipt_id !== snapshot.last_receipt_id ||
+      !path.isAbsolute(request.file ?? "") ||
+      !request.file.startsWith(paths.real + path.sep))
+    throw new Error("TASK_REQUEST_STALE");
+  verifySeat(herdr, plan, "ralph", "claude");
+  const args = ["--project", paths.real, "--lease-id", record.lease_id,
+    "--request-id", request.request_id, "--expected-generation", String(request.generation),
+    "--expected-binding-generation", String(record.binding_generation),
+    "--expected-digest", request.state_digest, "--mode", request.mode,
+    "--file", request.file, "--content-sha256", request.content_sha256, "--json"];
+  const checked = call(cli, ["host", "task-update-check", ...args]);
+  if (hostBusy(checked)) return record;
+  if (checked.code !== 0 || checked.value?.status !== "ready" ||
+      checked.value.request_id !== request.request_id ||
+      checked.value.generation_before !== request.generation ||
+      checked.value.binding_generation !== record.binding_generation ||
+      checked.value.state_digest_before !== request.state_digest ||
+      checked.value.content_sha256 !== request.content_sha256 ||
+      checked.value.mode !== request.mode)
+    throw new Error(checked.value?.code || "TASK_UPDATE_CHECK_FAILED");
+  const changed = call(cli, ["host", "task-update", ...args]);
+  if (hostBusy(changed)) return record;
+  if (changed.code !== 0 || changed.value?.status !== "task_updated" ||
+      changed.value.request_id !== request.request_id ||
+      changed.value.generation_before !== request.generation) {
+    const inspected = call(cli, ["host", "receipt", "--project", paths.real,
+      "--request-id", request.request_id, "--json"]);
+    if (inspected.code !== 0 || inspected.value?.status !== "task_updated" ||
+        inspected.value.request_id !== request.request_id)
+      throw new Error(changed.value?.code || "TASK_UPDATE_OUTCOME_UNKNOWN");
+  }
+  emit({ status: "task_update_committed", project: paths.real,
+    request_id: request.request_id, generation: request.generation + 1 });
+  return record;
 }
 
 function autoCommitRequestId(sessionId, generation, candidateId) {
@@ -490,6 +652,8 @@ async function runActiveLoop(paths, initialRecord, cli, herdr, signalState = nul
     if (signalStop && fs.existsSync(paths.control))
       throw new Error("SIGNAL_SHUTDOWN_CONTROL_PENDING");
     if (fs.existsSync(paths.stop) || signalStop) {
+      if (hasTaskRequestEntries(paths))
+        throw new Error("TASK_UPDATE_PENDING_ON_STOP");
       const request = fs.existsSync(paths.stop)
         ? readRecord(paths.stop) : { owner_id: ownerId, lease_id: leaseId };
       if (request.owner_id !== ownerId || request.lease_id !== leaseId)
@@ -521,7 +685,9 @@ async function runActiveLoop(paths, initialRecord, cli, herdr, signalState = nul
     if (record.phase === "active") {
       record = checkDelivery(paths, record, cli, herdr, plan);
       if (record.phase === "completed") return;
-      if (record.auto_commit === true) record = checkAutoCandidate(paths, record, cli, herdr, plan);
+      record = processTaskRequest(paths, record, cli, herdr, plan);
+      if (record.auto_commit === true && !hasTaskRequestEntries(paths))
+        record = checkAutoCandidate(paths, record, cli, herdr, plan);
     }
     if (++ticks % 5 === 0) {
       for (const [role, kind] of [["ralph", "claude"], ["lisa", "codex"]]) {

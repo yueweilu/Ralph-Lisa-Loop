@@ -130,7 +130,18 @@ function assertNoHostMarkers(host: string): void {
     }
   }
   assertNoPendingIntents(host);
+  assertNoPendingTaskRequests(host);
   assertNoPendingCandidates(host);
+}
+
+export function assertNoPendingTaskRequests(host: string): void {
+  const dir = path.join(host, "task-update-requests");
+  if (!entryExists(dir)) return;
+  const stat = fs.lstatSync(dir);
+  if (!stat.isDirectory() || stat.isSymbolicLink() || fs.realpathSync.native(dir) !== dir ||
+      fs.readdirSync(dir).length > 0)
+    throw new HostContractError("NEEDS_RECONCILE", 7,
+      "Resolve pending task-update requests before changing the lease");
 }
 
 export function assertNoPendingIntents(host: string): void {
@@ -325,6 +336,7 @@ export function releaseHost(project: string, leaseId: string): { schema: 1; stat
       throw new HostContractError("NEEDS_RECONCILE", 7, "Resolve pending host state before release");
     }
     assertNoPendingIntents(hostDir);
+    assertNoPendingTaskRequests(hostDir);
     assertNoPendingCandidates(hostDir);
     let record: HostLease;
     try {

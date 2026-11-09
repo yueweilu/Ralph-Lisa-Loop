@@ -4,7 +4,8 @@ import * as path from "node:path";
 import { STATE_DIR } from "../state.js";
 import { readBinding } from "./binding.js";
 import { canonicalProject, HostContractError, inspectProject } from "./inspect.js";
-import { acquireHostLock, assertAdoptionReady, assertNoManualRuntime, assertNoPendingIntents, entryExists, HostLease, readLease } from "./lease.js";
+import { acquireHostLock, assertAdoptionReady, assertNoManualRuntime, assertNoPendingIntents,
+  assertNoPendingTaskRequests, entryExists, HostLease, readLease } from "./lease.js";
 import { businessDigest } from "./business.js";
 import { assertGenerationMatchesBusiness, GenerationRecord, readGeneration } from "./generation.js";
 import { candidateInventory } from "./candidate.js";
@@ -70,6 +71,7 @@ function collect(project: string): Evidence {
     }
   }
   assertNoPendingIntents(host);
+  assertNoPendingTaskRequests(host);
   assertNoManualRuntime(current.project_realpath, current.state_realpath);
   let lease: HostLease;
   try {
