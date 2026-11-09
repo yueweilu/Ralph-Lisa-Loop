@@ -6,7 +6,7 @@ import { entryExists } from "./lease.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/;
-const CHANGE_NAMES = new Set(["task.md", "history.md", "last_action.txt", "turn.txt",
+const CHANGE_NAMES = new Set(["task.md", "work.md", "review.md", "history.md", "last_action.txt", "turn.txt",
   "round.txt", "step.txt", "needs_work_count.txt", "deadlock.txt"]);
 
 export interface TaskUpdateChange {

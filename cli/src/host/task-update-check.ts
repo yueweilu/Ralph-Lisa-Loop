@@ -43,7 +43,7 @@ export interface TaskUpdatePreflight {
   source_verification: "unverified";
 }
 
-function taskText(project: string, file: string, expectedHash: string): void {
+export function readTaskUpdateText(project: string, file: string, expectedHash: string): string {
   if (!path.isAbsolute(file) || !SHA256.test(expectedHash))
     throw new HostContractError("INVALID_ARGUMENTS", 2, "Task file must be absolute and its SHA-256 explicit");
   const resolved = path.resolve(file);
@@ -66,10 +66,11 @@ function taskText(project: string, file: string, expectedHash: string): void {
   catch { throw new HostContractError("INVALID_TASK_FILE", 2, "Task text must be UTF-8"); }
   if (!text.trim() || text.includes("\0"))
     throw new HostContractError("INVALID_TASK_FILE", 2, "Task text must be nonempty plain text");
+  return text;
 }
 
-/** The coordinator must separately verify its delivery cursor before the write. */
-export function checkTaskUpdate(project: string, leaseId: string, requestId: string,
+/** Caller holds the project host lock; coordinator must also verify its delivery cursor. */
+export function checkTaskUpdateLocked(project: string, leaseId: string, requestId: string,
   expectedGeneration: number, expectedBindingGeneration: number, expectedDigest: string,
   mode: TaskUpdateMode, file: string, contentSha256: string): TaskUpdatePreflight {
   if (!UUID.test(leaseId) || !UUID.test(requestId) || !SHA256.test(expectedDigest) ||
@@ -78,13 +79,11 @@ export function checkTaskUpdate(project: string, leaseId: string, requestId: str
       (mode !== "supplement" && mode !== "switch"))
     throw new HostContractError("INVALID_ARGUMENTS", 2, "Invalid task-update identifiers, mode, or expected state");
   const root = canonicalProject(project);
-  taskText(root, file, contentSha256);
+  readTaskUpdateText(root, file, contentSha256);
   const initial = inspectProject(root);
   if (!initial.initialized || !initial.state_realpath || !initial.session_id ||
       initial.contract_state !== "identified")
     throw new HostContractError("ADOPT_REQUIRED", 3, "An identified session is required for task updates");
-  const release = acquireHostLock(initial.state_realpath);
-  try {
     const current = inspectProject(root);
     if (current.state_realpath !== initial.state_realpath || current.session_id !== initial.session_id)
       throw new HostContractError("STALE_SESSION", 5, "Session changed while acquiring the host lock");
@@ -139,5 +138,19 @@ export function checkTaskUpdate(project: string, leaseId: string, requestId: str
         .map((candidate) => candidate.candidate_id),
       last_receipt_id: generation.last_receipt_id, source_verification: "unverified",
     };
+}
+
+/** Read-only public wrapper. The write path calls the same checks under its lock. */
+export function checkTaskUpdate(project: string, leaseId: string, requestId: string,
+  expectedGeneration: number, expectedBindingGeneration: number, expectedDigest: string,
+  mode: TaskUpdateMode, file: string, contentSha256: string): TaskUpdatePreflight {
+  const root = canonicalProject(project);
+  const initial = inspectProject(root);
+  if (!initial.initialized || !initial.state_realpath)
+    throw new HostContractError("SESSION_NOT_INITIALIZED", 3, "Initialize the RLL session before task updates");
+  const release = acquireHostLock(initial.state_realpath);
+  try {
+    return checkTaskUpdateLocked(root, leaseId, requestId, expectedGeneration,
+      expectedBindingGeneration, expectedDigest, mode, file, contentSha256);
   } finally { release(); }
 }

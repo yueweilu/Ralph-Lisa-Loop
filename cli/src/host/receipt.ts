@@ -11,12 +11,13 @@ import { businessDigest } from "./business.js";
 import { candidateInventory } from "./candidate.js";
 import { rejectedReceiptInventory } from "./rejection.js";
 import { humanConfirmationInventory } from "./confirmation.js";
+import { readTaskUpdateIntent, readTaskUpdateReceipt } from "./task-update-record.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export interface HostReceiptStatus {
   schema: 1;
-  status: "unknown" | "needs_reconcile" | "committed" | "rejected";
+  status: "unknown" | "needs_reconcile" | "committed" | "rejected" | "task_updated";
   request_id: string;
   session_id: string | null;
   code?: "NEEDS_RECONCILE" | "POLICY_BLOCKED" | "GATE_BLOCKED";
@@ -54,6 +55,8 @@ export function receiptStatus(project: string, requestId: string): HostReceiptSt
       if (entryExists(path.join(host, "intents")) ||
           entryExists(path.join(host, "archived-intents")) ||
           entryExists(path.join(host, "receipts")) ||
+          entryExists(path.join(host, "task-update-intents")) ||
+          entryExists(path.join(host, "task-update-receipts")) ||
           entryExists(path.join(host, "rejections")) ||
           entryExists(path.join(host, "confirmations")) ||
           entryExists(path.join(host, "reconcile.json"))) {
@@ -83,6 +86,22 @@ export function receiptStatus(project: string, requestId: string): HostReceiptSt
       generation = readGeneration(host, root, current.state_realpath, sessionId);
     } catch {
       return reconcile(requestId, sessionId, "invalid_generation_record");
+    }
+    try {
+      const taskReceipt = readTaskUpdateReceipt(host, requestId);
+      const taskIntent = readTaskUpdateIntent(host, requestId);
+      if (taskIntent) return reconcile(requestId, sessionId, "pending_task_update_intent");
+      if (taskReceipt) {
+        committedReceiptLedger(host, root, current.state_realpath, sessionId, generation);
+        if (!generation || generation.generation < taskReceipt.generation_after)
+          return reconcile(requestId, sessionId, "task_update_generation_mismatch");
+        assertGenerationMatchesBusiness(generation,
+          businessDigest(current.state_realpath, current.turn!, current.round!, current.step!),
+          current.turn!, current.round!, current.step!);
+        return taskReceipt;
+      }
+    } catch {
+      return reconcile(requestId, sessionId, "task_update_receipt_requires_review");
     }
     const intentDir = path.join(host, "intents");
     if (entryExists(intentDir)) {
