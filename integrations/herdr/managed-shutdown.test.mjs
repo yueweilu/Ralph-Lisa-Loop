@@ -15,7 +15,8 @@ function waitForStatus(child, expected, timeoutMs = 15000) {
   return new Promise((resolve, reject) => {
     let buffer = "";
     const timer = setTimeout(() => finish(new Error(`timed out waiting for ${expected}`)), timeoutMs);
-    const onExit = (code) => finish(new Error(`coordinator exited ${code} before ${expected}`));
+    // 'exit' may precede the final stdout chunk on slower CI runners.
+    const onClose = (code) => finish(new Error(`coordinator closed ${code} before ${expected}`));
     const onData = (chunk) => {
       buffer += chunk.toString();
       for (;;) {
@@ -31,11 +32,11 @@ function waitForStatus(child, expected, timeoutMs = 15000) {
     const finish = (error, value) => {
       clearTimeout(timer);
       child.stdout.off("data", onData);
-      child.off("exit", onExit);
+      child.off("close", onClose);
       if (error) reject(error); else resolve(value);
     };
     child.stdout.on("data", onData);
-    child.on("exit", onExit);
+    child.on("close", onClose);
   });
 }
 

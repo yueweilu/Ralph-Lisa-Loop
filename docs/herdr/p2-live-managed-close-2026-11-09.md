@@ -32,3 +32,9 @@
 ## 验证记录
 
 本地执行 `node --test integrations/herdr/*.test.mjs`，47/47 通过。真实证据为各隔离项目的 `host snapshot`、`host recovery-check`、插件 `initial-*`/`finished-*` 记录及命名 Server 日志；文档不包含任务正文、原生 Agent Session ID 或个人凭证。提交与 GitHub CI 状态在本次开发报告中另行核对。
+
+### 后续只读会话引用探针
+
+另以 `config4/state4` 和命名 Server `rll-p2probe-ml523e` 在同一临时项目启动单席 Codex，不启动 RLL 协调器。Herdr `agent start codex-probe --kind codex -- --no-daemon` 返回 ready，argv 确认含 `--no-daemon`；紧接的 `agent get` 显示 `agent_session=null`。发送一次明确要求“不编辑文件、不运行命令、仅回复固定短语”的探针提示后，Herdr 的 `agent prompt` 回执含 `agent_session`，类型为 `id`、来源为 `herdr:codex`。RLL 项目快照保持 unclaimed、generation 0、候选 0；探针 Server 已停止。原生 ID 只在临时机器输出中出现，不写入本文。
+
+该探针说明“ready 即有原生引用”的假设不成立；首次交互之后可取得引用。不能把这次非业务探针提示偷偷加入正式双席启动：它需要独立持久投递意图、未知结果不重发、重启时的引用核查，并避免让 Lisa 误以为已收到 Ralph 的正式交接。P2 的 Lisa 启动时引用验收仍未完成。
