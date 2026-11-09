@@ -287,11 +287,12 @@ function deliverInitial(paths, record, cli, herdr, plan, taskFile) {
     "then work in the project. Prepare a separate RLL review candidate file; do not propose " +
     "the deliverable file as the candidate. This planning turn's candidate must start with " +
     "[PLAN] on its first line and include a Test Plan with a test command and coverage scope. " +
-    "Propose that candidate through the RLL host contract using a new UUID, then run its read-only commit-check. " +
+    "Propose that candidate through the RLL host contract using a new UUID. " +
     `${agentCliGuidance(cli)} ` +
     (record.auto_commit === true
-      ? "This session has an automatic commit grant. After proposing, stop and wait for the coordinator to apply format, policy, and test gates and hand off. Do not call host commit yourself. Candidate source is recorded as unverified."
-      : "The current source gate requires a human to review and confirm each candidate before commit; do not bypass it.");
+      ? `Use host propose --project '${paths.real.replaceAll("'", "'\\''")}' --role ralph --file <relative-candidate-file> --candidate-id <fresh-uuid> --json. ` +
+        "The coordinator runs commit-check and commits eligible candidates. After proposing, stop and wait for the handoff; do not call host commit yourself. Candidate source is recorded as unverified."
+      : "Run read-only commit-check, then request human review. The current source gate requires a human to review and confirm each candidate before commit; do not bypass it.");
   submitPrompt(paths, record, herdr, plan, "ralph", message,
     initialFile(paths, record.session_id), { session_id: record.session_id, generation: 0 });
   record = { ...record, initial_status: "accepted" };
@@ -366,7 +367,8 @@ function checkDelivery(paths, record, cli, herdr, plan) {
     `It is your ${role} turn in round ${receipt.round_after}. Read the current RLL state and ` +
     `work/review files before acting. ${agentCliGuidance(cli)} ` +
     (record.auto_commit === true
-      ? "Write a separate review candidate file, propose it through the RLL host contract with a new UUID, then wait. The coordinator handles eligible commits and the next handoff; do not call host commit yourself. Candidate source remains unverified."
+      ? `Write a separate review candidate file, then use host propose --project '${paths.real.replaceAll("'", "'\\''")}' --role ${role} --file <relative-candidate-file> --candidate-id <fresh-uuid> --json. ` +
+        "The coordinator handles eligibility checks, commits, and the next handoff; do not call host commit yourself. Candidate source remains unverified."
       : "Submit through the RLL host contract; it will enforce this session's source authorization and policy gates.");
   const file = deliveryFile(paths, receipt.request_id);
   submitPrompt(paths, record, herdr, plan, role, message, file,
