@@ -51,3 +51,10 @@ export function parseHerdrLaunchOptions(args: string[]): HerdrLaunchOptions {
   if (!task?.trim()) throw new Error("TASK_REQUIRED");
   return { project: path.resolve(project ?? process.cwd()), task, fullAuto };
 }
+
+export function parseHerdrStatusOptions(args: string[]): string {
+  if (args.length === 0) return path.resolve(process.cwd());
+  if (args.length === 2 && args[0] === "--project" && args[1] &&
+      !args[1].startsWith("--")) return path.resolve(args[1]);
+  throw new Error("STATUS_USAGE_INVALID");
+}

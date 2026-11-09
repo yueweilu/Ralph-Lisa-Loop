@@ -70,6 +70,13 @@ export function readLaunchIntent(project: string, requestId: string): LaunchInte
   return intent;
 }
 
+export function readProjectLaunchIntent(project: string): LaunchIntent {
+  const real = fs.realpathSync.native(project);
+  const value = readRegular<LaunchIntent>(stateFile(real, "herdr-launch-intent.json"));
+  if (!UUID.test(value.request_id ?? "")) throw new Error("LAUNCH_INTENT_MISMATCH");
+  return readLaunchIntent(real, value.request_id);
+}
+
 export function recordLaunchWorkspace(project: string, requestId: string,
   workspaceId: string, rootPaneId: string, rootTerminalId: string): LaunchWorkspace {
   readLaunchIntent(project, requestId);
