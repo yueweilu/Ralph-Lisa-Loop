@@ -16,6 +16,21 @@ function emit(value, code = 0) {
   process.exitCode = code;
 }
 
+function waitForCoordinatorTick(signalState, delayMs) {
+  return new Promise((resolve) => {
+    const finish = () => {
+      clearTimeout(timer);
+      if (signalState?.wake === finish) signalState.wake = null;
+      resolve();
+    };
+    const timer = setTimeout(finish, delayMs);
+    if (signalState) {
+      signalState.wake = finish;
+      if (signalState.requested) finish();
+    }
+  });
+}
+
 function call(argv, args, options = {}) {
   const env = { ...process.env, ...options.env };
   delete env.TMUX;
@@ -90,8 +105,21 @@ function launchFromContext() {
 function writeLaunchResult(launch, status, code) {
   if (!launch) return;
   const file = path.join(launch.project, ".dual-agent", "herdr-launch-result.json");
-  durableWrite(file, { schema: 1, request_id: launch.requestId, status,
-    ...(code ? { code } : {}) }, true);
+  const next = { schema: 1, request_id: launch.requestId, status,
+    ...(code ? { code } : {}) };
+  if (!fs.existsSync(file)) {
+    durableWrite(file, next, true);
+    return;
+  }
+  if (!launch.retryResult) throw new Error("LAUNCH_RESULT_EXISTS");
+  const previous = readRecord(file);
+  if (previous.schema !== 1 || previous.request_id !== launch.requestId ||
+      !["not_ready", "needs_reconcile"].includes(previous.status))
+    throw new Error("LAUNCH_RESULT_RETRY_MISMATCH");
+  const archive = path.join(launch.project, ".dual-agent",
+    `herdr-launch-result-${crypto.randomUUID()}.json`);
+  durableWrite(archive, previous, true);
+  durableWrite(file, next);
 }
 
 function files(project) {
@@ -318,7 +346,7 @@ async function runActiveLoop(paths, initialRecord, cli, herdr, signalState = nul
   let ticks = 0;
   let signalBusyChecks = 0;
   for (;;) {
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    await waitForCoordinatorTick(signalState, 1000);
     if (fs.existsSync(paths.stop) && fs.existsSync(paths.control))
       throw new Error("CONCURRENT_CONTROL_REQUESTS");
     const signalStop = signalState?.requested === true;
@@ -507,7 +535,7 @@ async function waitForAgent(herdr, role, kind, workspaceId, paneId, project, ter
         workspace_id: workspaceId, pane_id: paneId });
       announced = true;
     }
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    await waitForCoordinatorTick(launch?.signalState, 1000);
   }
   throw new Error("AGENT_READY_TIMEOUT");
 }
@@ -751,6 +779,7 @@ async function start() {
   try {
     if (retry) {
       record = claimPreclaimRetry(paths, initial);
+      if (launch) launch.retryResult = true;
     } else {
       if (fs.readdirSync(paths.dir).length !== 0)
         throw new Error("PRECLAIM_STATE_REQUIRES_REVIEW");
@@ -779,10 +808,16 @@ async function start() {
   const herdr = [process.env.HERDR_BIN_PATH || "herdr"];
   const signalState = launch ? { requested: false } : null;
   if (launch) launch.signalState = signalState;
-  const onSignal = () => { if (signalState) signalState.requested = true; };
+  const onSignal = () => {
+    if (signalState) {
+      signalState.requested = true;
+      signalState.wake?.();
+    }
+  };
   if (signalState) {
     process.on("SIGTERM", onSignal);
     process.on("SIGINT", onSignal);
+    process.on("SIGHUP", onSignal);
   }
   try {
     if (retry || bootNeeded) {
@@ -858,6 +893,7 @@ async function start() {
     if (signalState) {
       process.off("SIGTERM", onSignal);
       process.off("SIGINT", onSignal);
+      process.off("SIGHUP", onSignal);
     }
   }
 }

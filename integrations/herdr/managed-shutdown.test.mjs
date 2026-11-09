@@ -39,9 +39,10 @@ function waitForStatus(child, expected, timeoutMs = 15000) {
   });
 }
 
-for (const scenario of ["normal", "changed", "before_prompt"]) test(
+for (const scenario of ["normal", "hangup", "changed", "before_prompt"]) test(
   scenario === "changed" ? "managed close retains the lease when business state changed" :
     scenario === "before_prompt" ? "managed close before initial prompt retains the lease without delivery" :
+    scenario === "hangup" ? "managed pane hangup releases a matching lease" :
     "closing a managed coordinator releases only a matching cursor", async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "rll-managed-stop-"));
   const project = path.join(temp, "project");
@@ -107,14 +108,14 @@ for (const scenario of ["normal", "changed", "before_prompt"]) test(
       assert.equal(started.status, "started", JSON.stringify(started));
       assert.equal(JSON.parse(fs.readFileSync(path.join(state, "herdr-launch-result.json"))).status, "started");
       if (scenario === "changed") fs.writeFileSync(path.join(state, "work.md"), "Changed after baseline");
-      child.kill("SIGTERM");
+      child.kill(scenario === "hangup" ? "SIGHUP" : "SIGTERM");
     }
     const stopped = scenario === "before_prompt" ? started :
       await waitForStatus(child, scenario === "changed" ? "needs_reconcile" : "stopped");
-    assert.equal(stopped.status, scenario === "normal" ? "stopped" : "needs_reconcile", JSON.stringify(stopped));
+    assert.equal(stopped.status, ["normal", "hangup"].includes(scenario) ? "stopped" : "needs_reconcile", JSON.stringify(stopped));
     const sessionDir = path.join(pluginState, "sessions",
       fs.readdirSync(path.join(pluginState, "sessions"))[0]);
-    if (scenario !== "normal") {
+    if (!["normal", "hangup"].includes(scenario)) {
       assert.equal(fs.existsSync(path.join(state, "host", "lease")), true);
       assert.equal(JSON.parse(fs.readFileSync(path.join(sessionDir, "record.json"))).phase,
         "needs_reconcile");
@@ -143,7 +144,7 @@ for (const scenario of ["normal", "changed", "before_prompt"]) test(
   }
 });
 
-test("closing a managed pane while Ralph awaits input stops before claiming a lease", async () => {
+test("managed preclaim close retains an auditable result and resumes the same request", async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "rll-managed-preclaim-stop-"));
   const project = path.join(temp, "project");
   const config = path.join(temp, "config");
@@ -153,21 +154,30 @@ test("closing a managed pane while Ralph awaits input stops before claiming a le
   const fakeClaude = path.join(temp, "claude");
   const fakeCodex = path.join(temp, "codex");
   const startedFlag = path.join(temp, "ralph-started");
+  const readyFlag = path.join(temp, "ralph-ready");
+  const lisaFlag = path.join(temp, "lisa-started");
+  const promptFile = path.join(temp, "prompts");
   fs.writeFileSync(fakeHerdr, `#!${process.execPath}\n` +
     `const fs=require('node:fs');const a=process.argv.slice(2);` +
     `const project=process.env.FAKE_PROJECT;const started=process.env.FAKE_STARTED_FLAG;` +
-    `const pane={workspace_id:'w1',pane_id:'w1:p1',terminal_id:'term-r',cwd:project,` +
-    `agent:fs.existsSync(started)?'ralph':null};` +
-    `const agent={name:'ralph',agent:'claude',workspace_id:'w1',pane_id:'w1:p1',` +
-    `terminal_id:'term-r',cwd:project,interactive_ready:false,agent_status:'blocked'};` +
+    `const ready=process.env.FAKE_READY_FLAG,lisa=process.env.FAKE_LISA_FLAG;` +
+    `const present=(r)=>fs.existsSync(r==='ralph'?started:lisa);` +
+    `const agent=(r)=>({name:r,agent:r==='ralph'?'claude':'codex',workspace_id:'w1',` +
+    `pane_id:r==='ralph'?'w1:p1':'w1:p2',terminal_id:r==='ralph'?'term-r':'term-l',` +
+    `cwd:project,interactive_ready:r==='lisa'||fs.existsSync(ready),` +
+    `agent_status:r==='lisa'||fs.existsSync(ready)?'idle':'blocked'});` +
+    `const pane=(id)=>({workspace_id:'w1',pane_id:id,terminal_id:id==='w1:p1'?'term-r':'term-l',` +
+    `cwd:project,agent:id==='w1:p1'&&present('ralph')?'ralph':id==='w1:p2'&&present('lisa')?'lisa':null});` +
     `const out=(result)=>console.log(JSON.stringify({result}));` +
     `if(a[0]==='--version')console.log('herdr 0.9.4');` +
     `else if(a[0]==='integration')console.log('claude: installed\\ncodex: installed');` +
     `else if(a[0]==='workspace'&&a[1]==='get')out({workspace:{workspace_id:'w1'}});` +
-    `else if(a[0]==='pane'&&a[1]==='get')out({pane});` +
-    `else if(a[0]==='agent'&&a[1]==='start'){fs.writeFileSync(started,'1');out({agent});}` +
-    `else if(a[0]==='agent'&&a[1]==='get'){if(a[2]==='ralph'&&fs.existsSync(started))out({agent});` +
+    `else if(a[0]==='pane'&&a[1]==='get')out({pane:pane(a[2])});` +
+    `else if(a[0]==='pane'&&a[1]==='split')out({pane:pane('w1:p2')});` +
+    `else if(a[0]==='agent'&&a[1]==='start'){fs.writeFileSync(a[2]==='ralph'?started:lisa,'1');out({agent:agent(a[2])});}` +
+    `else if(a[0]==='agent'&&a[1]==='get'){if(present(a[2]))out({agent:agent(a[2])});` +
     `else{console.error(JSON.stringify({error:{code:'agent_not_found'}}));process.exitCode=1;}}` +
+    `else if(a[0]==='agent'&&a[1]==='prompt'){fs.appendFileSync(process.env.FAKE_PROMPT_FILE,'1');out({type:'agent_prompted',agent:agent(a[2])});}` +
     `else process.exitCode=2;\n`);
   fs.writeFileSync(fakeClaude, `#!${process.execPath}\nconsole.log('{"loggedIn":true}');\n`);
   fs.writeFileSync(fakeCodex, `#!${process.execPath}\nconsole.log('Logged in using ChatGPT');\n`);
@@ -193,13 +203,15 @@ test("closing a managed pane while Ralph awaits input stops before claiming a le
     HERDR_WORKSPACE_ID: "w1", HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({
       workspace_id: "w1", workspace_cwd: project }),
     RLL_LAUNCH_REQUEST_ID: requestId, FAKE_PROJECT: project,
-    FAKE_STARTED_FLAG: startedFlag };
+    FAKE_STARTED_FLAG: startedFlag, FAKE_READY_FLAG: readyFlag,
+    FAKE_LISA_FLAG: lisaFlag, FAKE_PROMPT_FILE: promptFile };
   const child = spawn(process.execPath, [coordinator, "start"],
     { env, stdio: ["ignore", "pipe", "pipe"] });
+  let resumed;
   try {
     const blocked = await waitForStatus(child, "needs_input");
     assert.equal(blocked.role, "ralph");
-    child.kill("SIGTERM");
+    child.kill("SIGHUP");
     const stopped = await waitForStatus(child, "needs_reconcile", 5000);
     assert.equal(stopped.code, "MANAGED_PANE_CLOSED_DURING_START");
     const snapshot = spawnSync(process.execPath, [cli, "host", "snapshot",
@@ -216,8 +228,32 @@ test("closing a managed pane while Ralph awaits input stops before claiming a le
     assert.equal(JSON.parse(fs.readFileSync(path.join(state, "herdr-launch-result.json"))).code,
       "MANAGED_PANE_CLOSED_DURING_START");
     assert.equal(fs.readdirSync(sessionDir).some((name) => name.startsWith("initial-")), false);
+    if (child.exitCode === null) await new Promise((resolve) => child.once("exit", resolve));
+    fs.writeFileSync(readyFlag, "ready");
+    resumed = spawn(process.execPath, [coordinator, "start"],
+      { env, stdio: ["ignore", "pipe", "pipe"] });
+    const started = await waitForStatus(resumed, "started", 30000);
+    assert.equal(started.status, "started", JSON.stringify(started));
+    assert.equal(fs.readFileSync(promptFile, "utf8"), "1");
+    const currentResult = JSON.parse(fs.readFileSync(path.join(state, "herdr-launch-result.json")));
+    assert.equal(currentResult.status, "started");
+    assert.equal(currentResult.request_id, requestId);
+    const archives = fs.readdirSync(state).filter((name) =>
+      /^herdr-launch-result-[0-9a-f-]{36}\.json$/.test(name));
+    assert.equal(archives.length, 1);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(state, archives[0]))).code,
+      "MANAGED_PANE_CLOSED_DURING_START");
+    const active = spawnSync(process.execPath, [cli, "host", "snapshot",
+      "--project", project, "--json"], { encoding: "utf8" });
+    assert.equal(active.status, 0, active.stdout + active.stderr);
+    assert.equal(JSON.parse(active.stdout).host_state, "claimed");
+    assert.equal(JSON.parse(active.stdout).generation, 0);
+    resumed.kill("SIGTERM");
+    const released = await waitForStatus(resumed, "stopped", 5000);
+    assert.equal(released.status, "stopped", JSON.stringify(released));
   } finally {
     child.kill("SIGKILL");
+    resumed?.kill("SIGKILL");
     fs.rmSync(temp, { recursive: true, force: true });
   }
 });
