@@ -39,8 +39,9 @@ function waitForStatus(child, expected, timeoutMs = 15000) {
   });
 }
 
-for (const tampered of [false, true]) test(
-  tampered ? "managed close retains the lease when business state changed" :
+for (const scenario of ["normal", "changed", "before_prompt"]) test(
+  scenario === "changed" ? "managed close retains the lease when business state changed" :
+    scenario === "before_prompt" ? "managed close before initial prompt retains the lease without delivery" :
     "closing a managed coordinator releases only a matching cursor", async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "rll-managed-stop-"));
   const project = path.join(temp, "project");
@@ -50,6 +51,8 @@ for (const tampered of [false, true]) test(
   const fakeHerdr = path.join(temp, "herdr");
   const fakeClaude = path.join(temp, "claude");
   const fakeCodex = path.join(temp, "codex");
+  const fakeCli = path.join(temp, "rll-cli");
+  const prompts = path.join(temp, "prompts");
   fs.writeFileSync(fakeHerdr, `#!${process.execPath}\n` +
     `const a=process.argv.slice(2);const role=a[2];const project=process.env.FAKE_PROJECT;` +
     `const agent=(r)=>({name:r,agent:r==='ralph'?'claude':'codex',workspace_id:'w1',` +
@@ -58,13 +61,19 @@ for (const tampered of [false, true]) test(
     `if(a[0]==='--version')console.log('herdr 0.9.4');` +
     `else if(a[0]==='integration')console.log('claude: installed\\ncodex: installed');` +
     `else if(a[0]==='agent'&&a[1]==='get')console.log(JSON.stringify({result:{agent:agent(role)}}));` +
-    `else if(a[0]==='agent'&&a[1]==='prompt')console.log(JSON.stringify({result:{type:'agent_prompted',agent:agent(role)}}));` +
+    `else if(a[0]==='agent'&&a[1]==='prompt'){require('node:fs').appendFileSync(process.env.FAKE_PROMPTS,'1');console.log(JSON.stringify({result:{type:'agent_prompted',agent:agent(role)}}));}` +
     `else process.exitCode=2;\n`);
+  fs.writeFileSync(fakeCli, `#!${process.execPath}\n` +
+    `const {spawnSync}=require('node:child_process');const a=process.argv.slice(2);` +
+    `const r=spawnSync(process.execPath,[process.env.REAL_RLL_CLI,...a],{encoding:'utf8',env:process.env});` +
+    `process.stdout.write(r.stdout||'');process.stderr.write(r.stderr||'');` +
+    `if(a[0]==='host'&&a[1]==='prepare-generation'&&r.status===0)` +
+    `process.kill(process.ppid,'SIGTERM');process.exitCode=r.status??1;\n`);
   fs.writeFileSync(fakeClaude, `#!${process.execPath}\nconsole.log('{"loggedIn":true}');\n`);
   fs.writeFileSync(fakeCodex, `#!${process.execPath}\nconsole.log('Logged in using ChatGPT');\n`);
-  for (const file of [fakeHerdr, fakeClaude, fakeCodex]) fs.chmodSync(file, 0o700);
+  for (const file of [fakeHerdr, fakeClaude, fakeCodex, fakeCli]) fs.chmodSync(file, 0o700);
   fs.writeFileSync(path.join(config, "settings.json"), JSON.stringify({ project,
-    rll_cli_argv: [process.execPath, cli] }));
+    rll_cli_argv: [process.execPath, scenario === "before_prompt" ? fakeCli : cli] }));
   const initialized = spawnSync(process.execPath, [cli, "init", "--minimal", project],
     { encoding: "utf8" });
   assert.equal(initialized.status, 0, initialized.stdout + initialized.stderr);
@@ -83,24 +92,40 @@ for (const tampered of [false, true]) test(
     HERDR_PLUGIN_CONFIG_DIR: config, HERDR_PLUGIN_STATE_DIR: pluginState,
     HERDR_WORKSPACE_ID: "w1", HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({
       workspace_id: "w1", workspace_cwd: project }),
-    RLL_LAUNCH_REQUEST_ID: requestId, FAKE_PROJECT: project };
+    RLL_LAUNCH_REQUEST_ID: requestId, FAKE_PROJECT: project,
+    FAKE_PROMPTS: prompts, REAL_RLL_CLI: cli };
   const child = spawn(process.execPath, [coordinator, "start"],
     { env, stdio: ["ignore", "pipe", "pipe"] });
   try {
-    const started = await waitForStatus(child, "started");
-    assert.equal(started.status, "started", JSON.stringify(started));
-    assert.equal(JSON.parse(fs.readFileSync(path.join(state, "herdr-launch-result.json"))).status, "started");
-    if (tampered) fs.writeFileSync(path.join(state, "work.md"), "Changed after baseline");
-    child.kill("SIGTERM");
-    const stopped = await waitForStatus(child, tampered ? "needs_reconcile" : "stopped");
-    assert.equal(stopped.status, tampered ? "needs_reconcile" : "stopped", JSON.stringify(stopped));
+    const started = await waitForStatus(child, scenario === "before_prompt" ? "needs_reconcile" : "started");
+    if (scenario === "before_prompt") {
+      assert.equal(started.code, "MANAGED_PANE_CLOSED_DURING_START", JSON.stringify(started));
+      assert.equal(JSON.parse(fs.readFileSync(path.join(state, "herdr-launch-result.json"))).status,
+        "needs_reconcile");
+      assert.equal(fs.existsSync(prompts), false);
+    } else {
+      assert.equal(started.status, "started", JSON.stringify(started));
+      assert.equal(JSON.parse(fs.readFileSync(path.join(state, "herdr-launch-result.json"))).status, "started");
+      if (scenario === "changed") fs.writeFileSync(path.join(state, "work.md"), "Changed after baseline");
+      child.kill("SIGTERM");
+    }
+    const stopped = scenario === "before_prompt" ? started :
+      await waitForStatus(child, scenario === "changed" ? "needs_reconcile" : "stopped");
+    assert.equal(stopped.status, scenario === "normal" ? "stopped" : "needs_reconcile", JSON.stringify(stopped));
     const sessionDir = path.join(pluginState, "sessions",
       fs.readdirSync(path.join(pluginState, "sessions"))[0]);
-    if (tampered) {
+    if (scenario !== "normal") {
       assert.equal(fs.existsSync(path.join(state, "host", "lease")), true);
       assert.equal(JSON.parse(fs.readFileSync(path.join(sessionDir, "record.json"))).phase,
         "needs_reconcile");
       assert.equal(fs.readdirSync(sessionDir).some((name) => name.startsWith("finished-")), false);
+      if (scenario === "before_prompt") {
+        const snapshot = spawnSync(process.execPath, [cli, "host", "snapshot",
+          "--project", project, "--json"], { encoding: "utf8" });
+        assert.equal(snapshot.status, 0, snapshot.stdout + snapshot.stderr);
+        assert.equal(JSON.parse(snapshot.stdout).generation, 0);
+        assert.equal(fs.readdirSync(sessionDir).some((name) => name.startsWith("initial-")), false);
+      }
     } else {
       assert.equal(stopped.reason, "managed_pane_closed");
       const snapshot = spawnSync(process.execPath, [cli, "host", "snapshot",

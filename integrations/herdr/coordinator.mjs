@@ -839,6 +839,10 @@ async function start() {
     record = { ...record, phase: "active", binding_generation: current.value.binding_generation,
       cursor_generation: 0, cursor_receipt_id: null, cursor_turn: prepared.value.turn };
     durableWrite(paths.record, record);
+    // A managed Pane may close while synchronous claim/bind commands are running.
+    // Let queued signals run before creating the irreversible initial prompt intent.
+    if (launch) await new Promise((resolve) => setTimeout(resolve, 0));
+    requireManagedPaneOpen(launch);
     record = deliverInitial(paths, record, cli, herdr, plan, taskFile);
     writeLaunchResult(launch, "started");
     emit({ status: "started", project: paths.real, workspace_id: plan.workspace_id,
