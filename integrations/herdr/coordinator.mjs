@@ -484,9 +484,15 @@ function requireSavedPane(herdr, workspaceId, paneId, terminalId, project) {
   return pane;
 }
 
-async function waitForAgent(herdr, role, kind, workspaceId, paneId, project, terminalId) {
+function requireManagedPaneOpen(launch) {
+  if (launch?.signalState?.requested) throw new Error("MANAGED_PANE_CLOSED_DURING_START");
+}
+
+async function waitForAgent(herdr, role, kind, workspaceId, paneId, project, terminalId,
+  launch = null) {
   let announced = false;
   for (let attempt = 0; attempt < 120; attempt++) {
+    requireManagedPaneOpen(launch);
     const result = call(herdr, ["agent", "get", role]);
     const agent = result.value?.result?.agent;
     let cwd = null;
@@ -507,17 +513,18 @@ async function waitForAgent(herdr, role, kind, workspaceId, paneId, project, ter
 }
 
 async function launchAgent(herdr, role, kind, workspaceId, paneId, project, terminalId,
-  permissionProfile = null) {
+  permissionProfile = null, launch = null) {
   const agentArgs = permissionProfile === null ? [] : kind === "codex"
     ? permissionProfile === "full_auto" ? ["--no-daemon", "--full-auto"] : ["--no-daemon"]
     : permissionProfile === "full_auto" ? ["--dangerously-skip-permissions"] : [];
   for (let attempt = 0; attempt < 12; attempt++) {
+    requireManagedPaneOpen(launch);
     const launched = call(herdr, ["agent", "start", role, "--kind", kind,
       "--pane", paneId, "--timeout", "60000",
       ...(agentArgs.length ? ["--", ...agentArgs] : [])], { timeoutMs: 70000 });
     const code = launched.value?.error?.code;
     if (launched.code === 0 || code === "agent_not_ready") {
-      await waitForAgent(herdr, role, kind, workspaceId, paneId, project, terminalId);
+      await waitForAgent(herdr, role, kind, workspaceId, paneId, project, terminalId, launch);
       return;
     }
     if (code !== "agent_pane_busy" || !terminalId)
@@ -525,7 +532,7 @@ async function launchAgent(herdr, role, kind, workspaceId, paneId, project, term
     const pane = requireSavedPane(herdr, workspaceId, paneId, terminalId, project);
     const observed = call(herdr, ["agent", "get", role]);
     if (observed.code === 0) {
-      await waitForAgent(herdr, role, kind, workspaceId, paneId, project, terminalId);
+      await waitForAgent(herdr, role, kind, workspaceId, paneId, project, terminalId, launch);
       return;
     }
     if (observed.value?.error?.code !== "agent_not_found" || pane.agent)
@@ -536,6 +543,7 @@ async function launchAgent(herdr, role, kind, workspaceId, paneId, project, term
 }
 
 async function bootstrapSeats(paths, record, herdr, launch = null) {
+  requireManagedPaneOpen(launch);
   if (!missingAgent(herdr, "ralph") || !missingAgent(herdr, "lisa"))
     throw new Error("EXISTING_AGENT_REQUIRES_REVIEW");
   let workspaceId, rootPaneId, rootTerminalId;
@@ -565,7 +573,8 @@ async function bootstrapSeats(paths, record, herdr, launch = null) {
   record = { ...record, phase: "ralph_start_pending", ralph_start_attempted: true };
   durableWrite(paths.record, record);
   await launchAgent(herdr, "ralph", "claude", workspaceId, rootPaneId, paths.real,
-    record.ralph_terminal_id, launch?.permissionProfile);
+    record.ralph_terminal_id, launch?.permissionProfile, launch);
+  requireManagedPaneOpen(launch);
   record = { ...record, phase: "ralph_ready" };
   durableWrite(paths.record, record);
   const split = requireHerdrResult(call(herdr, ["pane", "split", rootPaneId,
@@ -579,7 +588,8 @@ async function bootstrapSeats(paths, record, herdr, launch = null) {
   record = { ...record, phase: "lisa_start_pending", lisa_start_attempted: true };
   durableWrite(paths.record, record);
   await launchAgent(herdr, "lisa", "codex", workspaceId, split.pane_id, paths.real,
-    record.lisa_terminal_id, launch?.permissionProfile);
+    record.lisa_terminal_id, launch?.permissionProfile, launch);
+  requireManagedPaneOpen(launch);
   record = { ...record, phase: "lisa_ready" };
   durableWrite(paths.record, record);
   const context = { workspace_id: workspaceId, workspace_cwd: paths.real };
@@ -629,6 +639,7 @@ function claimPreclaimRetry(paths, initial) {
 }
 
 async function resumePreclaimSeats(paths, record, herdr, launch = null) {
+  requireManagedPaneOpen(launch);
   if (!record.workspace_id) return bootstrapSeats(paths, record, herdr, launch);
   const workspaceId = record.workspace_id;
   const workspace = call(herdr, ["workspace", "get", workspaceId]);
@@ -644,11 +655,12 @@ async function resumePreclaimSeats(paths, record, herdr, launch = null) {
     record = { ...record, phase: "ralph_start_pending", ralph_start_attempted: true };
     durableWrite(paths.record, record);
     await launchAgent(herdr, "ralph", "claude", workspaceId, record.ralph_pane_id,
-      paths.real, record.ralph_terminal_id, launch?.permissionProfile);
+      paths.real, record.ralph_terminal_id, launch?.permissionProfile, launch);
   } else {
     await waitForAgent(herdr, "ralph", "claude", workspaceId,
-      record.ralph_pane_id, paths.real, record.ralph_terminal_id);
+      record.ralph_pane_id, paths.real, record.ralph_terminal_id, launch);
   }
+  requireManagedPaneOpen(launch);
   record = { ...record, phase: "ralph_ready" };
   durableWrite(paths.record, record);
   if (!record.lisa_pane_id) {
@@ -670,11 +682,12 @@ async function resumePreclaimSeats(paths, record, herdr, launch = null) {
     record = { ...record, phase: "lisa_start_pending", lisa_start_attempted: true };
     durableWrite(paths.record, record);
     await launchAgent(herdr, "lisa", "codex", workspaceId, record.lisa_pane_id,
-      paths.real, record.lisa_terminal_id, launch?.permissionProfile);
+      paths.real, record.lisa_terminal_id, launch?.permissionProfile, launch);
   } else {
     await waitForAgent(herdr, "lisa", "codex", workspaceId,
-      record.lisa_pane_id, paths.real, record.lisa_terminal_id);
+      record.lisa_pane_id, paths.real, record.lisa_terminal_id, launch);
   }
+  requireManagedPaneOpen(launch);
   record = { ...record, phase: "lisa_ready", error: undefined };
   durableWrite(paths.record, record);
   const context = { workspace_id: workspaceId, workspace_cwd: paths.real };
@@ -764,6 +777,13 @@ async function start() {
   const ownerId = record.owner_id;
   const cli = config().cli;
   const herdr = [process.env.HERDR_BIN_PATH || "herdr"];
+  const signalState = launch ? { requested: false } : null;
+  if (launch) launch.signalState = signalState;
+  const onSignal = () => { if (signalState) signalState.requested = true; };
+  if (signalState) {
+    process.on("SIGTERM", onSignal);
+    process.on("SIGINT", onSignal);
+  }
   try {
     if (retry || bootNeeded) {
       const boot = retry
@@ -773,6 +793,7 @@ async function start() {
       record = { ...boot.record, phase: "seats_ready", plan };
       durableWrite(paths.record, record);
     }
+    requireManagedPaneOpen(launch);
     if (plan.project_realpath !== paths.real || plan.session_id !== initial.session_id ||
         plan.expected_digest !== initial.state_digest) throw new Error("PREFLIGHT_STATE_MISMATCH");
     const beforeClaim = call(cli, ["host", "snapshot", "--project", paths.real, "--json"]);
@@ -822,25 +843,18 @@ async function start() {
     writeLaunchResult(launch, "started");
     emit({ status: "started", project: paths.real, workspace_id: plan.workspace_id,
       binding_generation: record.binding_generation, owner_id: ownerId, lease_id: lease.lease_id });
-    const signalState = launch ? { requested: false } : null;
-    const onSignal = () => { if (signalState) signalState.requested = true; };
-    if (signalState) {
-      process.on("SIGTERM", onSignal);
-      process.on("SIGINT", onSignal);
-    }
-    try { await runActiveLoop(paths, record, cli, herdr, signalState); }
-    finally {
-      if (signalState) {
-        process.off("SIGTERM", onSignal);
-        process.off("SIGINT", onSignal);
-      }
-    }
+    await runActiveLoop(paths, record, cli, herdr, signalState);
   } catch (error) {
     let latest = record;
     try { latest = readRecord(paths.record); } catch { /* Keep the last in-memory intent. */ }
     try { writeLaunchResult(launch, "needs_reconcile", error.message || "COORDINATOR_ERROR"); }
     catch { /* Existing result stays immutable; plugin record carries the failure. */ }
     failRecord(paths, latest, error, "COORDINATOR_ERROR");
+  } finally {
+    if (signalState) {
+      process.off("SIGTERM", onSignal);
+      process.off("SIGINT", onSignal);
+    }
   }
 }
 
