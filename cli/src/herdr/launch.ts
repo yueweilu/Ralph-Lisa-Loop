@@ -162,13 +162,19 @@ export async function launchHerdrTask(options: HerdrLaunchOptions): Promise<Herd
     if (result) return { ...authorization, status: result.status, request_id: requestId, project_realpath: project,
       session_id: sessionId, workspace_id: workspaceId, coordinator_pane_id: pane.pane_id,
       ...(result.code ? { code: result.code } : {}) };
-    const blocked = blockedAgent(workspaceId, project);
-    if (blocked) return { ...authorization, status: "needs_input", code: "AGENT_BLOCKED",
-      request_id: requestId, project_realpath: project, session_id: sessionId,
-      workspace_id: workspaceId, coordinator_pane_id: pane.pane_id,
-      blocked_role: blocked.role, blocked_pane_id: blocked.paneId };
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
+  // Herdr can classify a working Agent as blocked even while the coordinator
+  // continues. Only a durable coordinator result can finalize launch status.
+  const result = readLaunchResult(project, requestId);
+  if (result) return { ...authorization, status: result.status, request_id: requestId, project_realpath: project,
+    session_id: sessionId, workspace_id: workspaceId, coordinator_pane_id: pane.pane_id,
+    ...(result.code ? { code: result.code } : {}) };
+  const blocked = blockedAgent(workspaceId, project);
+  if (blocked) return { ...authorization, status: "pending", code: "AGENT_BLOCKED_UNCONFIRMED",
+    request_id: requestId, project_realpath: project, session_id: sessionId,
+    workspace_id: workspaceId, coordinator_pane_id: pane.pane_id,
+    blocked_role: blocked.role, blocked_pane_id: blocked.paneId };
   return { ...authorization, status: "pending", code: "START_OUTCOME_UNKNOWN", request_id: requestId,
     project_realpath: project, session_id: sessionId,
     workspace_id: workspaceId, coordinator_pane_id: pane.pane_id };

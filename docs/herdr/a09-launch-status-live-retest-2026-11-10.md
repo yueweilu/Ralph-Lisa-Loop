@@ -14,3 +14,9 @@ Ralph/Claude 与 Lisa/Codex 均在 Herdr 中取得原生会话引用。Lisa/Code
 2. 完成记录存在且宿主租约已释放后，`herdr-rll status --project ...` 返回 `needs_review`，同时显示 `host_state=unclaimed`、`binding_state=stale`、generation 6。正常完成被呈现为需要人工复核。
 
 这些是入口与状态查询的反馈缺陷；本次自动轮次和最终完成由协调器回执单独证明。候选来源仍是 `unverified`，本次 `--full-auto` 使用会话级自动提交授权，不表示独立作者证明。
+
+## 后续修复验证
+
+复验记录先以独立提交 `00b7769` 推送。随后改动 CLI：仅将协调器的持久启动回执视为确定结果；等待超时而 Herdr 仍观察到 blocked 时返回 `pending / AGENT_BLOCKED_UNCONFIRMED` 和席位位置，不报告确定的启动失败。状态查询只在插件已归档 `completed`，且归档的项目、会话、请求、工作区、最终游标、摘要与释放后的宿主快照一致时返回 `completed`。插件版本提升至 0.1.8。
+
+修复后定向回归 8/8 通过，CLI 构建与发布包校验通过；新 CLI 对本次真实项目的只读状态查询返回 `completed`、generation 6。尚未用 0.1.8 安装包重新启动一轮真实双席，因此新启动等待逻辑目前由回归测试覆盖，不把既有 0.1.7 现场结果算成 0.1.8 的真实启动验收。

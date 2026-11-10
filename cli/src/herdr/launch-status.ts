@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { inspectProject } from "../host/inspect.js";
 import { snapshotProject } from "../host/snapshot.js";
+import { hasCompletedArchive } from "./completion-record.js";
 import { readLaunchResult, readLaunchWorkspace, readProjectLaunchIntent } from "./launch-record.js";
 
 function present(file: string): boolean {
@@ -32,8 +33,20 @@ export function inspectHerdrLaunch(project: string): object {
       snapshot_code: typeof error === "object" && error && "code" in error ?
         (error as { code: unknown }).code : null };
   }
+  let completed = false;
+  if (result?.status === "started" && workspace &&
+      host.host_state === "unclaimed" && host.binding_state === "stale") {
+    try { completed = hasCompletedArchive(intent, workspace, host); }
+    catch {
+      return { schema: 1, status: "needs_reconcile", code: "COMPLETION_ARCHIVE_UNAVAILABLE",
+        request_id: intent.request_id, project_realpath: real, session_id: intent.session_id,
+        workspace_id: workspace.workspace_id,
+        host_state: host.host_state, binding_state: host.binding_state,
+        generation: host.generation, turn: host.turn };
+    }
+  }
   const status = result?.status === "started"
-    ? host.host_state === "claimed" && host.binding_state === "bound" &&
+    ? completed ? "completed" : host.host_state === "claimed" && host.binding_state === "bound" &&
       host.workspace_id === workspace?.workspace_id ? "claimed_unverified" : "needs_review"
     : result?.status ?? "pending";
   return { schema: 1, status, request_id: intent.request_id, project_realpath: real,

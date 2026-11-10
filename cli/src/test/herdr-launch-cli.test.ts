@@ -10,6 +10,56 @@ const cli = path.join(__dirname, "..", "cli.js");
 const alias = path.join(__dirname, "..", "herdr-rll.js");
 
 describe("Herdr CLI entry points", () => {
+  it("waits for a durable started result after a transient blocked observation", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "rll-entry-blocked-"));
+    const project = path.join(root, "project");
+    fs.mkdirSync(project);
+    const writer = path.join(root, "write-result.js");
+    fs.writeFileSync(writer, `const fs = require("node:fs");
+const path = require("node:path");
+setTimeout(() => {
+  const state = path.join(process.env.FAKE_PROJECT, ".dual-agent");
+  const intent = JSON.parse(fs.readFileSync(path.join(state, "herdr-launch-intent.json")));
+  fs.writeFileSync(path.join(state, "herdr-launch-result.json"),
+    JSON.stringify({ schema: 1, request_id: intent.request_id, status: "started" }));
+}, 1200);
+`);
+    const fakeHerdr = path.join(root, "herdr-stub.js");
+    fs.writeFileSync(fakeHerdr, `#!/usr/bin/env node
+const { spawn } = require("node:child_process");
+const args = process.argv.slice(2);
+const reply = (result) => console.log(JSON.stringify({ result }));
+if (args[0] === "--version") console.log("herdr 0.9.4");
+else if (args[0] === "status" && args[1] === "server")
+  console.log(JSON.stringify({ status: "running", running: true }));
+else if (args[0] === "plugin" && args[1] === "list")
+  reply({ plugins: [{ plugin_id: "ralph-lisa.loop", enabled: true,
+    version: "0.1.8", panes: [{ id: "coordinator" }] }] });
+else if (args[0] === "workspace" && args[1] === "create")
+  reply({ type: "workspace_created", workspace: { workspace_id: "w1" },
+    root_pane: { pane_id: "w1:p1", terminal_id: "term-r", workspace_id: "w1" } });
+else if (args[0] === "plugin" && args[1] === "pane") {
+  spawn(process.execPath, [process.env.FAKE_WRITER],
+    { detached: true, stdio: "ignore", env: process.env }).unref();
+  reply({ type: "plugin_pane_opened", plugin_pane: { pane: {
+    pane_id: "w1:p2", workspace_id: "w1" } } });
+} else if (args[0] === "agent" && args[1] === "get")
+  reply({ agent: { name: "ralph", agent: "claude", workspace_id: "w1",
+    cwd: process.env.FAKE_PROJECT, agent_status: "blocked", pane_id: "w1:p1" } });
+else process.exitCode = 2;
+`);
+    fs.chmodSync(fakeHerdr, 0o700);
+    try {
+      const run = spawnSync(process.execPath,
+        [alias, "--project", project, "Plan a README"],
+        { cwd: root, encoding: "utf8", timeout: 15000,
+          env: { ...process.env, HERDR_BIN_PATH: fakeHerdr,
+            FAKE_PROJECT: project, FAKE_WRITER: writer } });
+      assert.equal(run.status, 0, run.stdout + run.stderr);
+      assert.equal(JSON.parse(run.stdout).status, "started");
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  });
+
   it("both refuse a stopped isolated server before creating session state", () => {
     const root = fs.mkdtempSync("/tmp/rll-entry-");
     const project = path.join(root, "project");
