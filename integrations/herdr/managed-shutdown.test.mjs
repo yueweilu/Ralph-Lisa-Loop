@@ -57,12 +57,16 @@ function waitForStatus(child, expected, timeoutMs = 15000) {
   });
 }
 
-for (const scenario of ["normal", "hangup", "changed", "before_prompt", "authorized", "task_update", "completed"]) test(
+for (const scenario of ["normal", "hangup", "changed", "before_prompt", "authorized", "task_update", "completed",
+  "commit_busy", "commit_lost_committed", "commit_lost_unknown"]) test(
   scenario === "changed" ? "managed close retains the lease when business state changed" :
     scenario === "before_prompt" ? "managed close before initial prompt retains the lease without delivery" :
     scenario === "authorized" ? "managed launch records a scoped auto grant before the first prompt" :
     scenario === "task_update" ? "Ralph task update commits once, delivers once, and ends the old auto grant" :
     scenario === "completed" ? "managed auto loop stops after formal Lisa consensus" :
+    scenario === "commit_busy" ? "auto commit stops without a receipt after HOST_BUSY" :
+    scenario === "commit_lost_committed" ? "auto commit recovers a durable receipt after its response is lost" :
+    scenario === "commit_lost_unknown" ? "auto commit stops when the response and receipt are unknown" :
     scenario === "hangup" ? "managed pane hangup releases a matching lease" :
     "closing a managed coordinator releases only a matching cursor", async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "rll-managed-stop-"));
@@ -76,6 +80,7 @@ for (const scenario of ["normal", "hangup", "changed", "before_prompt", "authori
   const fakeCli = path.join(temp, "rll-cli");
   const prompts = path.join(temp, "prompts");
   const ralphBusy = path.join(temp, "ralph-busy");
+  const commitCalls = path.join(temp, "commit-calls");
   fs.writeFileSync(fakeHerdr, `#!${process.execPath}\n` +
     `const a=process.argv.slice(2);const role=a[2];const project=process.env.FAKE_PROJECT;` +
     `const agent=(r)=>({name:r,agent:r==='ralph'?'claude':'codex',workspace_id:'w1',` +
@@ -89,15 +94,23 @@ for (const scenario of ["normal", "hangup", "changed", "before_prompt", "authori
     `else process.exitCode=2;\n`);
   fs.writeFileSync(fakeCli, `#!${process.execPath}\n` +
     `const {spawnSync}=require('node:child_process');const a=process.argv.slice(2);` +
+    `const isCommit=a[0]==='host'&&a[1]==='commit';` +
+    `if(isCommit&&process.env.FAKE_COMMIT_MODE){require('node:fs').appendFileSync(process.env.FAKE_COMMIT_CALLS,'1');` +
+    `if(process.env.FAKE_COMMIT_MODE==='busy'){console.log(JSON.stringify({status:'error',code:'HOST_BUSY'}));process.exit(4);}` +
+    `if(process.env.FAKE_COMMIT_MODE==='lost_unknown')process.exit(1);}` +
     `const r=spawnSync(process.execPath,[process.env.REAL_RLL_CLI,...a],{encoding:'utf8',env:process.env});` +
-    `process.stdout.write(r.stdout||'');process.stderr.write(r.stderr||'');` +
-    `if(a[0]==='host'&&a[1]==='prepare-generation'&&r.status===0)` +
-    `process.kill(process.ppid,'SIGTERM');process.exitCode=r.status??1;\n`);
+    `if(!(isCommit&&process.env.FAKE_COMMIT_MODE==='lost_committed'))process.stdout.write(r.stdout||'');` +
+    `process.stderr.write(r.stderr||'');` +
+    `if(a[0]==='host'&&a[1]==='prepare-generation'&&r.status===0&&` +
+    `process.env.FAKE_CLOSE_DURING_START==='1')` +
+    `process.kill(process.ppid,'SIGTERM');` +
+    `process.exitCode=isCommit&&process.env.FAKE_COMMIT_MODE==='lost_committed'?1:r.status??1;\n`);
   fs.writeFileSync(fakeClaude, `#!${process.execPath}\nconsole.log('{"loggedIn":true}');\n`);
   fs.writeFileSync(fakeCodex, `#!${process.execPath}\nconsole.log('Logged in using ChatGPT');\n`);
   for (const file of [fakeHerdr, fakeClaude, fakeCodex, fakeCli]) fs.chmodSync(file, 0o700);
   fs.writeFileSync(path.join(config, "settings.json"), JSON.stringify({ project,
-    rll_cli_argv: [process.execPath, scenario === "before_prompt" ? fakeCli : cli] }));
+    rll_cli_argv: [process.execPath, scenario === "before_prompt" ||
+      scenario.startsWith("commit_") ? fakeCli : cli] }));
   const initialized = spawnSync(process.execPath, [cli, "init", "--minimal", project],
     { encoding: "utf8" });
   assert.equal(initialized.status, 0, initialized.stdout + initialized.stderr);
@@ -108,8 +121,10 @@ for (const scenario of ["normal", "hangup", "changed", "before_prompt", "authori
     request_id: requestId, project_realpath: fs.realpathSync.native(project),
     session_id: identity.session_id,
     task_sha256: crypto.createHash("sha256").update(fs.readFileSync(path.join(state, "task.md"))).digest("hex"),
-    permission_profile: "interactive", auto_commit: ["authorized", "task_update", "completed"].includes(scenario),
-    ...(["authorized", "task_update", "completed"].includes(scenario)
+    permission_profile: "interactive", auto_commit: ["authorized", "task_update", "completed"].includes(scenario) ||
+      scenario.startsWith("commit_"),
+    ...(["authorized", "task_update", "completed"].includes(scenario) ||
+      scenario.startsWith("commit_")
       ? { auto_commit_granted_via: "cli_auto_host_herdr" } : {}) }));
   fs.writeFileSync(path.join(state, "herdr-launch-workspace.json"), JSON.stringify({ schema: 1,
     request_id: requestId, workspace_id: "w1", root_pane_id: "w1:p1", root_terminal_id: "term-r" }));
@@ -119,6 +134,8 @@ for (const scenario of ["normal", "hangup", "changed", "before_prompt", "authori
     HERDR_WORKSPACE_ID: "w1", HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({
       workspace_id: "w1", workspace_cwd: project }),
     RLL_LAUNCH_REQUEST_ID: requestId, FAKE_PROJECT: project,
+    FAKE_COMMIT_MODE: scenario.startsWith("commit_") ? scenario.slice("commit_".length) : "",
+    FAKE_COMMIT_CALLS: commitCalls, FAKE_CLOSE_DURING_START: scenario === "before_prompt" ? "1" : "0",
     FAKE_PROMPTS: prompts, FAKE_RALPH_BUSY: ralphBusy, REAL_RLL_CLI: cli };
   const child = spawn(process.execPath, [coordinator, "start"],
     { env, stdio: ["ignore", "pipe", "pipe"] });
@@ -132,6 +149,51 @@ for (const scenario of ["normal", "hangup", "changed", "before_prompt", "authori
     } else {
       assert.equal(started.status, "started", JSON.stringify(started));
       assert.equal(JSON.parse(fs.readFileSync(path.join(state, "herdr-launch-result.json"))).status, "started");
+      if (scenario.startsWith("commit_")) {
+        const expected = scenario === "commit_lost_committed" ? "handed_off" : "needs_reconcile";
+        const resultPromise = waitForStatus(child, expected, 15000);
+        fs.writeFileSync(path.join(project, "candidate.md"),
+          "[PLAN] Create a one-line README.\n\nTest Plan: compare its exact bytes.\n");
+        const candidateId = proposeWhenUnlocked(project, "ralph", "candidate.md");
+        const result = await resultPromise;
+        assert.equal(result.status, expected, JSON.stringify(result));
+        const sessionDir = path.join(pluginState, "sessions",
+          fs.readdirSync(path.join(pluginState, "sessions"))[0]);
+        const active = JSON.parse(fs.readFileSync(path.join(sessionDir, "record.json")));
+        assert.equal(active.auto_commit_candidate_id, candidateId);
+        assert.match(active.auto_commit_request_id, /^[0-9a-f-]{36}$/);
+        assert.equal(fs.readFileSync(commitCalls, "utf8"), "1");
+        const receiptResult = spawnSync(process.execPath, [cli, "host", "receipt",
+          "--project", project, "--request-id", active.auto_commit_request_id,
+          "--json"], { encoding: "utf8" });
+        const receipt = JSON.parse(receiptResult.stdout);
+        const snapshotResult = spawnSync(process.execPath, [cli, "host", "snapshot",
+          "--project", project, "--json"], { encoding: "utf8" });
+        const snapshot = JSON.parse(snapshotResult.stdout);
+        const deliveries = fs.readdirSync(sessionDir).filter((name) => name.startsWith("delivery-"));
+        if (scenario === "commit_lost_committed") {
+          assert.equal(receiptResult.status, 0, receiptResult.stdout);
+          assert.equal(receipt.status, "committed");
+          assert.equal(receipt.request_id, active.auto_commit_request_id);
+          assert.equal(receipt.source_confirmation, "session_authorized_auto");
+          assert.equal(snapshot.generation, 1);
+          assert.equal(snapshot.turn, "lisa");
+          assert.equal(deliveries.length, 1);
+          assert.equal(fs.readFileSync(prompts, "utf8"), "11");
+          const stopped = waitForStatus(child, "stopped", 5000);
+          child.kill("SIGTERM");
+          assert.equal((await stopped).status, "stopped");
+        } else {
+          assert.equal(result.code, "AUTO_COMMIT_REQUIRES_RECONCILE");
+          assert.equal(active.phase, "needs_reconcile");
+          assert.equal(receipt.status, "unknown");
+          assert.equal(snapshot.generation, 0);
+          assert.equal(snapshot.turn, "ralph");
+          assert.equal(deliveries.length, 0);
+          assert.equal(fs.readFileSync(prompts, "utf8"), "1");
+        }
+        return;
+      }
       if (scenario === "completed") {
         const toLisa = waitForStatus(child, "handed_off", 15000);
         fs.writeFileSync(path.join(project, "ralph-consensus.md"),
