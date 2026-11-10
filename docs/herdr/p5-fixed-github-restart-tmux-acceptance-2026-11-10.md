@@ -25,7 +25,7 @@
 
 **第二次重启的限制：**Lisa 在旧候选来源确认提示上等待时，测试操作中断了该 Codex Pane，协调器因此以 `AGENT_CHANGED` 进入 `needs_reconcile`，旧 PID 随后退出。Lisa 在同一 Pane 用 `codex resume <同一原生会话>` 恢复；启动后 Herdr 暂未报告原生引用，一条明确禁止提议和提交的诊断提示使官方 hook 报告了相同引用。随后才停止并重启命名 Server。因而本次证明了在这些显式恢复步骤之后，非零游标和双席指纹可接续；它不是一条完全无额外诊断提示的平滑重启链，也没有证明 Codex resume 在空闲时一定自动报告引用。
 
-**重绑界面限制：**第二次的 Herdr `rebind` 插件 Pane 打开后立即消失，两次尝试均未产生重绑。只读 `rebind-check` 重新算出同一证据后，使用同一固定 checkout 的 `coordinator.mjs rebind`，明确指向命名 Server 和隔离配置；该命令内部再次核对证据，返回 `rebound_paused`。`continue` 同理使用已安装插件的协调器命令和用户批准的精确证据。不能据此声称这次重绑操作页的交互体验通过。
+**重绑操作页更正：**第二次的 Herdr `rebind` Pane 打开后立即消失，是本次调用额外传入 `--cwd <项目目录>`，覆盖了插件脚本的工作目录；插件清单使用相对命令 `node rebind.mjs`，该项目目录没有脚本。[独立最小探针](p5-pane-and-codex-resume-diagnostic-2026-11-10.md)已复现：带 `--cwd` 子进程以退出码 1 结束，去掉后交互 Pane 正常保持运行。前次只读 `rebind-check` 重新算出同一证据后，使用固定 checkout 的 `coordinator.mjs rebind` 完成重绑，`continue` 同理。此处不构成已证实的插件源码缺陷；完整重绑操作页仍未在有效恢复现场重新验收。
 
 ## 4. A08：权限阻塞与暂停
 
@@ -48,5 +48,5 @@ Lisa→Ralph 后，Claude 对只读 `host snapshot` 显示权限提示，Herdr �
 
 - 本地 CLI `npm test`：518/518 通过。插件 `node --test integrations/herdr/*.test.mjs`：57/57 通过。
 - 固定 GitHub 安装、真实双席和两次非零游标显式恢复均有现场回执。任务切换后双向交接依赖逐份人工来源确认，因此 A03 的无人值守完整闭环仍不能由本次记录宣称通过。
-- 待处理：复现并定位重绑插件 Pane 自动关闭；核查 Codex `resume` 空闲时原生引用上报；补做暂停后直接输入及更长时间稳定性。不要放宽来源或重复投递门禁来绕过这些限制。
+- 待处理：在有效恢复现场用默认插件工作目录验收重绑操作页；定位 Codex `resume` 空闲时未上报原生引用的具体原因；补做暂停后直接输入及更长时间稳定性。[后续核查](p5-pane-and-codex-resume-diagnostic-2026-11-10.md)已确认前次自动关闭是测试调用错误。不要放宽来源或重复投递门禁来绕过这些限制。
 - 以上为本机验收；GitHub CI 应以本记录对应提交的 Actions 运行结果单独核对，不能由本地通过推断。
