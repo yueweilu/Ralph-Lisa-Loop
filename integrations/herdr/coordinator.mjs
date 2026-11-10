@@ -886,6 +886,17 @@ function verifySeat(herdr, plan, role, kind) {
   observeSeat(herdr, plan, role, kind, true);
 }
 
+async function waitForReadySeat(herdr, plan, role, kind, launch = null) {
+  for (let attempt = 0; attempt < 40; attempt++) {
+    requireManagedPaneOpen(launch);
+    try { verifySeat(herdr, plan, role, kind); return; }
+    catch (error) {
+      if (error.message !== "AGENT_NOT_READY" || attempt === 39) throw error;
+    }
+    await waitForCoordinatorTick(launch?.signalState, 250);
+  }
+}
+
 function requireSnapshot(result) {
   const snapshot = result.value?.snapshot;
   if (result.code !== 0 || result.value?.status !== "ready" ||
@@ -1266,7 +1277,9 @@ async function start() {
     if (snapshot.code !== 0 || snapshot.value?.session_id !== plan.session_id ||
         snapshot.value?.state_digest !== plan.expected_digest) throw new Error("STATE_CHANGED_AFTER_CLAIM");
     for (const [role, kind] of [["ralph", "claude"], ["lisa", "codex"]]) {
-      verifySeat(herdr, plan, role, kind);
+      // Agent lifecycle status can briefly change after preflight; retain the
+      // exact seat identity checks while waiting before binding each seat.
+      await waitForReadySeat(herdr, plan, role, kind, launch);
       const seat = plan.seats[role];
       const bound = call(cli, ["host", "bind-seat", "--project", paths.real,
         "--lease-id", lease.lease_id, "--role", role, "--workspace-id", plan.workspace_id,

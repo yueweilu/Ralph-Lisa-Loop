@@ -332,7 +332,7 @@ test("coordinator claims and binds observed seats, heartbeats, then releases on 
   }
 });
 
-test("start creates both seats and waits for a blocked agent before claiming", async () => {
+test("start waits for blocked startup and a transient busy seat after claim", async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "rll-herdr-auto-seats-"));
   const project = path.join(temp, "project");
   const configDir = path.join(temp, "config");
@@ -355,6 +355,10 @@ test("start creates both seats and waits for a blocked agent before claiming", a
     `else if(a[0]==='integration') console.log('claude: current (v10)\\ncodex: current (v9)');` +
     `else if(a[0]==='agent'&&a[1]==='get'){const agent=s.agents[a[2]];` +
       `if(agent?.agent_status==='blocked'){s.blocked_reads=(s.blocked_reads||0)+1;if(s.blocked_reads>1){agent.agent_status='idle';agent.interactive_ready=true;}save();}` +
+      `const bindingFile=process.env.FAKE_PROJECT+'/.dual-agent/host/binding.json';` +
+      `if(a[2]==='lisa'&&agent?.agent_status!=='blocked'&&fs.existsSync(bindingFile)){const binding=JSON.parse(fs.readFileSync(bindingFile));` +
+        `if(binding.seats.ralph&&!binding.seats.lisa&&s.late_busy_reads!==2){s.late_busy_reads=(s.late_busy_reads||0)+1;save();` +
+          `if(s.late_busy_reads===1){out({agent:{...agent,agent_status:'working'}});process.exit(0);}}}` +
       `if(!agent){console.error(JSON.stringify({error:{code:'agent_not_found'}}));process.exitCode=1;}else out({agent});}` +
     `else if(a[0]==='workspace'&&a[1]==='create'){s.workspaces++;save();` +
       `out({workspace:{workspace_id:'w2'},root_pane:{workspace_id:'w2',pane_id:'w2:p1'}});}` +
@@ -386,6 +390,7 @@ test("start creates both seats and waits for a blocked agent before claiming", a
     assert.equal(herdrState.workspaces, 1);
     assert.equal(herdrState.agents.ralph.pane_id, "w2:p1");
     assert.equal(herdrState.agents.lisa.pane_id, "w2:p2");
+    assert.equal(herdrState.late_busy_reads, 2);
     assert.equal(herdrState.prompts, 1);
     const claimed = JSON.parse(spawnSync(process.execPath, [cli, "host", "snapshot", "--project", project, "--json"], {
       encoding: "utf8",
